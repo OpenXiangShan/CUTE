@@ -1,0 +1,4 @@
+[debug] [cute-test] Classpath dependencies List(boom)
+[debug] [cute-test] Dependencies from configurations List(cute)
+[debug] Bloop wrote the configuration of project 'cute-test' to '/root/chipyard/.bloop/cute-test.json'
+[success] Generated .bloop/cute-test.json

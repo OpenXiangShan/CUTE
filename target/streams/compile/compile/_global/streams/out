@@ -1,0 +1,14 @@
+[0m[[0m[33mwarn[0m] [0m[0m/root/chipyard/generators/cute/src/main/scala/CUTE2YGJK.scala:17:23: method apply in class View is deprecated (since CDE 0.1): up(XYZ, site) is no longer necessary; remove the superfluous site argument[0m
+[0m[[0m[33mwarn[0m] [0m[0m    case BuildRoCC => up(BuildRoCC, site) ++ EnableCUTEList.collect {[0m
+[0m[[0m[33mwarn[0m] [0m[0m                      ^[0m
+[0m[[0m[33mwarn[0m] [0m[0m/root/chipyard/generators/cute/src/main/scala/CUTE2YGJK.scala:42:31: method apply in object TLClientPortParameters is deprecated: Use TLMasterPortParameters.v1 instead of TLClientPortParameters[0m
+[0m[[0m[33mwarn[0m] [0m[0m  val node = TLClientNode(Seq(TLClientPortParameters(Seq(TLClientParameters([0m
+[0m[[0m[33mwarn[0m] [0m[0m                              ^[0m
+[0m[[0m[33mwarn[0m] [0m[0m/root/chipyard/generators/cute/src/main/scala/CUTE2YGJK.scala:42:58: method apply in object TLClientParameters is deprecated: Use TLMasterParameters.v1 instead of TLClientParameters[0m
+[0m[[0m[33mwarn[0m] [0m[0m  val node = TLClientNode(Seq(TLClientPortParameters(Seq(TLClientParameters([0m
+[0m[[0m[33mwarn[0m] [0m[0m                                                         ^[0m
+[0m[[0m[33mwarn[0m] [0m[0m/root/chipyard/generators/cute/src/main/scala/CUTE2YGJK.scala:276:40: method fire in class AddMethodsToReadyValid is deprecated (since Chisel 3.5): Calling this function with an empty argument list is invalid in Scala 3. Use the form without parentheses instead[0m
+[0m[[0m[33mwarn[0m] [0m[0m    acc.io.ctrl2top.config.valid := io.cmd.fire() && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct(6) === 1.U[0m
+[0m[[0m[33mwarn[0m] [0m[0m                                       ^[0m
+[0m[[0m[33mwarn[0m] [0m[0m1366 feature warnings; re-run with -feature for details[0m
+[0m[[0m[33mwarn[0m] [0m[0m5 warnings found[0m
