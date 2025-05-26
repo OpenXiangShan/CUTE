@@ -139,7 +139,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with HWParameters{
     (io.mmu.Request.bits.RequestType_isWrite === 1.U) -> edge.Put(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(LLCDataWidthByte).U, data)._2
   ))
 
-  io.mmu.Response.valid := tl_out.d.valid && tl_out.d.bits.opcode === TLMessages.AccessAckData
+  io.mmu.Response.valid := tl_out.d.valid && (tl_out.d.bits.opcode === TLMessages.AccessAckData || tl_out.d.bits.opcode === TLMessages.AccessAck)
   io.mmu.Request.ready := tl_out.a.ready && !(busy.reduce(_&_))
   io.mmu.Response.bits.ReseponseData := tl_out.d.bits.data
   io.mmu.Response.bits.ReseponseSourceID := tl_out.d.bits.source

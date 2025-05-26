@@ -622,6 +622,7 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     val Max_SubReduce_DIM = RegInit(0.U((log2Ceil(Tensor_M)).W))
     val CurrentStore_BlockTensor_SubMajor_DIM_Iter= RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val CurrentStore_BlockTensor_SubReduce_DIM_Iter= RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    val Write_Mem_Wait_Table = RegInit(VecInit(Seq.fill(SoureceMaxNum)(false.B))) //存储每个访存请求的等待状态
 
     //CMemoryLoaderReadFromScratchpadFIFODepth深度的fifo
     val FromScratchpadReadFIFO = RegInit(VecInit(Seq.fill(CMemoryLoaderReadFromScratchpadFIFODepth)(0.U(CScratchpad_Total_Bandwidth_Bit.W))))
@@ -633,6 +634,14 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
 
     val Per_SCP_Load_Write_Memory_Time = CScratchpad_Total_Bandwidth_Bit/LLCDataWidth
     val FireTimes = RegInit(0.U(log2Ceil(CScratchpadNBanks).W))
+
+    when(Write_Mem_Wait_Table.reduce(_||_)){
+        io.LocalMMUIO.Response.ready := true.B
+    }
+    when(io.LocalMMUIO.Response.fire){
+        val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+        Write_Mem_Wait_Table(sourceId) := false.B
+    }
 
     when(memorystore_state === s_store_init){
         memorystore_state := s_store_working
@@ -748,7 +757,8 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
                 {
                     printf("[CMemoryLoader_Store<%d>]WriteRequest: RequestVirtualAddr= %x, RequestConherent= %x,RequestSourceID= %x,RequestType_isWrite= %x,CurrentStore_BlockTensor_Major_DIM_Iter: %x, CurrentStore_BlockTensor_Reduce_DIM_Iter: %x,RequestData:%x\n", io.DebugInfo.DebugTimeStampe, WriteRequest.bits.RequestVirtualAddr, WriteRequest.bits.RequestConherent, WriteRequest.bits.RequestSourceID, WriteRequest.bits.RequestType_isWrite, CurrentStore_BlockTensor_Major_DIM_Iter, CurrentStore_BlockTensor_Reduce_DIM_Iter,WriteRequest.bits.RequestData)
                 }
-                
+
+                Write_Mem_Wait_Table(io.LocalMMUIO.ConherentRequsetSourceID.bits) := true.B
                 FireTimes := FireTimes + 1.U
                 when(FireTimes === (Per_SCP_Load_Write_Memory_Time-1).U){
                     FireTimes := 0.U
@@ -796,7 +806,9 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         }
     }.elsewhen(memorystore_state === s_store_end){
         // memorystore_state := s_store_end
-        io.ConfigInfo.MicroTaskEndValid := true.B
+        when(!Write_Mem_Wait_Table.reduce(_||_)) {
+            io.ConfigInfo.MicroTaskEndValid := true.B
+        }
         when(io.ConfigInfo.MicroTaskEndReady && io.ConfigInfo.MicroTaskEndValid){
             memorystore_state := s_store_idle
             state := s_idle
