@@ -13,6 +13,15 @@ class CUTETopIO() extends Bundle{
 }
 class CUTEV2Top(implicit p: Parameters) extends Module with HWParameters{
     val io = IO(new CUTETopIO)
+
+    val cutecounter = Wire(new CUTECounter)
+
+    val time_stamp = RegInit(0.U(40.W))
+    time_stamp := time_stamp + 1.U
+
+    // printf("[CUTE perf %d] %x %x %x %x %x %x %x %x %x %x %x %x %x \n", time_stamp, cutecounter.ALoad, cutecounter.BLoad, cutecounter.CLoad, cutecounter.DStore, 
+    //     cutecounter.InstQueueEmpty, cutecounter.getConfigured, cutecounter.AOPBusy, cutecounter.computeBusy, cutecounter.computeInstQueueEmpty, cutecounter.computeInstCanIssue, cutecounter.InstCanDecode,
+    //     cutecounter.mmu_req_valid, cutecounter.mmu_req_ready)
     
     val ASpad = Seq.tabulate(2)(i => Module(new AScratchpad(i))).toVector//双缓冲
     val ADC = Module(new ADataController)
@@ -35,6 +44,18 @@ class CUTEV2Top(implicit p: Parameters) extends Module with HWParameters{
 
     val MMU = Module(new LocalMMU)
 
+    cutecounter.ALoad := TaskCtrl.io.ctrlCounter.ALoad
+    cutecounter.BLoad := TaskCtrl.io.ctrlCounter.BLoad
+    cutecounter.CLoad := TaskCtrl.io.ctrlCounter.CLoad
+    cutecounter.DStore := TaskCtrl.io.ctrlCounter.DStore
+    cutecounter.InstQueueEmpty := TaskCtrl.io.ctrlCounter.InstQueueEmpty
+    cutecounter.getConfigured := TaskCtrl.io.ctrlCounter.getConfigured
+    cutecounter.AOPBusy := TaskCtrl.io.ctrlCounter.AOPBusy
+    cutecounter.computeInstQueueEmpty := TaskCtrl.io.ctrlCounter.computeInstQueueEmpty
+    cutecounter.computeInstCanIssue := TaskCtrl.io.ctrlCounter.computeInstCanIssue
+    cutecounter.InstCanDecode := TaskCtrl.io.ctrlCounter.InstCanDecode
+    cutecounter.mmu_req_valid := io.mmu2llc.Request.valid
+    cutecounter.mmu_req_ready := io.mmu2llc.Request.ready
 
     //debug reg
     val DebugTimeStampe = RegInit(0.U(32.W))
@@ -85,6 +106,8 @@ class CUTEV2Top(implicit p: Parameters) extends Module with HWParameters{
     AOp.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     AOp.io.VectorInterface <> VecSIf.io.VectorInterface
 
+    cutecounter.AOPBusy := !AOp.io.ConfigInfo.MicroTaskReady
+
     //VecSIF应该把VPU的输出输出接出去，但现在先空接
     val VPUIO = Module(new FakeVPU).io
     VPUIO.VPUInterface <> VecSIf.io.VPUInterface
@@ -100,6 +123,8 @@ class CUTEV2Top(implicit p: Parameters) extends Module with HWParameters{
     ADC.io.ComputeGo := MTE.io.ComputeGo
     BDC.io.ComputeGo := MTE.io.ComputeGo
     CDC.io.ComputeGo := MTE.io.ComputeGo
+
+    cutecounter.computeBusy := MTE.io.VectorA.valid
 
     // TaskCtrl.io.MTE_MicroTask_Config.ready := true.B
     // ADC.io.VectorA.ready := true.B

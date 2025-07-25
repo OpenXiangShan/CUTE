@@ -374,7 +374,7 @@ class AfterOpsModule(implicit p: Parameters) extends Module with HWParameters{
                         if (YJPAfterOpsDebugEnable)
                         {
                             val Groups_Iter = GetCount / (Matrix_M.U)
-                            printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToVector_Reg, GetCount is %d(Groups %d),Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, GetCount,Groups_Iter,Reorder_ToVector_Reg(Reorder_ToVector_Reg_Get_Index).asUInt)
+                            // printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToVector_Reg, GetCount is %d(Groups %d),Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, GetCount,Groups_Iter,Reorder_ToVector_Reg(Reorder_ToVector_Reg_Get_Index).asUInt)
                         }
                     }
                     GetCount := GetCount + 1.U
@@ -396,7 +396,7 @@ class AfterOpsModule(implicit p: Parameters) extends Module with HWParameters{
                     Send_Vector_Iter := WrapInc(Send_Vector_Iter, Send_Vector_Max_Iter)
                     if (YJPAfterOpsDebugEnable)
                     {
-                        printf("[AfterOps<%d>]AfterOps: Send data to Vector, Send_Vector_Iter is %d,Send_Vector_Data is %x\n",io.DebugInfo.DebugTimeStampe, Send_Vector_Iter,io.VectorInterface.VectorDataIn.bits)
+                        // printf("[AfterOps<%d>]AfterOps: Send data to Vector, Send_Vector_Iter is %d,Send_Vector_Data is %x\n",io.DebugInfo.DebugTimeStampe, Send_Vector_Iter,io.VectorInterface.VectorDataIn.bits)
                     }
                     when(Send_Vector_Iter === (Send_Vector_Max_Iter - 1).U){
                         Send_Vector_Iter := 0.U
@@ -427,7 +427,7 @@ class AfterOpsModule(implicit p: Parameters) extends Module with HWParameters{
                                 val debug_Reorder_ToSCP_Reg = WireInit(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Per_Return_Vector_GroupSize)((0.U(VectorWidth.W)))))))
                                 debug_Reorder_ToSCP_Reg := Reorder_ToSCP_Reg(Reorder_ToSCP_Reg_Get_Index)
                                 debug_Reorder_ToSCP_Reg(Fill_Return_M_Iter)(Fill_SCP_Iter) := io.VectorInterface.VectorDataOut.bits
-                                printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToSCP_Reg one Groupg down, Fill_Return_M_Iter is %d, Fill_SCP_Iter is %d,Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, Fill_Return_M_Iter, Fill_SCP_Iter,debug_Reorder_ToSCP_Reg.asUInt)
+                                // printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToSCP_Reg one Groupg down, Fill_Return_M_Iter is %d, Fill_SCP_Iter is %d,Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, Fill_Return_M_Iter, Fill_SCP_Iter,debug_Reorder_ToSCP_Reg.asUInt)
                                 //输出Reorder_ToSCP_Reg_Valid和Reorder_ToSCP_Reg_Get_Index
                                 printf("[AfterOps<%d>{Reorder_ToSCP_Reg_Valid}]AfterOps: Reorder_ToSCP_Reg_Valid is %x, Reorder_ToSCP_Reg_Get_Index is %d\n",io.DebugInfo.DebugTimeStampe, Reorder_ToSCP_Reg_Valid.asUInt, Reorder_ToSCP_Reg_Get_Index)
                             }

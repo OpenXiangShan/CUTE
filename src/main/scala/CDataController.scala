@@ -241,16 +241,31 @@ class CDataController(implicit p: Parameters) extends Module with HWParameters{
 
             //只要数据有效，我们就尝试去写CSCP,或者因为需要执行后操作而选择送入后操作的接口
             //当不是最后的后操作Tile时，我们不需要执行后操作
-            when(!Is_AfterOps_Tile){
+            // when(!Is_AfterOps_Tile){
                 when(io.ResultMatrix_D.valid)
                 {
                     io.FromScarchPadIO.WriteBankAddr.map(_.valid := true.B)
                     io.FromScarchPadIO.WriteRequestData.map(_.valid := true.B)
                     val SCP_Wrie_data = Wire((Vec(CScratchpadNBanks, (UInt(CScratchpadEntryBitSize.W)))))
                     SCP_Wrie_data := io.ResultMatrix_D.bits.asTypeOf(SCP_Wrie_data)
+                    val transpose_data = Wire((Vec(CScratchpadNBanks, Vec(CScratchpadNBanks, (UInt(ResultWidth.W))))))
                     for (i <- 0 until CScratchpadNBanks){
-                        io.FromScarchPadIO.WriteRequestData(i).bits := SCP_Wrie_data(i)
+                        for (j <- 0 until CScratchpadNBanks){
+                            transpose_data(i)(j) := SCP_Wrie_data(j)((i+1)*ResultWidth - 1 , i*ResultWidth)
+                        }
                     }
+                    
+                    for (i <- 0 until CScratchpadNBanks){
+                        when(Is_Transpose && Is_AfterOps_Tile)
+                        {
+                            //如果需要转置，那么我们就转置数据
+                            io.FromScarchPadIO.WriteRequestData(i).bits := transpose_data(i).asUInt
+                        }.otherwise{
+                            //否则，我们就直接写入数据
+                            io.FromScarchPadIO.WriteRequestData(i).bits := SCP_Wrie_data(i)
+                        }
+                    }
+                    
                     
                     WriteRequset := true.B//此时只要数据有效，就喜欢进行写SCP
                     io.ResultMatrix_D.ready := Mux(ReadRequest===true.B,false.B,WriteRequset)//保证了握手信号，只在写的时候才会拉高
@@ -269,50 +284,50 @@ class CDataController(implicit p: Parameters) extends Module with HWParameters{
                         }
                     }
                 }
-            }.elsewhen(Is_AfterOps_Tile)//需要执行后操作
-            {
-                //C的返回结果送入到后操作接口
-                io.AfterOpsInterface.CDCDataToInterface.bits := io.ResultMatrix_D.bits
-                io.AfterOpsInterface.CDCDataToInterface.valid := io.ResultMatrix_D.valid
-                io.ResultMatrix_D.ready := io.AfterOpsInterface.CDCDataToInterface.ready
+            // }.elsewhen(Is_AfterOps_Tile)//需要执行后操作
+            // {
+            //     //C的返回结果送入到后操作接口
+            //     io.AfterOpsInterface.CDCDataToInterface.bits := io.ResultMatrix_D.bits
+            //     io.AfterOpsInterface.CDCDataToInterface.valid := io.ResultMatrix_D.valid
+            //     io.ResultMatrix_D.ready := io.AfterOpsInterface.CDCDataToInterface.ready
 
-                when(io.AfterOpsInterface.CDCDataToInterface.fire){
-                    After_ops_issue_iter := After_ops_issue_iter + 1.U
-                    if (YJPCDCDebugEnable)
-                    {
-                        printf("[CDataController<%d>]CDataController: After_ops_issue_iter is %d,issue Afterops val is %x\n",io.DebugInfo.DebugTimeStampe, After_ops_issue_iter, io.AfterOpsInterface.CDCDataToInterface.bits)
-                    }
-                }
+            //     when(io.AfterOpsInterface.CDCDataToInterface.fire){
+            //         After_ops_issue_iter := After_ops_issue_iter + 1.U
+            //         if (YJPCDCDebugEnable)
+            //         {
+            //             printf("[CDataController<%d>]CDataController: After_ops_issue_iter is %d,issue Afterops val is %x\n",io.DebugInfo.DebugTimeStampe, After_ops_issue_iter, io.AfterOpsInterface.CDCDataToInterface.bits)
+            //         }
+            //     }
 
-                //后操作接口的返回结果送入到ScarchPad
-                //后操作完成后的数据，送入到SCP中的数据需要重新摆放地址。
-                //直到SCP内的是Reduce_DIM_First的数据，首先CSCP的访存带宽是(ResultWidth*Matrix_M*Matrix_N)，
-                //则每次访存得到的数据是(Matrix_M*Matrix_N*ResultWidth)/element_width个数据,当访存带宽是512时，32位的数据有16个，16位的数据有32个，8位的数据有64个
-                //由于原先的数据是4,4的小矩阵摆放在一起，且以Reduce_DIM_First的方式摆放，故我们会连续的接受数据，然后排放到SCP中，此时的地址需要额外的计算
+            //     //后操作接口的返回结果送入到ScarchPad
+            //     //后操作完成后的数据，送入到SCP中的数据需要重新摆放地址。
+            //     //直到SCP内的是Reduce_DIM_First的数据，首先CSCP的访存带宽是(ResultWidth*Matrix_M*Matrix_N)，
+            //     //则每次访存得到的数据是(Matrix_M*Matrix_N*ResultWidth)/element_width个数据,当访存带宽是512时，32位的数据有16个，16位的数据有32个，8位的数据有64个
+            //     //由于原先的数据是4,4的小矩阵摆放在一起，且以Reduce_DIM_First的方式摆放，故我们会连续的接受数据，然后排放到SCP中，此时的地址需要额外的计算
 
-                //后操作接口的返回结果送入到ScarchPad
-                WriteRequset := io.AfterOpsInterface.InterfaceToCDCData.valid
-                io.AfterOpsInterface.InterfaceToCDCData.ready :=  Mux(ReadRequest===true.B,false.B,WriteRequset)//保证了握手信号，只在写的时候才会拉高
-                io.FromScarchPadIO.WriteBankAddr.map(_.valid := WriteRequset)
-                io.FromScarchPadIO.WriteRequestData.map(_.valid := WriteRequset)
-                val store_data = Wire((Vec(CScratchpadNBanks, (UInt(CScratchpadEntryBitSize.W)))))
-                store_data := io.AfterOpsInterface.InterfaceToCDCData.bits.asTypeOf(store_data)
-                for (i <- 0 until CScratchpadNBanks){
-                    io.FromScarchPadIO.WriteRequestData(i).bits := store_data(i)
-                    io.FromScarchPadIO.WriteBankAddr(i).bits := DVectorCount
-                }
+            //     //后操作接口的返回结果送入到ScarchPad
+            //     WriteRequset := io.AfterOpsInterface.InterfaceToCDCData.valid
+            //     io.AfterOpsInterface.InterfaceToCDCData.ready :=  Mux(ReadRequest===true.B,false.B,WriteRequset)//保证了握手信号，只在写的时候才会拉高
+            //     io.FromScarchPadIO.WriteBankAddr.map(_.valid := WriteRequset)
+            //     io.FromScarchPadIO.WriteRequestData.map(_.valid := WriteRequset)
+            //     val store_data = Wire((Vec(CScratchpadNBanks, (UInt(CScratchpadEntryBitSize.W)))))
+            //     store_data := io.AfterOpsInterface.InterfaceToCDCData.bits.asTypeOf(store_data)
+            //     for (i <- 0 until CScratchpadNBanks){
+            //         io.FromScarchPadIO.WriteRequestData(i).bits := store_data(i)
+            //         io.FromScarchPadIO.WriteBankAddr(i).bits := DVectorCount
+            //     }
 
-                when(io.AfterOpsInterface.InterfaceToCDCData.fire){
-                    DVectorCount := DVectorCount + 1.U
-                    if (YJPCDCDebugEnable)
-                    {
-                        printf("[CDataController<%d>]CDataController: DVectorCount is %d\n",io.DebugInfo.DebugTimeStampe, DVectorCount)
-                    }
-                }
-                when(DVectorCount === Max_Store_Iter - 1.U){
-                    calculate_state := s_cal_end
-                }
-            }
+            //     when(io.AfterOpsInterface.InterfaceToCDCData.fire){
+            //         DVectorCount := DVectorCount + 1.U
+            //         if (YJPCDCDebugEnable)
+            //         {
+            //             printf("[CDataController<%d>]CDataController: DVectorCount is %d\n",io.DebugInfo.DebugTimeStampe, DVectorCount)
+            //         }
+            //     }
+            //     when(DVectorCount === Max_Store_Iter - 1.U){
+            //         calculate_state := s_cal_end
+            //     }
+            // }
             
         }.elsewhen(calculate_state === s_cal_end){
             //当前计算任务结束，等待TaskCtrl的确认

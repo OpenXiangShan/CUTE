@@ -188,7 +188,7 @@ class CScratchpad extends Module with HWParameters{
             }
         }
 
-        val Bank_Is_write = SramIsWrite_0
+        val Bank_Is_write = s0_bank_write_valid
         val Bank_Enable = HasRequest
         val Bank_addr = SramAddr_0(i).bits
         val Bank_wdata = s0_bank_write_data

@@ -23,9 +23,14 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
         val AOP_MicroTask_Config = (new AfterOpsMicroTaskConfigIO)
         val SCP_CtrlInfo               = (new SCPControlInfo)
         val DebugTimeStampe = Input(UInt(32.W))
+        val ctrlCounter = Output(new CTRLCounter)
         // val MMU_Config_Info = (new MMUConfigInfo)
         // val MatrixTE_MicroTask_Config = DecoupledIO(new MatrixTEMicroTaskConfigIO)
     })
+
+    val get_configred = RegInit(false.B)
+
+    io.ctrlCounter.getConfigured := get_configred
 
     //ADC_MicroTask_Config 的 默认配置
     io.ADC_MicroTask_Config.Is_Transpose := false.B
@@ -159,6 +164,9 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
     val MacroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U(new MacroInst().getWidth.W))))
     val MacroInst_FIFO_Head = RegInit(0.U(2.W))
     val MacroInst_FIFO_Tail = RegInit(0.U(2.W))
+    // performance-counter 宏指令不空是代表cute memory bound, 空的时候代表cute idle
+    // performance-counter cute idle可分为start up idle,具体表现为cpu发出第一条rocc指令发起配置直到cute的计算部件开始进入working
+    // performance-counter cutememory bound可分为A B C D load/store bound,具体在伪指令阶段分析
     val MacroInst_FIFO_Empty = MacroInst_FIFO_Head === MacroInst_FIFO_Tail
     val MacroInst_FIFO_Full = WrapInc(MacroInst_FIFO_Head, 4) === MacroInst_FIFO_Tail
 
@@ -172,6 +180,8 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
     io.ygjkctrl.InstFIFO_Info := MacroInst_FIFO_Valid.asUInt
     io.ygjkctrl.InstFIFO_Full := MacroInst_FIFO_Full
     io.ygjkctrl.InstFIFO_Finish := MacroInst_FIFO_Total_Finish.asUInt
+
+    io.ctrlCounter.InstQueueEmpty := MacroInst_FIFO_Empty
 
     when(io.ygjkctrl.config.valid)
     {
@@ -240,6 +250,8 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
 
 
                 }
+
+                get_configred := false.B
             }.otherwise
             {
                 io.ygjkctrl.cute_return_val := 0xdeadbeefL.U
@@ -256,22 +268,30 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
             MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr := io.ygjkctrl.config.bits.cfgData1
             MacroInst_Reg_Wire.ApplicationTensor_A_Stride := io.ygjkctrl.config.bits.cfgData2
             MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+
+            get_configred := true.B
             
         }.elsewhen(funct === 2.U)
         {
             MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr := io.ygjkctrl.config.bits.cfgData1
             MacroInst_Reg_Wire.ApplicationTensor_B_Stride := io.ygjkctrl.config.bits.cfgData2
             MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+
+            get_configred := true.B
         }.elsewhen(funct === 3.U)
         {
             MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr := io.ygjkctrl.config.bits.cfgData1
             MacroInst_Reg_Wire.ApplicationTensor_C_Stride := io.ygjkctrl.config.bits.cfgData2
             MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+
+            get_configred := true.B
         }.elsewhen(funct === 4.U)
         {
             MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr := io.ygjkctrl.config.bits.cfgData1
             MacroInst_Reg_Wire.ApplicationTensor_D_Stride := io.ygjkctrl.config.bits.cfgData2
             MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+
+            get_configred := true.B
         }.elsewhen(funct === 5.U)
         {
             assert(MacroInst_Reg_Wire.Application_M.getWidth <= 20)
@@ -282,6 +302,8 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
             MacroInst_Reg_Wire.Application_K := io.ygjkctrl.config.bits.cfgData1(MacroInst_Reg_Wire.Application_K.getWidth+39,40)
             MacroInst_Reg_Wire.kernel_stride := io.ygjkctrl.config.bits.cfgData2
             MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+
+            get_configred := true.B
         }.elsewhen(funct === 6.U)
         {
             assert(MacroInst_Reg_Wire.element_type.getWidth <= 8)
@@ -312,6 +334,8 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
             MacroInst_Reg_Wire.conv_ow_index := io.ygjkctrl.config.bits.cfgData2(MacroInst_Reg_Wire.conv_ow_index.getWidth-1+49,49)
             MacroInst_Reg_Wire.bias_data_type := ElementDataType.DataTypeWidth32
             MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+
+            get_configred := true.B
         }.elsewhen(funct === 16.U)
         {
             //clear指令，将队尾的宏指令清除
@@ -356,6 +380,8 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
     val MarcoInst_Can_Decode = MacroInst_FIFO_Valid(MarcoInst_FIFO_Decode_Head) && !MacroInst_FIFO_Decode_Finish(MarcoInst_FIFO_Decode_Head)
 
     val Decoding_MarcoInst_Going = RegInit(false.B)
+
+    io.ctrlCounter.InstCanDecode := MarcoInst_Can_Decode
 
     //宏指令译码时，会不断向微指令发射队列发射微指令
     //微指令发射队列，深度为8,4,4
@@ -734,7 +760,9 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
             val Store_MicroInst = Wire(new StoreMicroInst)
             Store_MicroInst.ApplicationTensor_D.ApplicationTensor_D_BaseVaddr := Decoding_MacroInst.ApplicationTensor_D_BaseVaddr
             Store_MicroInst.ApplicationTensor_D.ApplicationTensor_D_Stride_M := Decoding_MacroInst.ApplicationTensor_D_Stride
-            Store_MicroInst.ApplicationTensor_D.BlockTensor_D_BaseVaddr := Decoding_MacroInst.ApplicationTensor_D_BaseVaddr + Current_Tile_M_Iter * Decoding_MacroInst.ApplicationTensor_D_Stride + Current_Tile_N_Iter * ResultWidthByte.U//TODO:转置？result_data_width?
+            Store_MicroInst.ApplicationTensor_D.BlockTensor_D_BaseVaddr := Mux(Decoding_MacroInst.transpose_result,
+                        Decoding_MacroInst.ApplicationTensor_D_BaseVaddr + Current_Tile_N_Iter * Decoding_MacroInst.ApplicationTensor_D_Stride + Current_Tile_M_Iter * ResultWidthByte.U,
+                        Decoding_MacroInst.ApplicationTensor_D_BaseVaddr + Current_Tile_M_Iter * Decoding_MacroInst.ApplicationTensor_D_Stride + Current_Tile_N_Iter * ResultWidthByte.U)//TODO:转置？result_data_width?
             Store_MicroInst.ApplicationTensor_D.dataType := ElementDataType.DataTypeWidth32
             Store_MicroInst.Conherent := true.B
             Store_MicroInst.Is_Transpose := Decoding_MacroInst.transpose_result
@@ -811,6 +839,10 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
     val Load_Micro_Inst_Wait_A_Finish = RegInit(false.B)
     val Load_Micro_Inst_Wait_B_Finish = RegInit(false.B)
     val Load_Micro_Inst_Wait_C_Finish = RegInit(false.B)
+
+    io.ctrlCounter.ALoad := Load_Micro_Inst_Wait_A_Finish
+    io.ctrlCounter.BLoad := Load_Micro_Inst_Wait_B_Finish
+    io.ctrlCounter.CLoad := Load_Micro_Inst_Wait_C_Finish
     when(!Load_MicroInst_FINISH_All)
     {
         val Load_MicroInst = Load_MicroInst_FIFO(Load_MicroInst_FINISH_Head).asTypeOf(new LoadMicroInst)//取出的Load指令
@@ -941,6 +973,10 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
     val Compute_Micro_Inst_Wait_C_Finish = RegInit(false.B)
     val Compute_Micro_Inst_Wait_Aop_Finish = RegInit(false.B)
 
+    io.ctrlCounter.AOPBusy := Compute_Micro_Inst_Wait_Aop_Finish
+    io.ctrlCounter.computeInstQueueEmpty := Compute_MicroInst_FINISH_All 
+    io.ctrlCounter.computeInstCanIssue := false.B
+
     when(!Compute_MicroInst_FINISH_All)
     {
         val Compute_MicroInst = Compute_MicroInst_FIFO(Compute_MicroInst_FINISH_HEAD).asTypeOf(new ComputeMicroInst)//取出的Compute指令
@@ -954,6 +990,8 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
         val Can_Issue_AOP_Micro_Inst = io.AOP_MicroTask_Config.MicroTaskReady 
 
         val Can_Issue_Compute_Micro_Inst = Can_Issue_ADC_Micro_Inst && Can_Issue_BDC_Micro_Inst && Can_Issue_CDC_Micro_Inst && Dependent_Load_Finish_Ready_Go && Can_Issue_AOP_Micro_Inst
+
+        io.ctrlCounter.computeInstCanIssue := Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_idle
 
         // if (YJPDebugEnable)
         // {
@@ -987,14 +1025,14 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
             io.CDC_MicroTask_Config.Is_EasyScale_Only_Ops := false.B        //TODO:需要修改
             io.CDC_MicroTask_Config.Is_VecFIFO_Ops := false.B               //TODO:需要修改
 
-            io.AOP_MicroTask_Config.ScaratchpadTensor_M := Compute_MicroInst.ScaratchpadTensor_M
-            io.AOP_MicroTask_Config.ScaratchpadTensor_N := Compute_MicroInst.ScaratchpadTensor_N
-            io.AOP_MicroTask_Config.ScaratchpadTensor_K := Compute_MicroInst.ScaratchpadTensor_K
-            io.AOP_MicroTask_Config.ApplicationTensor_D.dataType := ElementDataType.DataTypeWidth32 //TODO:需要修改
-            io.AOP_MicroTask_Config.Is_EasyScale_Only_Ops := Compute_MicroInst.Is_EasyScale_Only_Ops
-            io.AOP_MicroTask_Config.Is_VecFIFO_Ops := Compute_MicroInst.Is_VecFIFO_Ops
-            io.AOP_MicroTask_Config.Is_Transpose := Compute_MicroInst.Is_Transpose
-            io.AOP_MicroTask_Config.Is_Reorder_Only_Ops := Compute_MicroInst.Is_Reorder_Only_Ops
+            // io.AOP_MicroTask_Config.ScaratchpadTensor_M := Compute_MicroInst.ScaratchpadTensor_M
+            // io.AOP_MicroTask_Config.ScaratchpadTensor_N := Compute_MicroInst.ScaratchpadTensor_N
+            // io.AOP_MicroTask_Config.ScaratchpadTensor_K := Compute_MicroInst.ScaratchpadTensor_K
+            // io.AOP_MicroTask_Config.ApplicationTensor_D.dataType := ElementDataType.DataTypeWidth32 //TODO:需要修改
+            // io.AOP_MicroTask_Config.Is_EasyScale_Only_Ops := Compute_MicroInst.Is_EasyScale_Only_Ops
+            // io.AOP_MicroTask_Config.Is_VecFIFO_Ops := Compute_MicroInst.Is_VecFIFO_Ops
+            // io.AOP_MicroTask_Config.Is_Transpose := Compute_MicroInst.Is_Transpose
+            // io.AOP_MicroTask_Config.Is_Reorder_Only_Ops := Compute_MicroInst.Is_Reorder_Only_Ops
             // io.AOP_MicroTask_Config.CUTEuop := Compute_MicroInst.CUTEuop
 
             io.MTE_MicroTask_Config.dataType := ElementDataType.DataTypeSInt8
@@ -1003,7 +1041,7 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
             io.BDC_MicroTask_Config.MicroTaskValid := true.B
             io.CDC_MicroTask_Config.MicroTaskValid := true.B
             io.MTE_MicroTask_Config.valid := true.B
-            io.AOP_MicroTask_Config.MicroTaskValid := Compute_MicroInst.Have_Aops
+            // io.AOP_MicroTask_Config.MicroTaskValid := Compute_MicroInst.Have_Aops
 
             Current_ADC_SCP_ID := Compute_MicroInst_Resource_Info.A_SCPID
             Current_BDC_SCP_ID := Compute_MicroInst_Resource_Info.B_SCPID
@@ -1063,7 +1101,7 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
                     printf("[TaskController<%d>]:Compute MicroInst Aop Finish! \n",io.DebugTimeStampe)
                 }
             }
-            when(!Compute_Micro_Inst_Wait_A_Finish && !Compute_Micro_Inst_Wait_B_Finish && !Compute_Micro_Inst_Wait_C_Finish && !Compute_Micro_Inst_Wait_Aop_Finish)
+            when(!Compute_Micro_Inst_Wait_A_Finish && !Compute_Micro_Inst_Wait_B_Finish && !Compute_Micro_Inst_Wait_C_Finish)
             {
                 Compute_MicroInst_FINISH_HEAD := WrapInc(Compute_MicroInst_FINISH_HEAD, 4)
                 Compute_MicroInst_FINISH_Ready_GO(Compute_MicroInst_FINISH_HEAD) := true.B
@@ -1103,6 +1141,7 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
     val Store_Micro_Inst_Issue_State_Reg = RegInit(issue_state_idle)
     val Store_Micro_Inst_Wait_C_Finish = RegInit(false.B)
     val Store_Micro_Inst_Is_Last_Store = RegInit(false.B)
+    io.ctrlCounter.DStore := Store_Micro_Inst_Wait_C_Finish
     when(!Store_MicroInst_FIFO_Empty)
     {
         val Store_MicroInst = Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail).asTypeOf(new StoreMicroInst)//取出的Store指令

@@ -608,13 +608,17 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     val TotalStoreSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总共存储的数据量，这个参数表示已经对MMU发出的存储请求次数
     val TotalStoreRequestSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总共读取的请求数据量，这个参数表示已经对ScartchPad发出的读请求次数
     val MaxIncStoreRequestSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) // 将Max_BlockTensor_Major_DIM向下取Matrix_M的倍数来计算正常增长的地址
+    val MaxIncStoreScpRequestSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) // 将Max_BlockTensor_Major_DIM向下取Matrix_M的倍数来计算正常增长的地址
     val Max_Load_Scp_Tail_SubMajor_Iter = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val Current_Load_Scp_Tail_subMajor_Iter = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val Current_Load_Scp_addr = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W))
+    val Current_Load_M_iter = RegInit(0.U((log2Ceil(Tensor_M)).W)) //当前的M迭代次数
+    val Current_Load_N_iter = RegInit(0.U((log2Ceil(Tensor_N)).W)) //当前的N迭代次数
     val Max_Load_SCP_Time = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总共要发对SCAP的访存次数
-    val Max_Stroe_Memory_Time = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总共要发对LLC的访存次数
+    val Max_Store_Memory_Time = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总共要发对LLC的访存次数
     val CurrentStore_BlockTensor_Major_DIM_Iter = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val CurrentStore_BlockTensor_Reduce_DIM_Iter = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    val Max_BlockTensor_Request_Reduce_DIM = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val Max_BlockTensor_Reduce_DIM = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val Max_BlockTensor_Major_DIM = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val Per_LLC_Store_ReduceDim_Iter = RegInit(0.U((log2Ceil(Tensor_M)).W))
@@ -643,8 +647,39 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         Write_Mem_Wait_Table(sourceId) := false.B
     }
 
+    val M_Get_IteratorMax = Mux(Is_Transpose, (ScaratchpadTensor_M / (Matrix_M.U * 2.U) + (ScaratchpadTensor_M % (Matrix_M.U * 2.U) =/= 0.U)) * 2.U, (ScaratchpadTensor_M / Matrix_M.U) + ((ScaratchpadTensor_M % Matrix_M.U) =/= 0.U))
+    val N_Get_IteratorMax = WireInit(0.U(log2Ceil(CScratchpadBankNEntrys).W))
+    N_Get_IteratorMax := (ScaratchpadTensor_N / Matrix_N.U)
+    val transpose_scp_addr = WireInit(0.U(log2Ceil(CScratchpadBankNEntrys).W))
+
+    // val Max_Caculate_Iter = M_Get_IteratorMax * N_Get_IteratorMax
+
+    // val GetCount = RegInit(0.U(32.W))
+
+    //一组reoder的寄存器，来存储重排的数据
+    //存一个Matrix_M*Matrix_N*T的数据矩阵寄存器，用于存储重排的数据，T = CSCP的总带宽/Matrix_N*ResultWidth
+    val Per_GetMatrix_NDim_Width = Matrix_N*ResultWidth //每次Get的N连续的数据的宽度
+    val Reorder_ToLLC_GroupSize = LLCDataWidth / (Per_GetMatrix_NDim_Width)//填满一个LLCDataWidth需要这么多次
+    val Reorder_ToLLC_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Reorder_ToLLC_GroupSize)(0.U((Per_GetMatrix_NDim_Width).W))))))))
+    val Reorder_ToLLC_Reg_Valid = RegInit(VecInit(Seq.fill(2)(false.B)))
+    val Reorder_ToLLC_Reg_Get_Index  = RegInit(0.U(log2Ceil(2).W))//双缓冲
+    val Reorder_ToLLC_Reg_Send_Index = RegInit(0.U(log2Ceil(2).W))//双缓冲
+
+    val Fill_LLC_Iter = RegInit(0.U(log2Ceil(Reorder_ToLLC_GroupSize).W))
+    val Fill_LLC_Max_Iter = Reorder_ToLLC_GroupSize
+
+    val Send_LLC_Iter = RegInit(0.U(log2Ceil(Matrix_M).W))
+    val Send_LLC_Max_Iter = Matrix_M
+
     when(memorystore_state === s_store_init){
         memorystore_state := s_store_working
+
+        Reorder_ToLLC_Reg := 0.U.asTypeOf(Reorder_ToLLC_Reg)
+        Reorder_ToLLC_Reg_Valid := 0.U.asTypeOf(Reorder_ToLLC_Reg_Valid) 
+        Reorder_ToLLC_Reg_Get_Index := 0.U
+
+        Fill_LLC_Iter := 0.U
+
         TotalStoreSize := 0.U
         TotalStoreRequestSize := 0.U
         CurrentStore_BlockTensor_Major_DIM_Iter := 0.U
@@ -653,11 +688,15 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         FromScratchpadReadFIFOHead := 0.U
         FromScratchpadReadFIFOTail := 0.U
         Max_Load_SCP_Time := ScaratchpadTensor_M * ScaratchpadTensor_N * D_DataType / CScratchpad_Total_Bandwidth.U//总共要发对SCAP的访存次数
-        // Max_Stroe_Memory_Time := ScaratchpadTensor_M * ScaratchpadTensor_N * D_DataType / LLCDataWidthByte.U//总共要发对LLC的访存次数
+        Max_Store_Memory_Time := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_M.U, ScaratchpadTensor_M) * ScaratchpadTensor_N * D_DataType / LLCDataWidthByte.U//总共要发对LLC的访存次数
+        // MaxIncStoreScpRequestSize := Mux(Is_Transpose, ScaratchpadTensor_N, M_Get_IteratorMax * Matrix_M.U) * Mux(Is_Transpose, ScaratchpadTensor_M, ScaratchpadTensor_N) * D_DataType / CScratchpad_Total_Bandwidth.U
+        MaxIncStoreScpRequestSize := M_Get_IteratorMax * Matrix_M.U * ScaratchpadTensor_N * D_DataType / CScratchpad_Total_Bandwidth.U
         MaxIncStoreRequestSize := (Mux(Is_Transpose, ScaratchpadTensor_N, ScaratchpadTensor_M) / Matrix_M.U * Matrix_M.U) * Mux(Is_Transpose, ScaratchpadTensor_M, ScaratchpadTensor_N) * D_DataType / CScratchpad_Total_Bandwidth.U
         Max_Load_Scp_Tail_SubMajor_Iter := Mux(Is_Transpose, ScaratchpadTensor_N, ScaratchpadTensor_M) % Matrix_M.U
         Current_Load_Scp_Tail_subMajor_Iter := 0.U
         Current_Load_Scp_addr := 0.U
+        Current_Load_M_iter := 0.U
+        Current_Load_N_iter := 0.U
         Per_LLC_Store_ReduceDim_Iter := Mux(D_DataType === 1.U, LLCDataWidthByte.U,
                                     Mux(D_DataType === 2.U, LLCDataWidthByte.U/2.U,
                                     Mux(D_DataType === 4.U, LLCDataWidthByte.U/4.U, LLCDataWidthByte.U)))
@@ -669,6 +708,7 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
                                 Mux(D_DataType === 4.U, CScratchpad_Total_Bandwidth.U/4.U, CScratchpad_Total_Bandwidth.U)))
         FireTimes := 0.U
         Max_BlockTensor_Reduce_DIM := Mux(Is_Transpose, ScaratchpadTensor_M, ScaratchpadTensor_N)
+        Max_BlockTensor_Request_Reduce_DIM := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_M.U, ScaratchpadTensor_N)
         Max_BlockTensor_Major_DIM := Mux(Is_Transpose, ScaratchpadTensor_N, ScaratchpadTensor_M)
 
         if(YJPCMLDebugEnable)
@@ -676,26 +716,30 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
             printf("[CMemoryLoader_Store<%d>]Store D Tensor Start, Max_Load_SCP_Time: %x\n", io.DebugInfo.DebugTimeStampe, ScaratchpadTensor_M * ScaratchpadTensor_N * D_DataType / CScratchpad_Total_Bandwidth.U)
         }
     }.elsewhen(memorystore_state === s_store_working){
+        val Reorder_ToLLC_Reg_Ready_Get = !(Reorder_ToLLC_Reg_Valid.reduce(_&&_))//只要有一个不是Valid就是true,表示可以接受CDC的数据
         //如果ScartchPad的仲裁结果允许我们读取数据
-        HasScarhpadRead := !FromScratchpadReadFIFO_ISSUE_Full && !FromScratchpadReadFIFOFull && TotalStoreRequestSize < Max_Load_SCP_Time
+        HasScarhpadRead := !FromScratchpadReadFIFO_ISSUE_Full && !FromScratchpadReadFIFOFull && TotalStoreRequestSize < MaxIncStoreScpRequestSize
         when(HasScarhpadRead){
+            transpose_scp_addr := Current_Load_N_iter + Current_Load_M_iter * N_Get_IteratorMax
+            if(YJPCMLDebugEnable)
+            {
+                printf("[CMemoryLoader_Store<%d>]N_Get_IteratorMax: %x, Current_Load_N_iter: %x, Current_Load_M_iter: %x, transpose_scp_addr: %x\n", io.DebugInfo.DebugTimeStampe, N_Get_IteratorMax, Current_Load_N_iter, Current_Load_M_iter, transpose_scp_addr)
+            }
             //根据ScartchPad的仲裁结果，我们可以读取数据了
             for (i <- 0 until CScratchpadNBanks){
-                io.ToScarchPadIO.ReadRequestToScarchPad.BankAddr(i).bits := Current_Load_Scp_addr + Current_Load_Scp_Tail_subMajor_Iter
+                io.ToScarchPadIO.ReadRequestToScarchPad.BankAddr(i).bits := Mux(Is_Transpose, transpose_scp_addr, Current_Load_Scp_addr)
                 io.ToScarchPadIO.ReadRequestToScarchPad.BankAddr(i).valid := true.B
             }
             when(io.ToScarchPadIO.ReadWriteResponse(ScaratchpadTaskType.ReadFromMemoryLoaderIndex)){
                 TotalStoreRequestSize := TotalStoreRequestSize + 1.U
-                when(TotalStoreRequestSize <= MaxIncStoreRequestSize - 1.U) {
-                    Current_Load_Scp_addr := Current_Load_Scp_addr + 1.U
-                }.otherwise {
-                    when(Current_Load_Scp_Tail_subMajor_Iter < Max_Load_Scp_Tail_SubMajor_Iter - 1.U){
-                        Current_Load_Scp_Tail_subMajor_Iter := Current_Load_Scp_Tail_subMajor_Iter + 1.U
-                    }.otherwise {
-                        Current_Load_Scp_Tail_subMajor_Iter := 0.U
-                        Current_Load_Scp_addr := Current_Load_Scp_addr + Matrix_M.U
-                    }
+                // logic for transpose
+                Current_Load_M_iter := Current_Load_M_iter + 1.U
+                when(Current_Load_M_iter === (M_Get_IteratorMax - 1.U)){
+                    Current_Load_M_iter := 0.U
+                    Current_Load_N_iter := Current_Load_N_iter + 1.U
                 }
+
+                Current_Load_Scp_addr := Current_Load_Scp_addr + 1.U
             }
             if (YJPCMLDebugEnable)
             {
@@ -719,84 +763,107 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         //只要fifo内的数据有效，就可以写入LLC
         val WriteRequest = io.LocalMMUIO.Request
         WriteRequest.valid := false.B
-        when(!FromScratchpadReadFIFOEmpty){
+        when(!FromScratchpadReadFIFOEmpty && Reorder_ToLLC_Reg_Ready_Get){
+            val Read_Data_list = WireInit(VecInit(Seq.fill(Matrix_M)(0.U(Per_GetMatrix_NDim_Width.W))))
+            Read_Data_list := FromScratchpadReadFIFO(FromScratchpadReadFIFOTail).asTypeOf(Read_Data_list)
+            for (i <- 0 until Matrix_M){
+                Reorder_ToLLC_Reg(Reorder_ToLLC_Reg_Get_Index)(i)(Fill_LLC_Iter) := Read_Data_list(i)
+            }
+            //更新相关迭代器
+            Fill_LLC_Iter := WrapInc(Fill_LLC_Iter, Fill_LLC_Max_Iter)
+            FromScratchpadReadFIFOTail := WrapInc(FromScratchpadReadFIFOTail, CMemoryLoaderReadFromScratchpadFIFODepth)
+            when(Fill_LLC_Iter === (Fill_LLC_Max_Iter - 1).U){
+                Fill_LLC_Iter := 0.U
+                Reorder_ToLLC_Reg_Valid(Reorder_ToLLC_Reg_Get_Index) := true.B
+                Reorder_ToLLC_Reg_Get_Index := WrapInc(Reorder_ToLLC_Reg_Get_Index, 2)
 
-            val Request = List.fill(MAX_Fill_Times){Wire(new Bundle{
-                val RequestVirtualAddr = UInt(MMUAddrWidth.W)
-                val RequestConherent = Bool()
-                val RequestData = UInt(MMUDataWidth.W)
-                val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
-                val RequestType_isWrite = UInt(2.W) //0-读，1-写
-            })}
+                //完成一组数据，4*4数据的填充输出这一组数据
+                // if (YJPAfterOpsDebugEnable)
+                // {
+                //     val Groups_Iter = GetCount / (Matrix_M.U)
+                //     printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToVector_Reg, GetCount is %d(Groups %d),Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, GetCount,Groups_Iter,Reorder_ToVector_Reg(Reorder_ToVector_Reg_Get_Index).asUInt)
+                // }
+            }
+        }
+        val Reorder_ToLLC_Reg_Ready_Send= Reorder_ToLLC_Reg_Valid.reduce(_||_)//只要有一个是Valid就是ture，表示可以发往后操作执行
+        when(Reorder_ToLLC_Reg_Ready_Send){
 
-            val Request_Data_list = WireInit(VecInit(Seq.fill(MAX_Fill_Times)(0.U(MMUDataWidth.W))))
-            Request_Data_list := FromScratchpadReadFIFO(FromScratchpadReadFIFOTail).asTypeOf(Request_Data_list)
-            for(i <- 0 until MAX_Fill_Times){
-                Request(i).RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) * ApplicationTensor_D_Stride_M + (CurrentStore_BlockTensor_Reduce_DIM_Iter + CurrentStore_BlockTensor_SubReduce_DIM_Iter) * D_DataType
-                Request(i).RequestConherent := IsConherent
-                Request(i).RequestSourceID := 0.U //后面已经改掉了
-                Request(i).RequestType_isWrite := true.B
-                Request(i).RequestData := Request_Data_list(i)
-                //输出RequestData
-                if (YJPCMLDebugEnable)
-                {
-                    printf("[CMemoryLoader_Store<%d>(Request_check)]RequestData(i): %x\n", io.DebugInfo.DebugTimeStampe, Request_Data_list(i))
+            val Request_Data = WireInit(VecInit(Seq.fill(LLCDataWidthByte / ResultWidthByte)(0.U(ResultWidth.W))))
+
+            Request_Data := Reorder_ToLLC_Reg(Reorder_ToLLC_Reg_Send_Index)(Send_LLC_Iter).asTypeOf(Request_Data)
+
+            val need_fill_zero = CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter > Max_BlockTensor_Reduce_DIM
+
+            when(need_fill_zero) {
+                for (i <- 0 until LLCDataWidthByte / ResultWidthByte) {
+                    when(CurrentStore_BlockTensor_Reduce_DIM_Iter + i.U >= Max_BlockTensor_Reduce_DIM) {
+                        Request_Data(i) := 0.U
+                    }
                 }
             }
             
-            val SelectRequest = UIntToOH(FireTimes,MAX_Fill_Times)
-            WriteRequest.bits.RequestVirtualAddr := PriorityMux(SelectRequest,Request.map(_.RequestVirtualAddr))
-            WriteRequest.bits.RequestConherent := PriorityMux(SelectRequest,Request.map(_.RequestConherent))
+            WriteRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) * ApplicationTensor_D_Stride_M + CurrentStore_BlockTensor_Reduce_DIM_Iter * D_DataType
+            WriteRequest.bits.RequestConherent := IsConherent
             WriteRequest.bits.RequestSourceID := io.LocalMMUIO.ConherentRequsetSourceID.bits
-            WriteRequest.bits.RequestType_isWrite := PriorityMux(SelectRequest,Request.map(_.RequestType_isWrite))
-            WriteRequest.bits.RequestData := PriorityMux(SelectRequest,Request.map(_.RequestData))
+            WriteRequest.bits.RequestType_isWrite := true.B
+            WriteRequest.bits.RequestData := Request_Data.asUInt
             WriteRequest.valid := true.B
             //只有fire了才能继续
             when(WriteRequest.fire && io.LocalMMUIO.ConherentRequsetSourceID.valid){
+                Send_LLC_Iter := WrapInc(Send_LLC_Iter, Send_LLC_Max_Iter)
+                // if (YJPAfterOpsDebugEnable)
+                // {
+                //     printf("[AfterOps<%d>]AfterOps: Send data to Vector, Send_Vector_Iter is %d,Send_Vector_Data is %x\n",io.DebugInfo.DebugTimeStampe, Send_Vector_Iter,io.VectorInterface.VectorDataIn.bits)
+                // }
+                when(Is_Transpose) {
+                    when(Send_LLC_Iter === (Send_LLC_Max_Iter - 1).U) {
+                        Send_LLC_Iter := 0.U
+                        Reorder_ToLLC_Reg_Valid(Reorder_ToLLC_Reg_Send_Index) := false.B
+                        Reorder_ToLLC_Reg_Send_Index := WrapInc(Reorder_ToLLC_Reg_Send_Index, 2)
+                    }
+
+                }.otherwise {
+                    when(Send_LLC_Iter === (Send_LLC_Max_Iter - 1).U || (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) === (ScaratchpadTensor_M - 1.U)){
+                        Send_LLC_Iter := 0.U
+                        Reorder_ToLLC_Reg_Valid(Reorder_ToLLC_Reg_Send_Index) := false.B
+                        Reorder_ToLLC_Reg_Send_Index := WrapInc(Reorder_ToLLC_Reg_Send_Index, 2)
+                        // printf("[AfterOps<%d>]AfterOps: Send Reorder Group finish, Send_Vector_Iter is %d\n",io.DebugInfo.DebugTimeStampe, Send_Vector_Iter)
+                    }
+                }
+
                 if (YJPCMLDebugEnable)
                 {
                     printf("[CMemoryLoader_Store<%d>]WriteRequest: RequestVirtualAddr= %x, RequestConherent= %x,RequestSourceID= %x,RequestType_isWrite= %x,CurrentStore_BlockTensor_Major_DIM_Iter: %x, CurrentStore_BlockTensor_Reduce_DIM_Iter: %x,RequestData:%x\n", io.DebugInfo.DebugTimeStampe, WriteRequest.bits.RequestVirtualAddr, WriteRequest.bits.RequestConherent, WriteRequest.bits.RequestSourceID, WriteRequest.bits.RequestType_isWrite, CurrentStore_BlockTensor_Major_DIM_Iter, CurrentStore_BlockTensor_Reduce_DIM_Iter,WriteRequest.bits.RequestData)
                 }
+                
+
+                CurrentStore_BlockTensor_SubMajor_DIM_Iter := CurrentStore_BlockTensor_SubMajor_DIM_Iter + 1.U
+                // M % Matrix_M的剩余M
+                when(CurrentStore_BlockTensor_SubMajor_DIM_Iter === (Matrix_M-1).U || (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) === (Max_BlockTensor_Major_DIM - 1.U))
+                {
+                    CurrentStore_BlockTensor_SubMajor_DIM_Iter := 0.U
+                    CurrentStore_BlockTensor_Reduce_DIM_Iter := CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter
+                    when(CurrentStore_BlockTensor_Reduce_DIM_Iter === Max_BlockTensor_Request_Reduce_DIM - Per_LLC_Store_ReduceDim_Iter){
+                        CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
+                        CurrentStore_BlockTensor_Major_DIM_Iter := CurrentStore_BlockTensor_Major_DIM_Iter + Matrix_M.U
+                    }
+                }
 
                 Write_Mem_Wait_Table(io.LocalMMUIO.ConherentRequsetSourceID.bits) := true.B
-                FireTimes := FireTimes + 1.U
-                when(FireTimes === (Per_SCP_Load_Write_Memory_Time-1).U){
-                    FireTimes := 0.U
-                    FromScratchpadReadFIFOTail := WrapInc(FromScratchpadReadFIFOTail, CMemoryLoaderReadFromScratchpadFIFODepth)
-                    TotalStoreSize := TotalStoreSize + 1.U
-                    //输出完成的写回次数
+                TotalStoreSize := TotalStoreSize + 1.U
+                //输出完成的写回次数
+                if (YJPCMLDebugEnable)
+                {
+                    printf("[CMemoryLoader_Store<%d>]TotalStoreSize: %x\n", io.DebugInfo.DebugTimeStampe, TotalStoreSize)
+                }
+                when(TotalStoreSize === Max_Store_Memory_Time - 1.U){
+                    memorystore_state := s_store_end
+
                     if (YJPCMLDebugEnable)
                     {
-                        printf("[CMemoryLoader_Store<%d>]TotalStoreSize: %x\n", io.DebugInfo.DebugTimeStampe, TotalStoreSize)
-                    }
-                    when(TotalStoreSize === Max_Load_SCP_Time - 1.U){
-                        memorystore_state := s_store_end
-
-                        if (YJPCMLDebugEnable)
-                        {
-                            printf("[CMemoryLoader_Store<%d>]StoreEnd\n",io.DebugInfo.DebugTimeStampe)
-                        }
+                        printf("[CMemoryLoader_Store<%d>]StoreEnd\n",io.DebugInfo.DebugTimeStampe)
                     }
                 }
-
-                CurrentStore_BlockTensor_SubReduce_DIM_Iter := CurrentStore_BlockTensor_SubReduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter
-                when(CurrentStore_BlockTensor_SubReduce_DIM_Iter === Max_SubReduce_DIM - Per_LLC_Store_ReduceDim_Iter)
-                {
-                    CurrentStore_BlockTensor_SubReduce_DIM_Iter := 0.U
-                    CurrentStore_BlockTensor_SubMajor_DIM_Iter := CurrentStore_BlockTensor_SubMajor_DIM_Iter + 1.U
-                    // M % Matrix_M的剩余M
-                    when(CurrentStore_BlockTensor_SubMajor_DIM_Iter === (Matrix_M-1).U || (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) === (ScaratchpadTensor_M - 1.U))
-                    {
-                        CurrentStore_BlockTensor_SubMajor_DIM_Iter := 0.U
-                        CurrentStore_BlockTensor_Reduce_DIM_Iter := CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_SCP_Load_ReduceDim_Iter
-                        when(CurrentStore_BlockTensor_Reduce_DIM_Iter === Max_BlockTensor_Reduce_DIM - Per_SCP_Load_ReduceDim_Iter){
-                            CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
-                            CurrentStore_BlockTensor_Major_DIM_Iter := CurrentStore_BlockTensor_Major_DIM_Iter + Matrix_M.U
-                        }
-                    }
-                }
-
-                
                 
                 if (YJPCMLDebugEnable)
                 {
