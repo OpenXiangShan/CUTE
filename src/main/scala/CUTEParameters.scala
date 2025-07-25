@@ -43,33 +43,33 @@ trait HWParameters{
     val paddrBits = 39
     val corePAddrBits = 64
 
-    val YJPDebugEnable      = true
-    val YJPADCDebugEnable   = true
-    val YJPBDCDebugEnable   = true
-    val YJPCDCDebugEnable   = true
+    // val YJPDebugEnable      = true
+    // val YJPADCDebugEnable   = true
+    // val YJPBDCDebugEnable   = true
+    // val YJPCDCDebugEnable   = true
     val YJPAMLDebugEnable   = true
-    val YJPBMLDebugEnable   = true
-    val YJPCMLDebugEnable   = true
+    // val YJPBMLDebugEnable   = true
+    // val YJPCMLDebugEnable   = true
 
-    val YJPTASKDebugEnable  = true
-    val YJPVECDebugEnable   = true
-    val YJPMACDebugEnable   = true
-    val YJPPEDebugEnable    = true
-    val YJPAfterOpsDebugEnable    = true
+    // val YJPTASKDebugEnable  = true
+    // val YJPVECDebugEnable   = true
+    // val YJPMACDebugEnable   = true
+    // val YJPPEDebugEnable    = true
+    // val YJPAfterOpsDebugEnable    = true
 
-    // val YJPDebugEnable      = false
-    // val YJPADCDebugEnable   = false
-    // val YJPBDCDebugEnable   = false
-    // val YJPCDCDebugEnable   = false
+    val YJPDebugEnable      = false
+    val YJPADCDebugEnable   = false
+    val YJPBDCDebugEnable   = false
+    val YJPCDCDebugEnable   = false
     // val YJPAMLDebugEnable   = false
-    // val YJPBMLDebugEnable   = false
-    // val YJPCMLDebugEnable   = false
+    val YJPBMLDebugEnable   = false
+    val YJPCMLDebugEnable   = false
 
-    // val YJPTASKDebugEnable        = false
-    // val YJPVECDebugEnable         = false
-    // val YJPMACDebugEnable         = false
-    // val YJPPEDebugEnable          = false
-    // val YJPAfterOpsDebugEnable    = false
+    val YJPTASKDebugEnable        = false
+    val YJPVECDebugEnable         = false
+    val YJPMACDebugEnable         = false
+    val YJPPEDebugEnable          = false
+    val YJPAfterOpsDebugEnable    = false
 
     val ConvolutionApplicationConfigDataWidth = 32 //卷积相关的配置信息的宽度
     val ConvolutionDIM_Max = 65536 //卷积相关的配置信息的宽度
@@ -77,7 +77,7 @@ trait HWParameters{
     val KernelSizeMax = 16 //卷积核的最大尺寸
     val StrideSizeMax = 4  //步长的最大尺寸
 //LLC的数据线宽度
-    val LLCDataWidth = 256      //TODO:这个值需要从chipyard的config中来
+    val LLCDataWidth = 512      //TODO:这个值需要从chipyard的config中来
     val LLCDataWidthByte = LLCDataWidth / 8
 //Memory的数据线宽度
     val MemoryDataWidth = 64    //TODO:这个值需要从chipyard的config中来
@@ -103,10 +103,10 @@ trait HWParameters{
     val MMUDataWidthBitSize = log2Ceil(MMUDataWidth) + 1
 
 //LLC总线上的source最大数量 --> 这个参数和LLC的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必须大于LLC的访存延迟
-    val LLCSourceMaxNum = 64
+    val LLCSourceMaxNum = 256
     val LLCSourceMaxNumBitSize = log2Ceil(LLCSourceMaxNum) + 1
 //Memory总线上的source最大数量 --> 这个参数和Memory的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必顶大于Memory的访存延迟
-    val MemorysourceMaxNum = 64
+    val MemorysourceMaxNum = 256
     val MemorysourceMaxNumBitSize = log2Ceil(MemorysourceMaxNum) + 1
 
     val SoureceMaxNum = math.max(LLCSourceMaxNum, MemorysourceMaxNum)
@@ -114,8 +114,8 @@ trait HWParameters{
 
 
 //Scaratchpad中保存的张量形状
-    val Tensor_M = 64   //这里指要存的张量的M的大小
-    val Tensor_N = 64   //这里指要存的张量的N的大小
+    val Tensor_M = 512   //这里指要存的张量的M的大小
+    val Tensor_N = 512   //这里指要存的张量的N的大小
     val Tensor_K = 2    //这里指要存的张量的K的ReduceVector的数量！不是张量的K的大小
     val Tensor_K_Element_Length = Tensor_K * ReduceWidthByte
     val Tensor_K_PerK_Element_Length = Tensor_K_Element_Length / Tensor_K
@@ -130,9 +130,9 @@ trait HWParameters{
     val BScratchpadSize = Tensor_N * Tensor_K * ReduceWidthByte //reduce
     val CScratchpadSize = Tensor_M * Tensor_N * ResultWidthByte //result
 //Matrix_M，代表TE执行的矩阵乘法的M的大小
-    val Matrix_M = 4
+    val Matrix_M = 8
 //Matrix_N，代表TE执行的矩阵乘法的N的大小
-    val Matrix_N = 4
+    val Matrix_N = 8
 
 //目前的Scratchpad设计，分Tensor_T个bank，每次取Tensor_T个数据，根据取数逻辑，在不同的bank里取不同的数据，然后拼接
 

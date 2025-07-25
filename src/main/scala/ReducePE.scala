@@ -53,7 +53,7 @@ class ReduceMACTree8(id:Int) extends Module with HWParameters{
     }
     if(id == 0){
         when(io.AVector.valid && io.BVector.valid){
-            if (YJPDebugEnable)
+            if (YJPPEDebugEnable)
             {
                 printf("[YJPDebug]PE AVector: %x\n",io.AVector.bits)
                 printf("[YJPDebug]PE BVector: %x\n",io.BVector.bits)
@@ -108,7 +108,7 @@ class ReduceMACTree8(id:Int) extends Module with HWParameters{
                 {
                     DebugReduceTreeData_i(j) := ReduceTreeData(i)(j)
                 }
-                if (YJPDebugEnable)
+                if (YJPPEDebugEnable)
                 {
                     printf("[YJPDebug]PE ReduceTreeData(%d): %x\n",i.U,DebugReduceTreeData_i.asUInt)
                 }
@@ -143,7 +143,7 @@ class ReduceMACTree8(id:Int) extends Module with HWParameters{
             CDelayFIFO(CDelayFIFOHead) := io.CAdd.bits.asSInt
             if(id == 0)
             {
-                if (YJPDebugEnable)
+                if (YJPPEDebugEnable)
                 {
                     printf("[YJPDebug]PE CDelayFIFO: %x\n",io.CAdd.bits)
                 }
@@ -174,7 +174,7 @@ class ReduceMACTree8(id:Int) extends Module with HWParameters{
                 CExternalReduceAddChain(0) := ReduceTreeData(0)(0) + CDelayFIFO(CDelayFIFOTail)
                 CExternalReduceAddChainValid(0) := true.B
                 if(id==0){
-                    if (YJPDebugEnable)
+                    if (YJPPEDebugEnable)
                     {
                         printf("[YJPDebug]PE CExternalReduceAddChain[0]: %x\n",ReduceTreeData(0)(0) + CDelayFIFO(CDelayFIFOTail))
                     }
@@ -200,7 +200,7 @@ class ReduceMACTree8(id:Int) extends Module with HWParameters{
             CExternalReduceAddChain(i) := CExternalReduceAddChain(i-1) + ReduceTreeData(0)(0)
             if(id==0)
             {
-                if (YJPDebugEnable)
+                if (YJPPEDebugEnable)
                 {
                     printf("[YJPDebug]PE CExternalReduceAddChain[%d]: %x\n",i.U,CExternalReduceAddChain(i-1)+ReduceTreeData(0)(0))
                 }
@@ -213,7 +213,7 @@ class ReduceMACTree8(id:Int) extends Module with HWParameters{
         io.DResult.valid := true.B
         if(id==0)
         {
-            if (YJPDebugEnable)
+            if (YJPPEDebugEnable)
             {
                 printf("[YJPDebug]PE DResult: %x\n",io.DResult.bits)
             }
@@ -329,7 +329,7 @@ class ReducePE(id:Int)(implicit p: Parameters) extends Module with HWParameters{
       dataType := ElementDataType.DataTypeSInt8 //默认改成SInt8
       if(id == 0)
       {
-          if (YJPDebugEnable)
+          if (YJPPEDebugEnable)
           {
               printf("[YJPDebug]PE ConfigInfo: %x\n",io.ConfigInfo.dataType)
               printf("[YJPDebug]PE Start\n")
@@ -377,7 +377,7 @@ class ReducePE(id:Int)(implicit p: Parameters) extends Module with HWParameters{
         }
         if(id == 0)
         {
-            if (YJPDebugEnable)
+            if (YJPPEDebugEnable)
             {
                 printf("[YJPDebug]PE ResultFIFO Insert: %x\n",CurrentResultD.bits)
             }
@@ -386,7 +386,7 @@ class ReducePE(id:Int)(implicit p: Parameters) extends Module with HWParameters{
         // printf(p"ResultFIFOFull\n")
         if(id == 0)
         {
-            if (YJPDebugEnable)
+            if (YJPPEDebugEnable)
             {
                 printf("[YJPDebug]PE FIFO ResultFIFOFull\n")
             }
@@ -409,7 +409,7 @@ class ReducePE(id:Int)(implicit p: Parameters) extends Module with HWParameters{
             }
             if(id == 0)
             {
-                if (YJPDebugEnable)
+                if (YJPPEDebugEnable)
                 {
                     printf("[YJPDebug]PE ResultFIFO Pop: %x\n",io.ResultD.bits)
                 }

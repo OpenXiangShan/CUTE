@@ -217,7 +217,7 @@ class LocalMMU() extends Module with HWParameters{
         // printf(p"[localmmu]io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid ${io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid} io.LastLevelCacheTLIO.Request.ready ${io.LastLevelCacheTLIO.Request.ready}\n")
     }
 
-    when(io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid && HasRequest && io.LastLevelCacheTLIO.Request.ready)
+    when(io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid && HasRequest)
     {
         // printf(p"last_sourceid ${last_sourceid} last_sourceid2port ${sourceid2port(last_sourceid)}\n")
         // last_sourceid := io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits

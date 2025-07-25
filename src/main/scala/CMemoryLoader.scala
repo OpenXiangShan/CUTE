@@ -648,7 +648,9 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     }
 
     val M_Get_IteratorMax = Mux(Is_Transpose, (ScaratchpadTensor_M / (Matrix_M.U * 2.U) + (ScaratchpadTensor_M % (Matrix_M.U * 2.U) =/= 0.U)) * 2.U, (ScaratchpadTensor_M / Matrix_M.U) + ((ScaratchpadTensor_M % Matrix_M.U) =/= 0.U))
-    val N_Get_IteratorMax = (ScaratchpadTensor_N / Matrix_N.U)
+    val N_Get_IteratorMax = WireInit(0.U(log2Ceil(CScratchpadBankNEntrys).W))
+    N_Get_IteratorMax := (ScaratchpadTensor_N / Matrix_N.U)
+    val transpose_scp_addr = WireInit(0.U(log2Ceil(CScratchpadBankNEntrys).W))
 
     // val Max_Caculate_Iter = M_Get_IteratorMax * N_Get_IteratorMax
 
@@ -718,7 +720,11 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         //如果ScartchPad的仲裁结果允许我们读取数据
         HasScarhpadRead := !FromScratchpadReadFIFO_ISSUE_Full && !FromScratchpadReadFIFOFull && TotalStoreRequestSize < MaxIncStoreScpRequestSize
         when(HasScarhpadRead){
-            val transpose_scp_addr = Current_Load_N_iter + Current_Load_M_iter * N_Get_IteratorMax
+            transpose_scp_addr := Current_Load_N_iter + Current_Load_M_iter * N_Get_IteratorMax
+            if(YJPCMLDebugEnable)
+            {
+                printf("[CMemoryLoader_Store<%d>]N_Get_IteratorMax: %x, Current_Load_N_iter: %x, Current_Load_M_iter: %x, transpose_scp_addr: %x\n", io.DebugInfo.DebugTimeStampe, N_Get_IteratorMax, Current_Load_N_iter, Current_Load_M_iter, transpose_scp_addr)
+            }
             //根据ScartchPad的仲裁结果，我们可以读取数据了
             for (i <- 0 until CScratchpadNBanks){
                 io.ToScarchPadIO.ReadRequestToScarchPad.BankAddr(i).bits := Mux(Is_Transpose, transpose_scp_addr, Current_Load_Scp_addr)
@@ -732,7 +738,6 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
                     Current_Load_M_iter := 0.U
                     Current_Load_N_iter := Current_Load_N_iter + 1.U
                 }
-                val transpose_scp_addr = Current_Load_N_iter + Current_Load_M_iter * N_Get_IteratorMax
 
                 Current_Load_Scp_addr := Current_Load_Scp_addr + 1.U
             }
