@@ -11,8 +11,6 @@ import freechips.rocketchip.tilelink._
 import org.chipsalliance.cde.config._
 // import boom.exu.ygjk.{YGJKParameters}
 
-case object BuildMMacc extends Field[Parameters => Module]
-
 class WithCUTE(EnableCUTEList: Seq[Int]) extends Config((site, here, up) => {
     case BuildRoCC => up(BuildRoCC, site) ++ EnableCUTEList.collect {
         case tileId if tileId == site(TileKey).tileId =>
@@ -23,15 +21,13 @@ class WithCUTE(EnableCUTEList: Seq[Int]) extends Config((site, here, up) => {
                 cute
             }
     }
-    case MMAccKey => true
-    case BuildDMAygjk => true
 })
 
 class RoCC2CUTE(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) 
   with HWParameters{
   override lazy val module = new CUTETile(this)
  lazy val LLCMemPort = LazyModule(new Cute2TL)
- tlNode := TLWidthWidget(LLCDataWidthByte) := LLCMemPort.node
+ tlNode := TLWidthWidget(outsideDataWidthByte) := LLCMemPort.node
 }
 
 
@@ -135,8 +131,8 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with HWParameters{
 
   tl_out.a.valid := io.mmu.Request.valid && !is_full
   tl_out.a.bits := Mux1H(Seq(
-    (io.mmu.Request.bits.RequestType_isWrite === 0.U) -> edge.Get(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(LLCDataWidthByte).U)._2,
-    (io.mmu.Request.bits.RequestType_isWrite === 1.U) -> edge.Put(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(LLCDataWidthByte).U, data)._2
+    (io.mmu.Request.bits.RequestType_isWrite === 0.U) -> edge.Get(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(outsideDataWidthByte).U)._2,
+    (io.mmu.Request.bits.RequestType_isWrite === 1.U) -> edge.Put(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(outsideDataWidthByte).U, data)._2
   ))
 
   io.mmu.Response.valid := tl_out.d.valid && (tl_out.d.bits.opcode === TLMessages.AccessAckData || tl_out.d.bits.opcode === TLMessages.AccessAck)

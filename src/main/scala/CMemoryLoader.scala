@@ -169,9 +169,9 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     //1.查看每一个bank是否有数据需要回填
     //2.给每个准备回填数据的bank，找到其对应的Fill_FIFO的index，在这个fill_fifo[index]的filltime+1，如果filltime==MAX_Fill_Times，那么这个数据就用完了
     //3.更新FIFO，更新Tail，更新Table
-    val SCP_Fill_Table = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(LLCDataWidth.W)))))
+    val SCP_Fill_Table = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
     val SCP_Fill_Table_SCP_Addr = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(CScratchpadBankNEntrys).W)))))//记录这个LLC回的数是在scp的哪个地址
-    val SCP_Fill_Table_Time = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(LLCDataWidthByte/CScratchpadEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
+    val SCP_Fill_Table_Time = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/CScratchpadEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
     val SCP_Fill_Table_Free = SCP_Fill_Table_Time.map(_ === 0.U)//记录这个FIFO能否能填数据
     val SCP_Fill_Table_Valid = SCP_Fill_Table_Time.map(_ =/= 0.U)//记录这个FIFO里的数据是否有效
     val SCP_Fill_Table_Insert_Index = PriorityEncoder(SCP_Fill_Table_Free)//返回第一个空位的index
@@ -180,11 +180,11 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     val SCP_Fill_Table_Not_Empty = SCP_Fill_Table_Valid.reduce(_ || _)//这个FIFO是否还有数据,用于RepeatRowLoad
     val SCP_Fill_Table_Head = RegInit(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W))//记录这个FIFO里的数据的头指针,用于RepeatRowLoad
     val SCP_Fill_Table_Tail = RegInit(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W))//记录这个FIFO里的数据的尾指针,用于RepeatRowLoad
-    val MAX_Fill_Times = LLCDataWidthByte/CScratchpadEntryByteSize
+    val MAX_Fill_Times = outsideDataWidthByte/CScratchpadEntryByteSize
 
     val Repeat_Fill_Is_Working = RegInit(false.B)//是否在回填数据
     val Repeat_Fill_Times = RegInit(0.U(log2Ceil(Tensor_M).W))//记录这个数据需要回填的次数
-    val Repeat_Fill_Group_Times = RegInit(0.U(log2Ceil(LLCDataWidthByte/CScratchpadEntryByteSize).W))//记录这个数据需要回填的次数
+    val Repeat_Fill_Group_Times = RegInit(0.U(log2Ceil(outsideDataWidthByte/CScratchpadEntryByteSize).W))//记录这个数据需要回填的次数
     val Repeat_Fill_Table_Index = RegInit(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W))//记录这个数据在FIFO里的index
     val Repeat_Fill_Request_Infight = RegInit(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W))//记录这个有多少请求已经发出，由于我们一个发出的请求需要回填16拍，所以必须记录一下infight的数量，不能多发请求
 
@@ -212,7 +212,7 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         TotalRequestSize := 0.U
         CurrentLoaded_BlockTensor_M_Iter := 0.U
         CurrentLoaded_BlockTensor_N_Iter := 0.U
-        MaxRequestIter := ScaratchpadTensor_M * ScaratchpadTensor_N * ResultWidthByte.U / (LLCDataWidthByte.U) //总共要发出的访存请求的次数
+        MaxRequestIter := ScaratchpadTensor_M * ScaratchpadTensor_N * ResultWidthByte.U / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
         Bank_Fill_Search_FIFO := 0.U.asTypeOf(Bank_Fill_Search_FIFO)
         Bank_Fill_Search_FIFO_Head := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Head)
         Bank_Fill_Search_FIFO_Tail := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Tail)
@@ -290,8 +290,8 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
                 Request_M_Iter_Time := Request_M_Iter_Time + 1.U//连续的跨bank去访存
                 when(Request_M_Iter_Time === (Matrix_M - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === ScaratchpadTensor_M - 1.U){
                     Request_M_Iter_Time := 0.U
-                    CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + LLCDataWidthByte.U / C_DataType
-                    when(CurrentLoaded_BlockTensor_N_Iter + LLCDataWidthByte.U / C_DataType === ScaratchpadTensor_N){
+                    CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType
+                    when(CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType === ScaratchpadTensor_N){
                         CurrentLoaded_BlockTensor_N_Iter := 0.U
                         CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_M.U
                     }
@@ -445,7 +445,7 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
             //故，我们针对这样的情况，我们需要为每一个发出的访存请求预留一个FIFO的空位，这样就可以保证TL握手成功，从而不浪费访存带宽，这样可能会导致整体延迟增加(但不会低到阻碍吞吐)，但我们的访存带宽利用率一定不会低
             //获取整个Row的数据，然后重复填充，Row的总数据量为Tensor_N*C_DataType
             val sourceId = Mux(IsConherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
-            val Max_RepeatRowLoad_Memory_Load_Times = Tensor_N.U * C_DataType / LLCDataWidthByte.U //总共要发出的访存请求的次数
+            val Max_RepeatRowLoad_Memory_Load_Times = Tensor_N.U * C_DataType / outsideDataWidthByte.U //总共要发出的访存请求的次数
             val Max_SCP_Write_Times = Tensor_M*Tensor_N*ResultWidthByte/CScratchpad_Total_Bandwidth //总共要写入SCP的次数
             ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr +  CurrentLoaded_BlockTensor_N_Iter * C_DataType
             ReadRequest.bits.RequestConherent := IsConherent
@@ -454,12 +454,12 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
             ReadRequest.valid := (TotalRequestSize < Max_RepeatRowLoad_Memory_Load_Times) && (Repeat_Fill_Request_Infight < (CMemoryLoaderReadFromMemoryFIFODepth-1).U)
 
 
-            val Per_Load_Fill_SCP_Times = (Tensor_M/Matrix_M) * (LLCDataWidthByte/CScratchpadEntryByteSize)
+            val Per_Load_Fill_SCP_Times = (Tensor_M/Matrix_M) * (outsideDataWidthByte/CScratchpadEntryByteSize)
             val Per_Data_Repeat_Times = (Tensor_M/Matrix_M) //每组数据要重复写SCP这么多次
-            val Per_Memory_Load_Have_Data_Write_Group = (LLCDataWidthByte/CScratchpadEntryByteSize)//每次Memory的load，有几组数据要写回
+            val Per_Memory_Load_Have_Data_Write_Group = (outsideDataWidthByte/CScratchpadEntryByteSize)//每次Memory的load，有几组数据要写回
             val Per_Write_SCP_Addr_Add = (Tensor_N / Matrix_N).U //一组数据Per_Data_Repeat_Times迭代中，下一次写入的scp地址的增量
 
-            // val Load_Time = CurrentLoaded_BlockTensor_N_Iter / (LLCDataWidthByte.U/C_DataType)
+            // val Load_Time = CurrentLoaded_BlockTensor_N_Iter / (outsideDataWidthByte.U/C_DataType)
 
             //向量的访存顺序
             //01,23,45,67.....
@@ -488,7 +488,7 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
                 TableItem.ScratchpadAddr := TotalRequestSize * Per_Memory_Load_Have_Data_Write_Group.U//这个数据的第一个数据，落在哪个ScratchpadBank的哪个地址上
                 SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
 
-                CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + LLCDataWidthByte.U / C_DataType
+                CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType
                 Repeat_Fill_Request_Infight := Repeat_Fill_Request_Infight + 1.U
                 if (YJPCMLDebugEnable)
                 {
@@ -632,7 +632,7 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     val FromScratchpadReadFIFO_ISSUE_Full = FromScratchpadReadFIFOTail === WrapInc(WrapInc(FromScratchpadReadFIFOHead, CMemoryLoaderReadFromScratchpadFIFODepth),CMemoryLoaderReadFromScratchpadFIFODepth)
     val FromScratchpadReadFIFOEmpty = FromScratchpadReadFIFOHead === FromScratchpadReadFIFOTail
 
-    val Per_SCP_Load_Write_Memory_Time = CScratchpad_Total_Bandwidth_Bit/LLCDataWidth
+    val Per_SCP_Load_Write_Memory_Time = CScratchpad_Total_Bandwidth_Bit/outsideDataWidth
     val FireTimes = RegInit(0.U(log2Ceil(CScratchpadNBanks).W))
 
     when(Write_Mem_Wait_Table.reduce(_||_)){
@@ -653,14 +653,14 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         FromScratchpadReadFIFOHead := 0.U
         FromScratchpadReadFIFOTail := 0.U
         Max_Load_SCP_Time := ScaratchpadTensor_M * ScaratchpadTensor_N * D_DataType / CScratchpad_Total_Bandwidth.U//总共要发对SCAP的访存次数
-        // Max_Stroe_Memory_Time := ScaratchpadTensor_M * ScaratchpadTensor_N * D_DataType / LLCDataWidthByte.U//总共要发对LLC的访存次数
+        // Max_Stroe_Memory_Time := ScaratchpadTensor_M * ScaratchpadTensor_N * D_DataType / outsideDataWidthByte.U//总共要发对LLC的访存次数
         MaxIncStoreRequestSize := (Mux(Is_Transpose, ScaratchpadTensor_N, ScaratchpadTensor_M) / Matrix_M.U * Matrix_M.U) * Mux(Is_Transpose, ScaratchpadTensor_M, ScaratchpadTensor_N) * D_DataType / CScratchpad_Total_Bandwidth.U
         Max_Load_Scp_Tail_SubMajor_Iter := Mux(Is_Transpose, ScaratchpadTensor_N, ScaratchpadTensor_M) % Matrix_M.U
         Current_Load_Scp_Tail_subMajor_Iter := 0.U
         Current_Load_Scp_addr := 0.U
-        Per_LLC_Store_ReduceDim_Iter := Mux(D_DataType === 1.U, LLCDataWidthByte.U,
-                                    Mux(D_DataType === 2.U, LLCDataWidthByte.U/2.U,
-                                    Mux(D_DataType === 4.U, LLCDataWidthByte.U/4.U, LLCDataWidthByte.U)))
+        Per_LLC_Store_ReduceDim_Iter := Mux(D_DataType === 1.U, outsideDataWidthByte.U,
+                                    Mux(D_DataType === 2.U, outsideDataWidthByte.U/2.U,
+                                    Mux(D_DataType === 4.U, outsideDataWidthByte.U/4.U, outsideDataWidthByte.U)))
         Per_SCP_Load_ReduceDim_Iter := Mux(D_DataType === 1.U, CScratchpad_Total_Bandwidth.U,
                                         Mux(D_DataType === 2.U, CScratchpad_Total_Bandwidth.U/2.U,
                                         Mux(D_DataType === 4.U, CScratchpad_Total_Bandwidth.U/4.U, CScratchpad_Total_Bandwidth.U)))

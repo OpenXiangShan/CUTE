@@ -28,7 +28,7 @@ class ASourceIdSearch extends Bundle with HWParameters{
 //本模块的核心任务是从外部接口加载数据到Scarchpad中
 //所有的访存任务会通过TL-Link接口发出，每次的读请求的宽度是ReduceWidthByte
 
-//总写回SCP的次数 = Tensor_M * Tensor_K
+//总写回SCP的次数 = Tensor_M * ReduceGroupSize
 //需要解决的核心问题为，计算出每次访存的地址，然后发出访存请求，然后接受访存的返回值，然后将返回值写入到Scarchpad中
 //1.计算访存地址，需要考虑当前的IH、IW、KH、KW、stride_H、stride_W，来计算出当前要load的地址
 ////a.每次Load的微任务，KH_Index、KW_Index不变，根据OH、OW、stride_H、stride_W即可得到当前Load任务的起始地址。
@@ -154,7 +154,7 @@ class AMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
 
             IH_Stride :=  ConfigInfo.ApplicationTensor_A.Convolution_Stride_W * ConfigInfo.ApplicationTensor_A.Convolution_OW_DIM_Length * ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M //每移动一次IH，需要增加的地址偏移量
             IW_Stride :=  ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M //每移动一次IW，需要增加的地址偏移量
-            assert(ConfigInfo.ScaratchpadTensor_K === Tensor_K.U)
+            assert(ConfigInfo.ScaratchpadTensor_K === ReduceGroupSize.U)
             //
             if(YJPAMLDebugEnable)
             {
@@ -168,7 +168,7 @@ class AMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     //如果是memoryload_state === s_load_init，那么我们就要初始化各个寄存器
     //如果是memoryload_state === s_load_working，那么我们就要开始取数
     //如果是memoryload_state === s_load_end，那么我们就要结束取数
-    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_K)+1).W)) //总共要加载的张量大小，总加载的数据量不会超过Tensor_M*Tensor_K*ruduceWidthByte，这个是不会变的
+    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_M*ReduceGroupSize)+1).W)) //总共要加载的张量大小，总加载的数据量不会超过Tensor_M*ReduceGroupSize*ruduceWidthByte，这个是不会变的
     val CurrentLoaded_BlockTensor_M = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val CurrentLoaded_BlockTensor_K = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     
@@ -176,15 +176,15 @@ class AMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     //用sourceid做索引，存储Scarchpad的地址和bank号，是一组寄存器
     
     val SoureceIdSearchTable = RegInit(VecInit(Seq.fill(SoureceMaxNum)(0.U((new ASourceIdSearch).getWidth.W))))
-    val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_M*Tensor_K*ReduceWidthByte)).W))
+    val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_M*ReduceGroupSize*ReduceWidthByte)).W))
 
-    val SCP_Fill_Table = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(LLCDataWidth.W)))))
+    val SCP_Fill_Table = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
     val SCP_Fill_Table_SCP_Addr = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(AScratchpadBankNEntrys).W)))))//记录这个LLC回的数是在scp的哪个地址
-    val SCP_Fill_Table_Time = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(LLCDataWidthByte/AScratchpadEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
+    val SCP_Fill_Table_Time = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/AScratchpadEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
     val SCP_Fill_Table_Free = SCP_Fill_Table_Time.map(_ === 0.U)//记录这个FIFO能否能填数据
     val SCP_Fill_Table_Insert_Index = PriorityEncoder(SCP_Fill_Table_Free)//返回第一个空位的index
     val SCP_Fill_Table_Not_Full = SCP_Fill_Table_Free.reduce(_ || _)//这个FIFO是否还有空位
-    val MAX_Fill_Times = LLCDataWidthByte/AScratchpadEntryByteSize
+    val MAX_Fill_Times = outsideDataWidthByte/AScratchpadEntryByteSize
     val zero_fill_k = RegInit(0.U((log2Ceil(MAX_Fill_Times)+1).W))
 
     val Bank_Fill_Search_FIFO = RegInit((VecInit(Seq.fill(AScratchpadNBanks)(VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(AMemoryLoaderReadFromMemoryFIFODepth).W)))))))//记录fifo里的数据是哪个bank的
@@ -244,7 +244,7 @@ class AMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         TotalLoadSize := 0.U
         CurrentLoaded_BlockTensor_M := 0.U
         CurrentLoaded_BlockTensor_K := 0.U
-        MaxRequestIter := MaxBlockTensor_M_Index * MaxBlockTensor_K_Index * ReduceWidthByte.U / (LLCDataWidthByte.U) //总共要发出的访存请求的次数
+        MaxRequestIter := MaxBlockTensor_M_Index * MaxBlockTensor_K_Index * ReduceWidthByte.U / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
         Current_M_BaseAddr := IH_Stride * Current_IH_Index_U + IW_Stride * Current_IW_Index_U + Tensor_A_BaseVaddr
         Init_Current_M_BaseAddr := IH_Stride * Current_IH_Index_U + IW_Stride * Current_IW_Index_U + Tensor_A_BaseVaddr
         Infight_Load_Request_Num := 0.U
@@ -295,7 +295,7 @@ class AMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         when(Request.fire && sourceId.valid && !Is_invalid_IH_IW && !Finish_Decode_Load_Request){
             val TableItem = Wire(new ASourceIdSearch)
             TableItem.ScratchpadBankId := CurrentLoaded_BlockTensor_M % AScratchpadNBanks.U
-            TableItem.ScratchpadAddr := ((CurrentLoaded_BlockTensor_M / AScratchpadNBanks.U) * Tensor_K.U) + CurrentLoaded_BlockTensor_K
+            TableItem.ScratchpadAddr := ((CurrentLoaded_BlockTensor_M / AScratchpadNBanks.U) * ReduceGroupSize.U) + CurrentLoaded_BlockTensor_K
             SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
 
             if(YJPAMLDebugEnable)
@@ -344,7 +344,7 @@ class AMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         {
             val TableItem = Wire(new ASourceIdSearch)
             TableItem.ScratchpadBankId := CurrentLoaded_BlockTensor_M % AScratchpadNBanks.U
-            TableItem.ScratchpadAddr := ((CurrentLoaded_BlockTensor_M / AScratchpadNBanks.U) * Tensor_K.U) + CurrentLoaded_BlockTensor_K + zero_fill_k
+            TableItem.ScratchpadAddr := ((CurrentLoaded_BlockTensor_M / AScratchpadNBanks.U) * ReduceGroupSize.U) + CurrentLoaded_BlockTensor_K + zero_fill_k
             TableItem.asUInt
 
             val Response_sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID

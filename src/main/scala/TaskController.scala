@@ -476,7 +476,7 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
             Current_Tile_OW_Index := Decoding_MacroInst.conv_ow_index
             Current_Tile_KH_Index := 0.U
             Current_Tile_KW_Index := 0.U
-            Decode_Tensor_K_iter_Add := (Tensor_K_Element_Length.U / Decoding_MacroInst.element_type)
+            Decode_Tensor_K_iter_Add := (Tensor_K.U / Decoding_MacroInst.element_type)
             Current_Tile_Tensor_K_Iter := 0.U
             Decoding_MarcoInst_Going := true.B
 
@@ -491,7 +491,7 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
             val Have_Store_Micro_Inst   = WireInit(false.B)//由宏指令拆解出来的微指令，只在暂存器切换时才发射Store指令
             val Current_ScaratchpadTensor_M = WireInit(Tensor_M.U)
             val Current_ScaratchpadTensor_N = WireInit(Tensor_N.U)
-            val Current_ScaratchpadTensor_K = WireInit(Tensor_K.U)
+            val Current_ScaratchpadTensor_K = WireInit(ReduceGroupSize.U)
 
             val Can_Issue_Load_Micro_Inst = !Load_MicroInst_FIFO_Full
             val Can_Issue_Compute_Micro_Inst = !Compute_MicroInst_FIFO_Full
@@ -537,7 +537,7 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
                 //Current_ScaratchpadTensor_M必须4的倍数
                 Current_ScaratchpadTensor_M := Mux(Current_Tile_M_Iter + Tensor_M.U >= Decoding_MacroInst.Application_M, (Decoding_MacroInst.Application_M - Current_Tile_M_Iter), Tensor_M.U)
                 Current_ScaratchpadTensor_N := Mux(Current_Tile_N_Iter + Tensor_N.U >= Decoding_MacroInst.Application_N, Decoding_MacroInst.Application_N - Current_Tile_N_Iter, Tensor_N.U)
-                Current_ScaratchpadTensor_K := Tensor_K.U
+                Current_ScaratchpadTensor_K := ReduceGroupSize.U
                 assert(Current_ScaratchpadTensor_N === Tensor_N.U, "Current_ScaratchpadTensor_N is not equal to Tensor_N")
                 assert(Decoding_MacroInst.Application_K % 64.U === 0.U, "Decoding_MacroInst.Application_K is not 64 align")
 
@@ -555,7 +555,7 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
                     //                                            [ M ] [N] [K]
                     //                                                      ^^
                     
-                    // Current_ScaratchpadTensor_K := Mux(Current_Tile_K_Iter + Tensor_K_Element_Length.U>= Decoding_MacroInst.Application_K, Decoding_MacroInst.Application_K - Current_Tile_K_Iter, Tensor_K_Element_Length.U)
+                    // Current_ScaratchpadTensor_K := Mux(Current_Tile_K_Iter + Tensor_K.U>= Decoding_MacroInst.Application_K, Decoding_MacroInst.Application_K - Current_Tile_K_Iter, Tensor_K.U)
                     //K要求默认是满的,不够需要程序补零
                     Current_Tile_K_Iter := 0.U
                     Current_Tile_Tensor_K_Iter := 0.U
@@ -644,7 +644,7 @@ class TaskController(implicit p: Parameters) extends Module with HWParameters{
 
             Load_MicroInst.IsTranspose := Decoding_MacroInst.transpose_result
 
-            Load_MicroInst.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := Decoding_MacroInst.ApplicationTensor_A_BaseVaddr + Current_Tile_Tensor_K_Iter*(ReduceWidthByte*Tensor_K).U  //TODO:初始地址需要改！因为当前的K移动了！
+            Load_MicroInst.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := Decoding_MacroInst.ApplicationTensor_A_BaseVaddr + Current_Tile_Tensor_K_Iter*(ReduceWidthByte*ReduceGroupSize).U  //TODO:初始地址需要改！因为当前的K移动了！
             Load_MicroInst.ApplicationTensor_A.ApplicationTensor_A_Stride_M := Decoding_MacroInst.ApplicationTensor_A_Stride
             Load_MicroInst.ApplicationTensor_A.Convolution_OH_DIM_Length := Decoding_MacroInst.conv_oh_max
             Load_MicroInst.ApplicationTensor_A.Convolution_OW_DIM_Length := Decoding_MacroInst.conv_ow_max

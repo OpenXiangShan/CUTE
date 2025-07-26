@@ -4,34 +4,163 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
-// import boom.exu.ygjk._
 import freechips.rocketchip.subsystem._
 import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.prci._
 import freechips.rocketchip.tile._
-// import boom.common.BoomBundle
-// import freechips.rocketchip.regmapper.RRTest0Map
 
-case class MMAccConfig()
-case object MMAccKey extends Field[Option[MMAccConfig]](None)
-case object BuildDMAygjk extends Field[Seq[Parameters => LazyRoCC]](Nil)
-// class Withacc_MMacc extends Config((site,here,up) => {  
-//     case BuildYGAC =>
-//         (p:Parameters) => {          
-//             val myAccel = Module(new MMacc)
-//             myAccel
-//         }
-//     case MMAccKey => true
-//     case BuildDMAygjk => true
-//     }
-// )
-
-// class CUTECrossingParams(
-//   override val MemDirectMaster: TilePortParamsLike = TileMasterPortParams(where = MBUS)
-// ) extends RocketCrossingParams
 
 class DebugInfoIO() extends Bundle with HWParameters{
     val DebugTimeStampe = UInt(64.W)
+}
+
+case object CuteParamsKey extends Field[CuteParams]
+
+trait CuteParamsKey{
+  implicit val p: Parameters
+  def CuteParams: CuteParams = p(CuteParamsKey)
+
+}
+
+
+object CuteParams {
+
+  // baseParams:
+  def baseParams = CuteParams()
+
+  // 256 bit outside memory bus,128 memory bus
+  def TL256Params = baseParams.copy(
+    outsideDataWidth = 256,
+    MemoryDataWidth = 128
+  )
+
+}
+
+case class CuteParams(
+    val outsideDataWidth :Int = 512, //cute对外访存的带宽
+    val MemoryDataWidth :Int = 64,   //TODO:DRAM的访存通道的数据位宽
+
+    val VectorWidth :Int = 256,      //向量流水线的宽度
+
+    val ConvolutionApplicationConfigDataWidth :Int = 32, //卷积相关的配置信息的宽度
+    val ConvolutionDIM_Max :Int = 65536, //卷积相关的配置信息的宽度
+    val Convolution_Input_Height_Weight_Dim_Max :Int = 16384,
+    val KernelSizeMax :Int = 16, //卷积核的最大尺寸
+    val StrideSizeMax :Int = 4,  //步长的最大尺寸
+
+    val ApplicationMaxTensorSize :Int = 65536, //最大可处理的程序的张量形状，
+
+    val MMUAddrWidth :Int = 64 , //CUTE MMU的地址宽度
+
+    val LLCSourceMaxNum :Int = 64, //LLC总线上的source最大数量 --> 这个参数和LLC的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必须大于LLC的访存延迟
+    val MemorysourceMaxNum :Int = 64, //Memory总线上的source最大数量 --> 这个参数和Memory的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必顶大于Memory的访存延迟
+
+
+    //Scaratchpad中保存的张量形状
+    val Tensor_M :Int = 128,   //这里指要存的张量的M的大小
+    val Tensor_N :Int = 128,   //这里指要存的张量的N的大小
+    val Tensor_K :Int = 64,    //这里指要存的张量的K(8bit/elment)的大小
+
+    //矩阵乘计算单元MTE的形状
+    val Matrix_M :Int = 4,     //Matrix_M，代表TE执行的矩阵乘法的M的大小
+    val Matrix_N :Int = 4,     //Matrix_N，代表TE执行的矩阵乘法的N的大小
+    val ReduceWidthByte :Int = 32,   //ReduceWidthByte 代表ReducePE进行内积时的数据宽度，单位是字节
+    val ResultWidthByte :Int = 4,    //ResultWidthByte 代表ReducePE的结果宽度，单位是字节
+
+    val ResultFIFODepth :Int = 8,    //乘累加FIFO的深度
+
+    val AMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //用于暂存AML的数据到CCSP的FIFO
+    val BMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //用于暂存BML的数据到CCSP的FIFO
+    val CMemoryLoaderReadFromScratchpadFIFODepth :Int = 4, //用于暂存CCSP的数据到CML的FIFO
+    val CMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //用于暂存CML的数据到CSCP的FIFO
+
+    val VecTaskInstBufferDepth :Int = 32, //VecTask的指令缓冲深度
+    val VecTaskInstBufferSize :Int = 8, //VecTask的指令缓冲的数量
+    val VecTaskDataBufferDepth :Int = 4, //VecTask的指令缓冲深度掩盖从VecInterface到VPU的数据传输延迟即可
+
+) {
+
+    //所有参数都必须是2的n次方
+    require((outsideDataWidth & (outsideDataWidth - 1)) == 0, "outsideDataWidth must be power of 2")
+    require((MemoryDataWidth & (MemoryDataWidth - 1)) == 0, "MemoryDataWidth must be power of 2")
+    require((VectorWidth & (VectorWidth - 1)) == 0, "VectorWidth must be power of 2")
+    require((ConvolutionApplicationConfigDataWidth & (ConvolutionApplicationConfigDataWidth - 1)) == 0, "ConvolutionApplicationConfigDataWidth must be power of 2")
+    require((ConvolutionDIM_Max & (ConvolutionDIM_Max - 1)) == 0, "ConvolutionDIM_Max must be power of 2")
+    require((Convolution_Input_Height_Weight_Dim_Max & (Convolution_Input_Height_Weight_Dim_Max - 1)) == 0, "Convolution_Input_Height_Weight_Dim_Max must be power of 2")
+    require((KernelSizeMax & (KernelSizeMax - 1)) == 0, "KernelSizeMax must be power of 2")
+    require((StrideSizeMax & (StrideSizeMax - 1)) == 0, "StrideSizeMax must be power of 2")
+    require((ApplicationMaxTensorSize & (ApplicationMaxTensorSize - 1)) == 0, "ApplicationMaxTensorSize must be power of 2")
+    require((MMUAddrWidth & (MMUAddrWidth - 1)) == 0, "MMUAddrWidth must be power of 2" )
+    require((LLCSourceMaxNum & (LLCSourceMaxNum - 1)) == 0, "LLCSourceMaxNum must be power of 2")
+    require((MemorysourceMaxNum & (MemorysourceMaxNum - 1)) == 0, "MemorysourceMaxNum must be power of 2")
+    require((Tensor_M & (Tensor_M - 1)) == 0, "Tensor_M must be power of 2")
+    require((Tensor_N & (Tensor_N - 1)) == 0, "Tensor_N must be power of 2")
+    require((Tensor_K & (Tensor_K - 1)) == 0, "Tensor_K must be power of 2")
+    require((Matrix_M & (Matrix_M - 1)) == 0, "Matrix_M must be power of 2")
+    require((Matrix_N & (Matrix_N - 1)) == 0, "Matrix_N must be power of 2")
+    require((ReduceWidthByte & (ReduceWidthByte - 1)) == 0, "ReduceWidthByte must be power of 2")
+    require((ResultWidthByte & (ResultWidthByte - 1)) == 0, "ResultWidthByte must be power of 2")
+    require((ResultFIFODepth & (ResultFIFODepth - 1)) == 0, "ResultFIFODepth must be power of 2")
+    require((AMemoryLoaderReadFromMemoryFIFODepth & (AMemoryLoaderReadFromMemoryFIFODepth - 1)) == 0, "AMemoryLoaderReadFromMemoryFIFODepth must be power of 2")
+    require((BMemoryLoaderReadFromMemoryFIFODepth & (BMemoryLoaderReadFromMemoryFIFODepth - 1)) == 0, "BMemoryLoaderReadFromMemoryFIFODepth must be power of 2")
+    require((CMemoryLoaderReadFromScratchpadFIFODepth & (CMemoryLoaderReadFromScratchpadFIFODepth - 1)) == 0, "CMemoryLoaderReadFromScratchpadFIFODepth must be power of 2")
+    require((CMemoryLoaderReadFromMemoryFIFODepth & (CMemoryLoaderReadFromMemoryFIFODepth - 1)) == 0, "CMemoryLoaderReadFromMemoryFIFODepth must be power of 2")
+    require((VecTaskInstBufferDepth & (VecTaskInstBufferDepth - 1)) == 0, "VecTaskInstBufferDepth must be power of 2")
+    require((VecTaskInstBufferSize & (VecTaskInstBufferSize - 1)) == 0, "VecTaskInstBufferSize must be power of 2")
+    require((VecTaskDataBufferDepth & (VecTaskDataBufferDepth - 1)) == 0, "VecTaskDataBufferDepth must be power of 2")
+
+    def outsideDataWidthByte = outsideDataWidth / 8
+    def ReduceWidth = ReduceWidthByte * 8
+    def ABMLNeedSCPFillTable = ReduceWidthByte < outsideDataWidthByte //内存返回的数据一周期写不完时ABML需要写回缓冲
+    def ResultWidth = ResultWidthByte * 8
+    def ApplicationMaxTensorSizeBitSize = log2Ceil(ApplicationMaxTensorSize) + 1
+    def MMUDataWidth = outsideDataWidth //MMU的数据线宽度
+    def MMUDataWidthBitSize = log2Ceil(MMUDataWidth) + 1 //MMU的数据线有效数据位数
+    def LLCSourceMaxNumBitSize = log2Ceil(LLCSourceMaxNum) + 1
+    def MemorysourceMaxNumBitSize = log2Ceil(MemorysourceMaxNum) + 1
+    def SoureceMaxNum = math.max(LLCSourceMaxNum, MemorysourceMaxNum)
+    def SoureceMaxNumBitSize = log2Ceil(SoureceMaxNum) + 1
+
+    def ReduceGroupSize  = Tensor_K/ReduceWidthByte    //这里指要存的张量的K的ReduceVector的数量！不是张量的K的大小
+    def ScaratchpadMaxTensorDim = Math.max(Tensor_M, Math.max(Tensor_N, ReduceGroupSize))
+    def ScaratchpadMaxTensorDimBitSize = log2Ceil(ScaratchpadMaxTensorDim) + 1
+    //AScaratchpad中保存的张量形状为M*K
+    //AScaratchpad的大小为Tenser_M * ReduceGroupSize * ReduceWidthByte
+    //128*(4*256/8)，单次读的张量为128*128的张量
+    //单次计算需要的时间为(128/4)*(128/4)*4 = 4096拍，单次读需要128×4=512拍。
+    //需要考虑Scaratchpad的顺序读，需要考虑为Scaratchpad分bank
+    def AScratchpadSize = Tensor_M * ReduceGroupSize * ReduceWidthByte //reduce
+    def BScratchpadSize = Tensor_N * ReduceGroupSize * ReduceWidthByte //reduce
+    def CScratchpadSize = Tensor_M * Tensor_N * ResultWidthByte //result
+
+    //目前的Scratchpad设计，分Tensor_T个bank，每次取Tensor_T个数据，根据取数逻辑，在不同的bank里取不同的数据，然后拼接
+    def AScratchpadEntryByteSize = ReduceWidthByte //适合向TE供数的带宽
+    def BScratchpadEntryByteSize = ReduceWidthByte 
+    def CScratchpadEntryByteSize = Matrix_M*ResultWidthByte //这个取数和存数的带宽
+    def AScratchpadEntryBitSize = ReduceWidthByte * 8 //适合向TE供数的带宽
+    def BScratchpadEntryBitSize = ReduceWidthByte * 8
+    def CScratchpadEntryBitSize = Matrix_M*ResultWidthByte * 8//这个取数和存数的带宽
+    def AScratchpadNBanks = Matrix_M //注意这里与Matrix_M有强相关性，一般是Matrix_M的整数倍
+    def BScratchpadNBanks = Matrix_N //这里与Matrix_N强相关
+    def CScratchpadNBanks = Matrix_N //方便进行reorder
+    def AScratchpad_Total_Bandwidth = AScratchpadNBanks * AScratchpadEntryByteSize  //ACSP的总带宽
+    def BScratchpad_Total_Bandwidth = BScratchpadNBanks * BScratchpadEntryByteSize  //BCSP的总带宽
+    def CScratchpad_Total_Bandwidth = CScratchpadNBanks * CScratchpadEntryByteSize  //CCSP的总带宽
+    def AScratchpad_Total_Bandwidth_Bit = AScratchpadNBanks * AScratchpadEntryByteSize * 8  //ACSP的总带宽
+    def BScratchpad_Total_Bandwidth_Bit = BScratchpadNBanks * BScratchpadEntryByteSize * 8  //BCSP的总带宽
+    def CScratchpad_Total_Bandwidth_Bit = CScratchpadNBanks * CScratchpadEntryByteSize * 8  //CCSP的总带宽
+    def AScratchpadBankSize = AScratchpadSize / AScratchpadNBanks
+    def BScratchpadBankSize = BScratchpadSize / BScratchpadNBanks
+    def CScratchpadBankSize = CScratchpadSize / CScratchpadNBanks
+    def AScratchpadBankNEntrys = AScratchpadBankSize / AScratchpadEntryByteSize
+    def BScratchpadBankNEntrys = BScratchpadBankSize / BScratchpadEntryByteSize
+    def CScratchpadBankNEntrys = CScratchpadBankSize / CScratchpadEntryByteSize
+
+
+    require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
+
+
+
 }
 
 trait HWParameters{
@@ -77,15 +206,15 @@ trait HWParameters{
     val KernelSizeMax = 16 //卷积核的最大尺寸
     val StrideSizeMax = 4  //步长的最大尺寸
 //LLC的数据线宽度
-    val LLCDataWidth = 256      //TODO:这个值需要从chipyard的config中来
-    val LLCDataWidthByte = LLCDataWidth / 8
+    val outsideDataWidth = 256      //TODO:这个值需要从chipyard的config中来
+    val outsideDataWidthByte = outsideDataWidth / 8
 //Memory的数据线宽度
     val MemoryDataWidth = 64    //TODO:这个值需要从chipyard的config中来
 //ReduceWidthByte 代表ReducePE进行内积时的数据宽度，单位是字节
     val ReduceWidthByte = 32
     val ReduceWidth = ReduceWidthByte * 8
 
-    val ABMLNeedSCPFillTable = ReduceWidthByte < LLCDataWidthByte //内存返回的数据一周期写不完时ABML需要写回缓冲
+    val ABMLNeedSCPFillTable = ReduceWidthByte < outsideDataWidthByte //内存返回的数据一周期写不完时ABML需要写回缓冲
 //ResultWidthByte 代表ReducePE的结果宽度，单位是字节
     val ResultWidthByte = 4
     val ResultWidth = ResultWidthByte * 8
@@ -98,7 +227,7 @@ trait HWParameters{
 //MMU的地址宽度
     val MMUAddrWidth = 64
 //MMU的数据线宽度
-    val MMUDataWidth = LLCDataWidth //TODO:ReduceWidth等于LLCDataWidth，以后得改
+    val MMUDataWidth = outsideDataWidth //TODO:ReduceWidth等于outsideDataWidth，以后得改
 //MMU的数据线有效数据位数
     val MMUDataWidthBitSize = log2Ceil(MMUDataWidth) + 1
 
@@ -116,18 +245,18 @@ trait HWParameters{
 //Scaratchpad中保存的张量形状
     val Tensor_M = 64   //这里指要存的张量的M的大小
     val Tensor_N = 64   //这里指要存的张量的N的大小
-    val Tensor_K = 2    //这里指要存的张量的K的ReduceVector的数量！不是张量的K的大小
-    val Tensor_K_Element_Length = Tensor_K * ReduceWidthByte
-    val Tensor_K_PerK_Element_Length = Tensor_K_Element_Length / Tensor_K
-    val ScaratchpadMaxTensorDim = Math.max(Tensor_M, Math.max(Tensor_N, Tensor_K))
+    val ReduceGroupSize = 2    //这里指要存的张量的K的ReduceVector的数量！不是张量的K的大小
+    val Tensor_K = ReduceGroupSize * ReduceWidthByte
+
+    val ScaratchpadMaxTensorDim = Math.max(Tensor_M, Math.max(Tensor_N, ReduceGroupSize))
     val ScaratchpadMaxTensorDimBitSize = log2Ceil(ScaratchpadMaxTensorDim) + 1
 //AScaratchpad中保存的张量形状为M*K
-//AScaratchpad的大小为Tenser_M * Tensor_K * ReduceWidthByte
+//AScaratchpad的大小为Tenser_M * ReduceGroupSize * ReduceWidthByte
 //128*(4*256/8)，单次读的张量为128*128的张量
 //单次计算需要的时间为(128/4)*(128/4)*4 = 4096拍，单次读需要128×4=512拍。
 //需要考虑Scaratchpad的顺序读，需要考虑为Scaratchpad分bank
-    val AScratchpadSize = Tensor_M * Tensor_K * ReduceWidthByte //reduce
-    val BScratchpadSize = Tensor_N * Tensor_K * ReduceWidthByte //reduce
+    val AScratchpadSize = Tensor_M * ReduceGroupSize * ReduceWidthByte //reduce
+    val BScratchpadSize = Tensor_N * ReduceGroupSize * ReduceWidthByte //reduce
     val CScratchpadSize = Tensor_M * Tensor_N * ResultWidthByte //result
 //Matrix_M，代表TE执行的矩阵乘法的M的大小
     val Matrix_M = 4
@@ -163,16 +292,7 @@ trait HWParameters{
     val AScratchpadBankNEntrys = AScratchpadBankSize / AScratchpadEntryByteSize
     val BScratchpadBankNEntrys = BScratchpadBankSize / BScratchpadEntryByteSize
     val CScratchpadBankNEntrys = CScratchpadBankSize / CScratchpadEntryByteSize
-
-
-//MACLatency 用于ReducePE内的乘累加树的延迟描述
-    val MAC32TreeLevel = log2Ceil(ReduceWidthByte * 8 / 32)
-    val MAC32Latency = 3 //这是一个经验值，依据时序结果，填写的需要切分的流水段数量
-    val MAC16TreeLevel = log2Ceil(ReduceWidthByte * 8 / 16)
-    val MAC16Latency = 4
-    val MAC8TreeLevel = log2Ceil(ReduceWidthByte * 8 / 8)
-    val MAC8Latency = 5
-//乘累加FIFO的深度
+    //乘累加FIFO的深度
     val ResultFIFODepth = 8
     val InputFIFODepth = 8
 

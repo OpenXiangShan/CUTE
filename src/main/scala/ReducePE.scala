@@ -120,7 +120,7 @@ class ReduceMACTree8(id:Int) extends Module with HWParameters{
     //目前就在第3层切了一级流水，
 
     //过ExternalReduceSize个周期，会有一个CAdd的数据，将这ExternalReduceSize个周期的结果累加并累加到CAdd上，完成一次计算
-    val ExternalReduceSize = Tensor_K //(这里得改，需要加一个参数，考虑Tensor_K参与计算的次数)
+    val ExternalReduceSize = ReduceGroupSize //(这里得改，需要加一个参数，考虑Tensor_K参与计算的次数)
     //比如TensorMNK(128,128,128)
     //MatrixMNK(16,16,8)
     //那这里的ExternalReduceSize就是128/8
@@ -291,7 +291,7 @@ class ReducePE(id:Int)(implicit p: Parameters) extends Module with HWParameters{
     ReduceMAC8.io.CAdd    <> io.AddC
     ReduceMAC8.io.Chosen  := false.B
     ReduceMAC8.io.FIFOReady   := false.B
-    ReduceMAC8.io.ExternalReduceSize := Tensor_K.U
+    ReduceMAC8.io.ExternalReduceSize := ReduceGroupSize.U
 
     val ReduceMAC16 = Module(new ReduceMACTree16)
     ReduceMAC16.io.AVector <> io.ReduceA
@@ -299,7 +299,7 @@ class ReducePE(id:Int)(implicit p: Parameters) extends Module with HWParameters{
     ReduceMAC16.io.CAdd    <> io.AddC
     ReduceMAC16.io.Chosen  := false.B
     ReduceMAC16.io.FIFOReady   := false.B
-    ReduceMAC16.io.ExternalReduceSize := Tensor_K.U
+    ReduceMAC16.io.ExternalReduceSize := ReduceGroupSize.U
 
     val ReduceMAC32 = Module(new ReduceMACTree32)
     ReduceMAC32.io.AVector <> io.ReduceA
@@ -307,7 +307,7 @@ class ReducePE(id:Int)(implicit p: Parameters) extends Module with HWParameters{
     ReduceMAC32.io.CAdd    <> io.AddC
     ReduceMAC32.io.Chosen  := false.B
     ReduceMAC32.io.FIFOReady   := false.B
-    ReduceMAC32.io.ExternalReduceSize := Tensor_K.U
+    ReduceMAC32.io.ExternalReduceSize := ReduceGroupSize.U
 
     //只有在数据类型匹配时才能进行计算
     //在Reduce内完成数据的握手，及所有数据准备好后才能进行计算，并用一个fifo保存ResultD，等待ResultD被握手

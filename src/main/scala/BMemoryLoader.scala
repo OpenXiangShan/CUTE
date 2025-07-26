@@ -121,7 +121,7 @@ class BMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     //如果是memoryload_state === s_load_init，那么我们就要初始化各个寄存器
     //如果是memoryload_state === s_load_working，那么我们就要开始取数
     //如果是memoryload_state === s_load_end，那么我们就要结束取数
-    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_N*Tensor_K*ReduceWidthByte)+1).W)) //总共要加载的数据量
+    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_N*ReduceGroupSize*ReduceWidthByte)+1).W)) //总共要加载的数据量
     val CurrentLoaded_BlockTensor_N = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val CurrentLoaded_BlockTensor_K = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     
@@ -133,16 +133,16 @@ class BMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     
     // val SoureceIdSearchTable = VecInit(Seq.fill(SoureceMaxNum){RegInit(new BSourceIdSearch)})
     val SoureceIdSearchTable = RegInit(VecInit(Seq.fill(SoureceMaxNum)(0.U((new BSourceIdSearch).getWidth.W))))
-    val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_N*Tensor_K*ReduceWidthByte)).W))
+    val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_N*ReduceGroupSize*ReduceWidthByte)).W))
 
-    val SCP_Fill_Table = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(LLCDataWidth.W)))))
+    val SCP_Fill_Table = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
     val SCP_Fill_Table_SCP_Addr = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(BScratchpadBankNEntrys).W)))))//记录这个LLC回的数是在scp的哪个地址
-    val SCP_Fill_Table_Time = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(LLCDataWidthByte/BScratchpadEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
+    val SCP_Fill_Table_Time = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/BScratchpadEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
     val SCP_Fill_Table_Free = SCP_Fill_Table_Time.map(_ === 0.U)//记录这个FIFO能否能填数据
     val SCP_Fill_Table_Valid = SCP_Fill_Table_Time.map(_ =/= 0.U)//记录这个FIFO里的数据是否有效
     val SCP_Fill_Table_Insert_Index = PriorityEncoder(SCP_Fill_Table_Free)//返回第一个空位的index
     val SCP_Fill_Table_Not_Full = SCP_Fill_Table_Free.reduce(_ || _)//这个FIFO是否还有空位
-    val MAX_Fill_Times = LLCDataWidthByte/BScratchpadEntryByteSize
+    val MAX_Fill_Times = outsideDataWidthByte/BScratchpadEntryByteSize
 
     val Bank_Fill_Search_FIFO = RegInit((VecInit(Seq.fill(BScratchpadNBanks)(VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))))//记录fifo里的数据是哪个bank的
     val Bank_Fill_Search_FIFO_Head = RegInit((VecInit(Seq.fill(BScratchpadNBanks)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))//想要往scp里bank(x)写的最后一个scp_fill_fifo的index
@@ -165,7 +165,7 @@ class BMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         TotalLoadSize := 0.U
         CurrentLoaded_BlockTensor_N := 0.U
         CurrentLoaded_BlockTensor_K := 0.U
-        MaxRequestIter := ScaratchpadTensor_K * ScaratchpadTensor_N * ReduceWidthByte.U / (LLCDataWidthByte.U) //总共要发出的访存请求的次数
+        MaxRequestIter := ScaratchpadTensor_K * ScaratchpadTensor_N * ReduceWidthByte.U / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
     }.elsewhen(memoryload_state === s_load_working){
         //根据不同的MemoryOrder，执行不同的访存模式
 
@@ -206,7 +206,7 @@ class BMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
             //Request.ready表明了LocalMMU会处理这条访存请求，sourceID valid，表明这条访存请求的sourceID是被LocalMMU认可有效才发送到这个模块的
             val TableItem = Wire(new BSourceIdSearch)
             TableItem.ScratchpadBankId := CurrentLoaded_BlockTensor_N % BScratchpadNBanks.U
-            TableItem.ScratchpadAddr := ((CurrentLoaded_BlockTensor_N / BScratchpadNBanks.U) * Tensor_K.U) + CurrentLoaded_BlockTensor_K
+            TableItem.ScratchpadAddr := ((CurrentLoaded_BlockTensor_N / BScratchpadNBanks.U) * ReduceGroupSize.U) + CurrentLoaded_BlockTensor_K
             SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
             if (YJPBMLDebugEnable)
             {
