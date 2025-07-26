@@ -18,7 +18,7 @@ trait LocalTLBParameters{
     //加速器设计范式的探索～！～！～！～！
 }
 
-class MMUConfigIO() extends Bundle with HWParameters {
+class MMUConfigIO()(implicit p: Parameters) extends CuteBundle {
 	val useVM_v = Input(Bool())
 	val useVM = Input(Bool())
 	val refill_v = Input(Bool())
@@ -26,14 +26,14 @@ class MMUConfigIO() extends Bundle with HWParameters {
 	val refillPaddr = Input(UInt(ppnBits.W))
 }
 
-class LocalTLBReq() extends Bundle with HWParameters{
+class LocalTLBReq()(implicit p: Parameters) extends CuteBundle{
 	val vaddr0 = Input(UInt(vaddrBits.W))
 	val vaddr0_v = Input(Bool())
 	val vaddr1 = Input(UInt(vaddrBits.W))
 	val vaddr1_v = Input(Bool())
 }
 
-class LocalTLBResp() extends Bundle with HWParameters{
+class LocalTLBResp()(implicit p: Parameters) extends CuteBundle{
 	val paddr0 = Output(UInt(paddrBits.W))
 	val paddr1 = Output(UInt(paddrBits.W))
 	val paddr0_v = Output(Bool())
@@ -43,7 +43,7 @@ class LocalTLBResp() extends Bundle with HWParameters{
 
 }
 
-class LocalTLBIO() extends Bundle with HWParameters{
+class LocalTLBIO()(implicit p: Parameters) extends CuteBundle{
 	val config = new MMUConfigIO
 	val req  = new LocalTLBReq
 	val resp = new LocalTLBResp
@@ -51,7 +51,7 @@ class LocalTLBIO() extends Bundle with HWParameters{
 	val paddr1 = Output(UInt(corePAddrBits.W))
 }
 
-class LocalTLB() extends Module with LocalTLBParameters with HWParameters{
+class LocalTLB()(implicit val p: Parameters) extends Module with LocalTLBParameters with CUTEImplParameters{
 	val io = IO(new LocalTLBIO)
 
 	val VTable = RegInit(VecInit(Seq.fill(entry)(0.U(vaddrBits.W))))
@@ -118,7 +118,7 @@ class LocalTLB() extends Module with LocalTLBParameters with HWParameters{
 }
 
 
-class LocalMMU() extends Module with HWParameters{
+class LocalMMU()(implicit p: Parameters) extends CuteModule{
 	// val io = IO(new LocalTLBIO)
     val io = IO(new Bundle{
         val ALocalMMUIO = (new LocalMMUIO)

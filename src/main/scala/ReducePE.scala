@@ -7,7 +7,7 @@ import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
 import boom.v3.util._
 
-class ReduceMACTree8(id:Int) extends Module with HWParameters{
+class ReduceMACTree8(id:Int)(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val AVector = Flipped(DecoupledIO(UInt(ReduceWidth.W)))
         val BVector = Flipped(DecoupledIO(UInt(ReduceWidth.W)))
@@ -224,7 +224,7 @@ class ReduceMACTree8(id:Int) extends Module with HWParameters{
     
 }
 
-class ReduceMACTree16 extends Module with HWParameters{
+class ReduceMACTree16(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val AVector = Flipped(DecoupledIO(UInt(ReduceWidth.W)))
         val BVector = Flipped(DecoupledIO(UInt(ReduceWidth.W)))
@@ -243,7 +243,7 @@ class ReduceMACTree16 extends Module with HWParameters{
     io.working := false.B
 }
 
-class ReduceMACTree32 extends Module with HWParameters{
+class ReduceMACTree32(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val AVector = Flipped(DecoupledIO(UInt(ReduceWidth.W)))
         val BVector = Flipped(DecoupledIO(UInt(ReduceWidth.W)))
@@ -263,7 +263,7 @@ class ReduceMACTree32 extends Module with HWParameters{
 }
 
 //单个ReducePE, 计算Reduce乘累加的结果
-class ReducePE(id:Int)(implicit p: Parameters) extends Module with HWParameters{
+class ReducePE(id:Int)(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val ReduceA = Flipped(DecoupledIO(UInt(ReduceWidth.W)))
         val ReduceB = Flipped(DecoupledIO(UInt(ReduceWidth.W)))

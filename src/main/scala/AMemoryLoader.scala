@@ -20,7 +20,7 @@ import freechips.rocketchip.util.SeqToAugmentedSeq
 
 //注意，数据的reorder是可以离线完成的！这也属于编译器的一环。
 
-class ASourceIdSearch extends Bundle with HWParameters{
+class ASourceIdSearch(implicit p: Parameters) extends CuteBundle{
     val ScratchpadBankId = UInt(log2Ceil(AScratchpadNBanks).W)
     val ScratchpadAddr = UInt(log2Ceil(AScratchpadBankNEntrys).W)
 }
@@ -45,7 +45,7 @@ class ASourceIdSearch extends Bundle with HWParameters{
 //1.计算IH、IW是否超界，如果超界，需要进行0填充，而不是发出访存请求(这里可能是时序不满足的点，如果不满足，可以提前就算好)
 //2.0填充的逻辑，需要单独处理，需要找机会和某一次写回合并。故需要一个NACK寄存器来记录哪个bank此刻有ZeroFill任务，如果无法记录NACK任务，则停止发出访存请求，直到有空闲的bank
 
-class AMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
+class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         //先整一个ScarchPad的接口的总体设计
         val ToScarchPadIO = Flipped(new AMemoryLoaderScaratchpadIO)

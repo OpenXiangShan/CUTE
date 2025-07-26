@@ -7,11 +7,11 @@ import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
 // import scala.collection.parallel.Task
 
-class CUTETopIO() extends Bundle{
+class CUTETopIO()(implicit val p: Parameters) extends Bundle{
     val mmu2llc = Flipped(new MMU2TLIO)
     val ctrl2top = Flipped(new YGJKControl)
 }
-class CUTEV2Top(implicit p: Parameters) extends Module with HWParameters{
+class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val io = IO(new CUTETopIO)
 
     val cutecounter = Wire(new CUTECounter)

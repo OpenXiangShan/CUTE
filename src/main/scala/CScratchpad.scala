@@ -32,12 +32,12 @@ import boom.v3.util._
 
 
 
-class CScarchPadIO extends Bundle with HWParameters{
+class CScarchPadIO(implicit p: Parameters) extends CuteBundle{
     val FromDataController = new CDataControlScaratchpadIO
     val FromMemoryLoader = new CMemoryLoaderScaratchpadIO
 }
 
-class CScratchpad extends Module with HWParameters{
+class CScratchpad(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         // val ConfigInfo = Flipped(DecoupledIO(new ConfigInfoIO))
         val ScarchPadIO = new CScarchPadIO

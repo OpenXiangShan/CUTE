@@ -11,6 +11,9 @@ import freechips.rocketchip.tilelink._
 import org.chipsalliance.cde.config._
 // import boom.exu.ygjk.{YGJKParameters}
 
+class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.baseParams) extends Config((site, here, up) => {
+    case CuteParamsKey => CoustomCuteParam
+})
 class WithCUTE(EnableCUTEList: Seq[Int]) extends Config((site, here, up) => {
     case BuildRoCC => up(BuildRoCC, site) ++ EnableCUTEList.collect {
         case tileId if tileId == site(TileKey).tileId =>
@@ -21,10 +24,12 @@ class WithCUTE(EnableCUTEList: Seq[Int]) extends Config((site, here, up) => {
                 cute
             }
     }
+    case CuteParamsKey => {
+        CuteParams.baseParams
+    }
 })
 
-class RoCC2CUTE(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) 
-  with HWParameters{
+class RoCC2CUTE(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) with CUTEImplParameters{
   override lazy val module = new CUTETile(this)
  lazy val LLCMemPort = LazyModule(new Cute2TL)
  tlNode := TLWidthWidget(outsideDataWidthByte) := LLCMemPort.node
@@ -33,7 +38,7 @@ class RoCC2CUTE(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opc
 
 
 
-class Cute2TL(implicit p: Parameters) extends LazyModule with HWParameters {
+class Cute2TL(implicit p: Parameters) extends LazyModule with CUTEImplParameters {
   lazy val module = new CUTE2TLImp(this)
   val node = TLClientNode(Seq(TLClientPortParameters(Seq(TLClientParameters(
     name = "Cute",
@@ -41,7 +46,7 @@ class Cute2TL(implicit p: Parameters) extends LazyModule with HWParameters {
 }
 
 //这里的CUTE到LLC的节点
-class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with HWParameters{
+class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParameters{
   val edge = outer.node.edges.out(0)
   val (tl_out, _) = outer.node.out(0)
 
@@ -159,9 +164,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with HWParameters{
 
 
 
-class CUTETile(outer: RoCC2CUTE) extends LazyRoCCModuleImp(outer)
-//   with YGJKParameters
-  with HWParameters {
+class CUTETile(outer: RoCC2CUTE) extends LazyRoCCModuleImp(outer) with CUTEImplParameters {
     val acc = Module(new CUTEV2Top)
     val mem = (outer.LLCMemPort.module)
 

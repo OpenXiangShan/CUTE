@@ -11,14 +11,14 @@ import org.chipsalliance.cde.config._
 //A矩阵需要支持滑动窗口，分Matrix_M个bank是合理的
 //Scarchpad的功能是，根据输入的地址，输出数据
 
-class AScarchPadIO extends Bundle with HWParameters{
+class AScarchPadIO(implicit p: Parameters) extends CuteBundle{
     val FromDataController = new ADataControlScaratchpadIO
     val FromMemoryLoader = new AMemoryLoaderScaratchpadIO 
     // val DataControllerValid = Input(Bool())
     // val MemoryLoaderValid = Input(Bool())
 }
 
-class AScratchpad(scp_id:Int) extends Module with HWParameters{
+class AScratchpad(scp_id:Int)(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         // val ConfigInfo = Flipped(DecoupledIO(new ConfigInfoIO))
         val ScarchPadIO = new AScarchPadIO

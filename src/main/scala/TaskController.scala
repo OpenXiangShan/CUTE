@@ -8,7 +8,7 @@ import org.chipsalliance.cde.config._
 import boom.v3.util._
 
 //TaskController代表,
-class TaskController(implicit p: Parameters) extends Module with HWParameters{
+class TaskController(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val ygjkctrl = Flipped(new YGJKControl)
         // val ConfigInfo = DecoupledIO(new ConfigInfoIO)

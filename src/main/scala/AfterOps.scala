@@ -6,7 +6,7 @@ import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
 import boom.v3.util._
 
-class FakeVPU(implicit p: Parameters) extends Module with HWParameters{
+class FakeVPU(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val VPUInterface  = Flipped(new VPUInterfaceIO)
     })
@@ -28,7 +28,7 @@ class FakeVPU(implicit p: Parameters) extends Module with HWParameters{
 
 }
 
-class VectorStreamInterface(implicit p: Parameters) extends Module with HWParameters{
+class VectorStreamInterface(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val VectorInterface = Flipped(new VectorInterfaceIO)//与AfterOps的数据交互接口
         val VPUInterface       = (new VPUInterfaceIO)//与VPU的数据交互接口
@@ -166,7 +166,7 @@ class VectorStreamInterface(implicit p: Parameters) extends Module with HWParame
 // .........                                            .........             //                                                             ........
 // .........                                            cycle 256             // .........                                                   cycle 64
 
-class AfterOpsModule(implicit p: Parameters) extends Module with HWParameters{
+class AfterOpsModule(implicit p: Parameters) extends CuteModule{
 
     val io = IO(new Bundle{
         //先整一个ScarchPad的接口的总体设计

@@ -19,14 +19,14 @@ import boom.v3.util._
 
 //注意，数据的reorder是可以离线完成的！这也属于编译器的一环。
 
-class BSourceIdSearch extends Bundle with HWParameters{
+class BSourceIdSearch(implicit p: Parameters) extends CuteBundle{
     val ScratchpadBankId = UInt(log2Ceil(BScratchpadNBanks).W)
     val ScratchpadAddr = UInt(log2Ceil(BScratchpadBankNEntrys).W)
 }
 
 //对于卷积，数据摆放是[khkwoc][ic],对于矩阵乘，数据摆放是[N][K]
 
-class BMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
+class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         //先整一个ScarchPad的接口的总体设计
         val ToScarchPadIO = Flipped(new BMemoryLoaderScaratchpadIO)

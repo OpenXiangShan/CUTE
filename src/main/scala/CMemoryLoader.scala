@@ -17,12 +17,12 @@ import freechips.rocketchip.util.SeqToAugmentedSeq
 
 //在本地最基础的是完成整体Tensor的加载，依据Scarchpad的设计，完成Tensor的切分以及将数据的填入Scaratchpad
 
-class CSourceIdSearch extends Bundle with HWParameters{
+class CSourceIdSearch(implicit p: Parameters) extends CuteBundle{
     val ScratchpadBankId =UInt(log2Ceil(CScratchpadNBanks).W)
     val ScratchpadAddr = UInt(log2Ceil(CScratchpadBankNEntrys).W)
 }
 
-class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
+class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val ToScarchPadIO = Flipped(new CMemoryLoaderScaratchpadIO)
         val ConfigInfo = Flipped(new CMLMicroTaskConfigIO)
@@ -659,7 +659,7 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
     //一组reoder的寄存器，来存储重排的数据
     //存一个Matrix_M*Matrix_N*T的数据矩阵寄存器，用于存储重排的数据，T = CSCP的总带宽/Matrix_N*ResultWidth
     val Per_GetMatrix_NDim_Width = Matrix_N*ResultWidth //每次Get的N连续的数据的宽度
-    val Reorder_ToLLC_GroupSize = LLCDataWidth / (Per_GetMatrix_NDim_Width)//填满一个LLCDataWidth需要这么多次
+    val Reorder_ToLLC_GroupSize = outsideDataWidth / (Per_GetMatrix_NDim_Width)//填满一个LLCDataWidth需要这么多次
     val Reorder_ToLLC_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Reorder_ToLLC_GroupSize)(0.U((Per_GetMatrix_NDim_Width).W))))))))
     val Reorder_ToLLC_Reg_Valid = RegInit(VecInit(Seq.fill(2)(false.B)))
     val Reorder_ToLLC_Reg_Get_Index  = RegInit(0.U(log2Ceil(2).W))//双缓冲
@@ -688,7 +688,7 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         FromScratchpadReadFIFOHead := 0.U
         FromScratchpadReadFIFOTail := 0.U
         Max_Load_SCP_Time := ScaratchpadTensor_M * ScaratchpadTensor_N * D_DataType / CScratchpad_Total_Bandwidth.U//总共要发对SCAP的访存次数
-        Max_Store_Memory_Time := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_M.U, ScaratchpadTensor_M) * ScaratchpadTensor_N * D_DataType / LLCDataWidthByte.U//总共要发对LLC的访存次数
+        Max_Store_Memory_Time := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_M.U, ScaratchpadTensor_M) * ScaratchpadTensor_N * D_DataType / outsideDataWidthByte.U//总共要发对LLC的访存次数
         // MaxIncStoreScpRequestSize := Mux(Is_Transpose, ScaratchpadTensor_N, M_Get_IteratorMax * Matrix_M.U) * Mux(Is_Transpose, ScaratchpadTensor_M, ScaratchpadTensor_N) * D_DataType / CScratchpad_Total_Bandwidth.U
         MaxIncStoreScpRequestSize := M_Get_IteratorMax * Matrix_M.U * ScaratchpadTensor_N * D_DataType / CScratchpad_Total_Bandwidth.U
         MaxIncStoreRequestSize := (Mux(Is_Transpose, ScaratchpadTensor_N, ScaratchpadTensor_M) / Matrix_M.U * Matrix_M.U) * Mux(Is_Transpose, ScaratchpadTensor_M, ScaratchpadTensor_N) * D_DataType / CScratchpad_Total_Bandwidth.U
@@ -697,9 +697,9 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         Current_Load_Scp_addr := 0.U
         Current_Load_M_iter := 0.U
         Current_Load_N_iter := 0.U
-        Per_LLC_Store_ReduceDim_Iter := Mux(D_DataType === 1.U, LLCDataWidthByte.U,
-                                    Mux(D_DataType === 2.U, LLCDataWidthByte.U/2.U,
-                                    Mux(D_DataType === 4.U, LLCDataWidthByte.U/4.U, LLCDataWidthByte.U)))
+        Per_LLC_Store_ReduceDim_Iter := Mux(D_DataType === 1.U, outsideDataWidthByte.U,
+                                    Mux(D_DataType === 2.U, outsideDataWidthByte.U/2.U,
+                                    Mux(D_DataType === 4.U, outsideDataWidthByte.U/4.U, outsideDataWidthByte.U)))
         Per_SCP_Load_ReduceDim_Iter := Mux(D_DataType === 1.U, CScratchpad_Total_Bandwidth.U,
                                         Mux(D_DataType === 2.U, CScratchpad_Total_Bandwidth.U/2.U,
                                         Mux(D_DataType === 4.U, CScratchpad_Total_Bandwidth.U/4.U, CScratchpad_Total_Bandwidth.U)))
@@ -788,14 +788,14 @@ class CMemoryLoader(implicit p: Parameters) extends Module with HWParameters{
         val Reorder_ToLLC_Reg_Ready_Send= Reorder_ToLLC_Reg_Valid.reduce(_||_)//只要有一个是Valid就是ture，表示可以发往后操作执行
         when(Reorder_ToLLC_Reg_Ready_Send){
 
-            val Request_Data = WireInit(VecInit(Seq.fill(LLCDataWidthByte / ResultWidthByte)(0.U(ResultWidth.W))))
+            val Request_Data = WireInit(VecInit(Seq.fill(outsideDataWidthByte / ResultWidthByte)(0.U(ResultWidth.W))))
 
             Request_Data := Reorder_ToLLC_Reg(Reorder_ToLLC_Reg_Send_Index)(Send_LLC_Iter).asTypeOf(Request_Data)
 
             val need_fill_zero = CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter > Max_BlockTensor_Reduce_DIM
 
             when(need_fill_zero) {
-                for (i <- 0 until LLCDataWidthByte / ResultWidthByte) {
+                for (i <- 0 until outsideDataWidthByte / ResultWidthByte) {
                     when(CurrentStore_BlockTensor_Reduce_DIM_Iter + i.U >= Max_BlockTensor_Reduce_DIM) {
                         Request_Data(i) := 0.U
                     }

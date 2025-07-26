@@ -13,7 +13,7 @@ import org.chipsalliance.cde.config._
 
 
 //当前设计为可将卷积无损的转换成矩阵乘，能将矩阵乘无损的转换成卷积
-class ADataController(implicit p: Parameters) extends Module with HWParameters{
+class ADataController(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
 
         //先整一个ScarchPad的接口的总体设计

@@ -9,7 +9,7 @@ import org.chipsalliance.cde.config._
 //MatrixTE
 //该模块的设计目标是，外积模块，组织多个ReducePE，来复用矩阵乘的数据，MatrixTE接受ABScarchPad的数据，交给broadcaster，生成数据馈送至至ReducePE，将Reduce的输出数据准备馈送至ScarchPadC。
 //计算上来看，它的输入是两个向量，将两个向量广播成两个相同大小的矩阵后，将元素送入ReducuPE。向量的大小也很明显其一是Matrix_M，其二是Matrix_N，向量内的元素宽度是Reduce_Width
-class MatrixTE(implicit p: Parameters) extends Module with HWParameters{
+class MatrixTE(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val VectorA = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_M).W)))
         val VectorB = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_N).W)))
