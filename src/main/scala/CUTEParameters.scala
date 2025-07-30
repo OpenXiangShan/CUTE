@@ -36,7 +36,7 @@ object CuteParams {
 
     //default simple debug
     def simpleDebugParams = baseParams.copy(
-        Debug = CuteDebugParams.AMLDebugEnable
+        Debug = CuteDebugParams.CMLDebugEnable
     )
 
     //dram&L2 performance test
@@ -50,7 +50,7 @@ object CuteParams {
         Matrix_M = 8,
         Matrix_N = 8,
         ReduceWidthByte = 32,
-        Debug = CuteDebugParams.AMLDebugEnable
+        // Debug = CuteDebugParams.AMLDebugEnable
     )
 
 }
@@ -94,6 +94,10 @@ object CuteDebugParams {
 
   def AMLDebugEnable = NoDebug.copy(
     YJPAMLDebugEnable = true,
+  )
+
+  def CMLDebugEnable = NoDebug.copy(
+    YJPCMLDebugEnable = true,
   )
 
   def AllDebugOn = NoDebug.copy(
