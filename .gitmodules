@@ -1,3 +1,6 @@
 [submodule "cutetest"]
 	path = cutetest
 	url = ssh://git@10.208.130.232:2247/yjp/cute_test.git
+[submodule "cute-fpe"]
+	path = cute-fpe
+	url = ssh://git@10.208.130.232:2247/cute-dev1/cute-fpe.git

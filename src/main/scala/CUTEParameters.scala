@@ -1122,6 +1122,19 @@ case object  MemoryOrderType extends Field[UInt]{
 }
 
 
+class ScaratchpadTaskDecode(ScaratchpadTask: UInt) extends Field[UInt]{
+
+    def IsRead : Bool = ScaratchpadTask(ScaratchpadTaskType.EnableReadFromDataController) || ScaratchpadTask(ScaratchpadTaskType.EnableReadFromMemoryLoader)
+    def IsWrite : Bool = ScaratchpadTask(ScaratchpadTaskType.EnableWriteFromDataController) || ScaratchpadTask(ScaratchpadTaskType.EnableWriteFromMemoryLoader)
+
+    def IsReadFromDataController: Bool = ScaratchpadTask(ScaratchpadTaskType.ReadFromDataControllerIndex)
+    def IsWriteFromDataController: Bool = ScaratchpadTask(ScaratchpadTaskType.WriteFromDataControllerIndex)
+    def IsWriteFromMemoryLoader: Bool = ScaratchpadTask(ScaratchpadTaskType.WriteFromMemoryLoaderIndex)
+    def IsReadFromMemoryLoader  : Bool = ScaratchpadTask(ScaratchpadTaskType.ReadFromMemoryLoaderIndex)
+
+    // def ReadSrc: UInt = ScaratchpadTask
+}
+
 case object ScaratchpadTaskType extends Field[UInt]{
     val TaskTypeBitWidth = 4    //对于单个Scaratchpad，其并发的数据来源一共用3个，所以用3bit来表示。1.DataController对PE的输入数据的对ScarchPad读请求 2.DataController将PE的输出结果送入ScaratchPad写请求 3。MemoryLoader对ScarchPad的写请求
     //我们不知道Scaratchpad的读写端口数量，所以用使能信号表示接受的数据来源
