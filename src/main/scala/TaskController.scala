@@ -1067,7 +1067,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             // io.AOP_MicroTask_Config.Is_Reorder_Only_Ops := Compute_MicroInst.Is_Reorder_Only_Ops
             // io.AOP_MicroTask_Config.CUTEuop := Compute_MicroInst.CUTEuop
 
-            io.MTE_MicroTask_Config.dataType := ElementDataType.DataTypeSInt8
+            io.MTE_MicroTask_Config.dataType := ElementDataType.DataTypeI8I8I32
 
             io.ADC_MicroTask_Config.MicroTaskValid := true.B
             io.BDC_MicroTask_Config.MicroTaskValid := true.B

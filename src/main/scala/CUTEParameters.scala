@@ -1093,6 +1093,53 @@ class CUTECounter(implicit p: Parameters) extends CuteBundle{
 }
 
 
+class FReducePEDataType(dataType: UInt){
+//0:Int8, 1:FP16, 2:BF16, 3:TF32, 4:I8 * UI8, 5:UI8 * I8, 6:UI8 * UI8
+    def AdataByteWidth: Int = dataType match {
+        case ElementDataType.DataTypeI8I8I32 => 1
+        case ElementDataType.DataTypeF16F16F32 => 2
+        case ElementDataType.DataTypeBF16BF16F32 => 2
+        case ElementDataType.DataTypeTF32TF32F32 => 4
+        case ElementDataType.DataTypeI8U8I32 => 1
+        case ElementDataType.DataTypeU8I8I32 => 1
+        case ElementDataType.DataTypeU8U8I32 => 1
+        case _ => 0 //未定义的类型，返回0字节宽度
+    }
+
+    def BdataByteWidth: Int = dataType match {
+        case ElementDataType.DataTypeI8I8I32 => 1
+        case ElementDataType.DataTypeF16F16F32 => 2
+        case ElementDataType.DataTypeBF16BF16F32 => 2
+        case ElementDataType.DataTypeTF32TF32F32 => 4
+        case ElementDataType.DataTypeI8U8I32 => 1
+        case ElementDataType.DataTypeU8I8I32 => 1
+        case ElementDataType.DataTypeU8U8I32 => 1
+        case _ => 0 //未定义的类型，返回0字节宽度
+    }
+
+    def CdataByteWidth: Int = dataType match {
+        case ElementDataType.DataTypeI8I8I32 => 4
+        case ElementDataType.DataTypeF16F16F32 => 4
+        case ElementDataType.DataTypeBF16BF16F32 => 4
+        case ElementDataType.DataTypeTF32TF32F32 => 4
+        case ElementDataType.DataTypeI8U8I32 => 4
+        case ElementDataType.DataTypeU8I8I32 => 4
+        case ElementDataType.DataTypeU8U8I32 => 4
+        case _ => 0 //未定义的类型，返回0字节宽度
+    }
+
+    def DdataByteWidth: Int = dataType match {
+        case ElementDataType.DataTypeI8I8I32 => 4
+        case ElementDataType.DataTypeF16F16F32 => 4
+        case ElementDataType.DataTypeBF16BF16F32 => 4
+        case ElementDataType.DataTypeTF32TF32F32 => 4
+        case ElementDataType.DataTypeI8U8I32 => 4
+        case ElementDataType.DataTypeU8I8I32 => 4
+        case ElementDataType.DataTypeU8U8I32 => 4
+        case _ => 0 //未定义的类型，返回0字节宽度
+    }
+}
+
 //数据类型的样板类
 case object  ElementDataType extends Field[UInt]{
     val DataTypeBitWidth = 3
@@ -1101,12 +1148,13 @@ case object  ElementDataType extends Field[UInt]{
     val DataTypeWidth16 = 2.U(DataTypeBitWidth.W)
     val DataTypeWidth8  = 1.U(DataTypeBitWidth.W)
 
-    val DataTypeUInt8   = 0.U(DataTypeBitWidth.W)
-    val DataTypeSInt8   = 1.U(DataTypeBitWidth.W)
-    val DataTypeUInt16  = 2.U(DataTypeBitWidth.W)
-    val DataTypeSInt16  = 3.U(DataTypeBitWidth.W)
-    val DataTypeUInt32  = 4.U(DataTypeBitWidth.W)
-    val DataTypeSInt32  = 5.U(DataTypeBitWidth.W)
+    val DataTypeI8I8I32     = 0.U(DataTypeBitWidth.W)     //I8 * I8 * I32
+    val DataTypeF16F16F32   = 1.U(DataTypeBitWidth.W)     //FP16 * FP16 * FP32
+    val DataTypeBF16BF16F32 = 2.U(DataTypeBitWidth.W)     //BF16 * BF16 * FP32
+    val DataTypeTF32TF32F32 = 3.U(DataTypeBitWidth.W)     //TF32 * TF32 * FP32
+    val DataTypeI8U8I32     = 4.U(DataTypeBitWidth.W)     //I8 * UI8 * I32
+    val DataTypeU8I8I32     = 5.U(DataTypeBitWidth.W)     //U8 * I8 * I32
+    val DataTypeU8U8I32     = 6.U(DataTypeBitWidth.W)     //U8 * U8 * I32
 
 }
 
