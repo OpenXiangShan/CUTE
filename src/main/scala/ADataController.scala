@@ -156,13 +156,13 @@ class ADataController(implicit p: Parameters) extends CuteModule{
                 //计算取数地址
                 ScarchPadRequestBankAddr.valid := true.B
                 ARequestVectorCount := ARequestVectorCount + 1.U
-                K_Iterator := K_Iterator + 1.U
-                when(K_Iterator === K_IteratorMax - 1.U){
-                    K_Iterator := 0.U
-                    N_Iterator := N_Iterator + 1.U
-                    when(N_Iterator === N_IteratorMax - 1.U){
-                        N_Iterator := 0.U
-                        M_Iterator := M_Iterator + 1.U
+                N_Iterator := N_Iterator + 1.U
+                when(N_Iterator === N_IteratorMax - 1.U){
+                    N_Iterator := 0.U
+                    M_Iterator := M_Iterator + 1.U
+                    when(M_Iterator === M_IteratorMax - 1.U){
+                        M_Iterator := 0.U
+                        K_Iterator := K_Iterator + 1.U
                     }
                 }
             }.otherwise{

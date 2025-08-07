@@ -53,6 +53,31 @@ object CuteParams {
         // Debug = CuteDebugParams.AMLDebugEnable
     )
 
+    def cute_2Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_M = 64,
+        Tensor_N = 64,
+        Tensor_K = 64,
+        Matrix_M = 4,
+        Matrix_N = 4,
+        ReduceWidthByte = 32,
+        Debug = CuteDebugParams.AMLDebugEnable
+    )
+
+    def cute_8Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_M = 128,
+        Tensor_N = 128,
+        Tensor_K = 64,
+        Matrix_M = 8,
+        Matrix_N = 8,
+        ReduceWidthByte = 32,
+        Debug = CuteDebugParams.AMLDebugEnable
+    )
 }
 
 object Cutev3Params {
@@ -98,6 +123,12 @@ object CuteDebugParams {
 
   def CMLDebugEnable = NoDebug.copy(
     YJPCMLDebugEnable = true,
+  )
+
+  def ComputeDebugeNable = NoDebug.copy(
+    // YJPMACDebugEnable = true,
+    YJPCMLDebugEnable = true,
+    // YJPDebugEnable = true,
   )
 
   def AllDebugOn = NoDebug.copy(
@@ -299,6 +330,7 @@ case class CuteParams(
     def CScratchpadBankNEntrys = CScratchpadBankSize / CScratchpadEntryByteSize
 
     require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
+    require(outsideDataWidthByte <= Tensor_K, "outsideDataWidthByte must be less than or equal to Tensor_K, or a load will exceed the subtensor in micro load")
 
 }
 

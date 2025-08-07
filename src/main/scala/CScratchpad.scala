@@ -55,8 +55,8 @@ class CScratchpad(implicit p: Parameters) extends CuteModule{
     val decode_request = new ScaratchpadTaskDecode(request)
     val decode_pre_request = new ScaratchpadTaskDecode(PreRequest)
     
-    assert(decode_request.IsReadFromDataController && decode_request.IsReadFromMemoryLoader, "CScarchpad: ReadFromDataController and ReadFromMemoryLoader should not be both true at the same time")
-    assert(decode_request.IsWriteFromDataController && decode_request.IsWriteFromMemoryLoader, "CScarchpad: WriteFromDataController and WriteFromMemoryLoader should not be both true at the same time")
+    assert(!(decode_request.IsReadFromDataController && decode_request.IsReadFromMemoryLoader), "CScarchpad: ReadFromDataController and ReadFromMemoryLoader should not be both true at the same time")
+    assert(!(decode_request.IsWriteFromDataController && decode_request.IsWriteFromMemoryLoader), "CScarchpad: WriteFromDataController and WriteFromMemoryLoader should not be both true at the same time")
     
     val read_request_per_bank_addr = WireInit(VecInit(Seq.fill(CScratchpadNBanks)(0.U(CScratchpadBankNEntrys.W))))
     val read_request_per_bank_valid = WireInit(VecInit(Seq.fill(CScratchpadNBanks)(false.B)))
@@ -69,7 +69,7 @@ class CScratchpad(implicit p: Parameters) extends CuteModule{
     for( i <- 0 until CScratchpadNBanks) {
         read_request_per_bank_addr(i) := Mux(decode_request.IsReadFromDataController, io.ScarchPadIO.FromDataController.ReadBankAddr(i).bits, io.ScarchPadIO.FromMemoryLoader.ReadRequestToScarchPad.BankAddr(i).bits)
         read_request_per_bank_valid(i) := Mux(decode_request.IsReadFromDataController, io.ScarchPadIO.FromDataController.ReadBankAddr(i).valid, io.ScarchPadIO.FromMemoryLoader.ReadRequestToScarchPad.BankAddr(i).valid)
-        read_request_response_valid(i) := Mux(decode_pre_request.IsReadFromDataController, io.ScarchPadIO.FromDataController.ReadBankAddr(i).bits, io.ScarchPadIO.FromMemoryLoader.ReadRequestToScarchPad.BankAddr(i).bits)
+        read_request_response_valid(i) := Mux(decode_request.IsReadFromDataController, io.ScarchPadIO.FromDataController.ReadBankAddr(i).valid, io.ScarchPadIO.FromMemoryLoader.ReadRequestToScarchPad.BankAddr(i).valid)
 
         write_request_per_bank_addr(i) := Mux(decode_request.IsWriteFromDataController, io.ScarchPadIO.FromDataController.WriteBankAddr(i).bits, io.ScarchPadIO.FromMemoryLoader.WriteRequestToScarchPad.BankAddr(i).bits)
         write_request_per_bank_data(i) := Mux(decode_request.IsWriteFromDataController, io.ScarchPadIO.FromDataController.WriteRequestData(i).bits, io.ScarchPadIO.FromMemoryLoader.WriteRequestToScarchPad.Data(i).bits)

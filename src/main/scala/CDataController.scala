@@ -123,6 +123,10 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val N_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val K_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
 
+    // 计算数据结果回填
+    val addr_Iterator = RegInit(0.U(32.W)) //地址迭代器
+    val result_K_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+
     val Store_M_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
     val Store_N_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
 
@@ -130,7 +134,8 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val N_IteratorMax = (ScaratchpadWorkingTensor_N / Matrix_N.U)
     val K_IteratorMax = (ScaratchpadWorkingTensor_K)
 
-    val Max_Caculate_Iter = M_IteratorMax * N_IteratorMax
+    val Max_Caculate_Iter = M_IteratorMax * N_IteratorMax * K_IteratorMax
+    val addr_IteratorMax = M_IteratorMax * N_IteratorMax
 
     val Max_Store_Iter   = (ScaratchpadWorkingTensor_M * ScaratchpadWorkingTensor_N * D_Datatype) / (ResultWidthByte*Matrix_M*Matrix_N).U
 
@@ -153,6 +158,8 @@ class CDataController(implicit p: Parameters) extends CuteModule{
             M_Iterator := 0.U
             N_Iterator := 0.U
             K_Iterator := 0.U
+            addr_Iterator := 0.U
+            result_K_Iterator := 0.U
             Store_M_Iterator := 0.U
             Store_N_Iterator := 0.U
             CVectorCount := 0.U
@@ -181,19 +188,17 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
             when(io.ComputeGo && CVectorCount < Max_Caculate_Iter){
                 //计算取数地址
-                when(K_Iterator === 0.U)
-                {
-                    ReadRequest := true.B
-                    io.FromScarchPadIO.ReadBankAddr.map(_.valid := true.B)
-                    io.FromScarchPadIO.ReadBankAddr.map(_.bits := load_addr)
-                }
-                K_Iterator := K_Iterator + 1.U
-                when(K_Iterator === K_IteratorMax - 1.U){
-                    K_Iterator := 0.U
-                    N_Iterator := N_Iterator + 1.U
-                    when(N_Iterator === N_IteratorMax - 1.U){
-                        N_Iterator := 0.U
-                        M_Iterator := M_Iterator + 1.U
+                ReadRequest := true.B
+                io.FromScarchPadIO.ReadBankAddr.map(_.valid := true.B)
+                io.FromScarchPadIO.ReadBankAddr.map(_.bits := load_addr)
+                N_Iterator := N_Iterator + 1.U
+                when(N_Iterator === N_IteratorMax - 1.U){
+                    N_Iterator := 0.U
+                    M_Iterator := M_Iterator + 1.U
+                    when(M_Iterator === M_IteratorMax - 1.U){
+                        //如果M迭代器到达最大值，那么我们就结束计算
+                        M_Iterator := 0.U
+                        K_Iterator := K_Iterator + 1.U
                     }
                 }
             }.otherwise{
@@ -241,6 +246,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
             when(io.ResultMatrix_D.valid)
             {
+                
                 io.FromScarchPadIO.WriteBankAddr.map(_.valid := true.B)
                 io.FromScarchPadIO.WriteRequestData.map(_.valid := true.B)
                 val SCP_Wrie_data = Wire((Vec(CScratchpadNBanks, (UInt(CScratchpadEntryBitSize.W)))))
@@ -253,7 +259,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                 }
                 
                 for (i <- 0 until CScratchpadNBanks){
-                    when(Is_Transpose && Is_AfterOps_Tile)
+                    when(Is_Transpose && Is_AfterOps_Tile && result_K_Iterator === K_IteratorMax - 1.U)
                     {
                         //如果需要转置，那么我们就转置数据
                         io.FromScarchPadIO.WriteRequestData(i).bits := transpose_data(i).asUInt
@@ -267,9 +273,15 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                 WriteRequset := true.B//此时只要数据有效，就喜欢进行写SCP
                 io.ResultMatrix_D.ready := true.B
                 
-                val store_addr = WireInit(DVectorCount)
+                val store_addr = WireInit(addr_Iterator)
                 io.FromScarchPadIO.WriteBankAddr.map(_.bits := store_addr)//写地址就是DVector的计数
                 when(io.ResultMatrix_D.fire){
+                    addr_Iterator := addr_Iterator + 1.U
+                    when(addr_Iterator === addr_IteratorMax - 1.U){
+                        //如果地址迭代器到达最大值，那么我们就结束计算
+                        addr_Iterator := 0.U
+                        result_K_Iterator := result_K_Iterator + 1.U
+                    }
                     DVectorCount := DVectorCount + 1.U
                     if (YJPCDCDebugEnable)
                     {

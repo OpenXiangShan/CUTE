@@ -32,7 +32,7 @@ class WithCUTE(EnableCUTEList: Seq[Int]) extends Config((site, here, up) => {
 class RoCC2CUTE(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) with CUTEImplParameters{
   override lazy val module = new CUTETile(this)
  lazy val LLCMemPort = LazyModule(new Cute2TL)
- tlNode := TLWidthWidget(outsideDataWidthByte) := LLCMemPort.node
+ atlNode := TLWidthWidget(outsideDataWidthByte) := LLCMemPort.node
 }
 
 
