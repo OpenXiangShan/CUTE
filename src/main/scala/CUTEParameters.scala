@@ -301,6 +301,7 @@ case class CuteParams(
     def ResultWidth = ResultWidthByte * 8
     def ApplicationMaxTensorSizeBitSize = log2Ceil(ApplicationMaxTensorSize) + 1
     def MMUDataWidth = outsideDataWidth //MMU的数据线宽度
+    def MMUMaskWidth = MMUDataWidth / 8 //MMU的掩码线宽度
     def MMUDataWidthBitSize = log2Ceil(MMUDataWidth) + 1 //MMU的数据线有效数据位数
     def LLCSourceMaxNumBitSize = log2Ceil(LLCSourceMaxNum) + 1
     def MemorysourceMaxNumBitSize = log2Ceil(MemorysourceMaxNum) + 1
@@ -398,6 +399,7 @@ trait CUTEImplParameters{
     val ApplicationMaxTensorSizeBitSize = cuteParams.ApplicationMaxTensorSizeBitSize
     val MMUAddrWidth = cuteParams.MMUAddrWidth
     val MMUDataWidth = cuteParams.MMUDataWidth
+    val MMUMaskWidth = cuteParams.MMUMaskWidth
     val MMUDataWidthBitSize = cuteParams.MMUDataWidthBitSize
     val LLCSourceMaxNum = cuteParams.LLCSourceMaxNum
     val LLCSourceMaxNumBitSize = cuteParams.LLCSourceMaxNumBitSize
@@ -1095,6 +1097,7 @@ class MMU2TLIO(implicit p: Parameters) extends CuteBundle{
         val RequestData = UInt(MMUDataWidth.W)
         val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
         val RequestType_isWrite = Bool()
+        val RequestMask = UInt(MMUMaskWidth.W) //MMU的Mask
     }))
     //读请求分发到的TL Link的事务编号
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))

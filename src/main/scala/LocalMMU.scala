@@ -195,6 +195,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
     io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := 0.U
     io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := false.B
+    io.LastLevelCacheTLIO.Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W)) //MMU的Mask，默认全1
     io.LastLevelCacheTLIO.Request.bits.RequestData := 0.U
     io.LastLevelCacheTLIO.Request.valid := false.B
     io.LastLevelCacheTLIO.Response.ready := false.B
