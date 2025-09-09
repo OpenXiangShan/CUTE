@@ -5,8 +5,6 @@ import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
-import boom.v3.util._
-    import os.write
 
     //数据在CScarachpad中的编排
     //数据会先排N，再排M

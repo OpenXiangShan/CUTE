@@ -72,9 +72,9 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
   io.mmu.ConherentRequsetSourceID.bits := id
   io.mmu.ConherentRequsetSourceID.valid := !is_full
   io.mmu.nonConherentRequsetSourceID.bits := 0.U
-    io.mmu.nonConherentRequsetSourceID.valid := false.B
-    io.mmu.Response.bits.ReseponseData := 0.U
-    io.mmu.Response.bits.ReseponseConherent := false.B
+  io.mmu.nonConherentRequsetSourceID.valid := false.B
+  io.mmu.Response.bits.ReseponseData := 0.U
+  io.mmu.Response.bits.ReseponseConherent := false.B
     //输出是否sourceid已满的信息
     // printf("[CUTE2YGJK.node]is_full: %x\n", is_full)
   when(io.mmu.Request.fire){

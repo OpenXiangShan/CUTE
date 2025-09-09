@@ -5,7 +5,7 @@ import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
-import boom.v3.util._
+// import boom.v3.util._
 
 //AMemoryLoader，用于加载B矩阵的数据，供给Scratchpad使用
 //从不同的存储介质中加载数据，供给Scratchpad使用
