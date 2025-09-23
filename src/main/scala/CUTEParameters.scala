@@ -270,6 +270,8 @@ case class CuteParams(
     val VecTaskInstBufferSize :Int = 8, //VecTask的指令缓冲的数量
     val VecTaskDataBufferDepth :Int = 4, //VecTask的指令缓冲深度掩盖从VecInterface到VPU的数据传输延迟即可
 
+    val EnableAsyncGemm: Boolean = true, //是否使用异步GEMM
+
     val Debug : CuteDebugParams = CuteDebugParams.NoDebug, //调试参数
     val MMUParams: CuteMMUParams = CuteMMUParams.baseParams, //MMU的参数
     
@@ -562,6 +564,9 @@ class MacroInst()(implicit p: Parameters) extends CuteBundle{
 
     // val VectorOpInstAddr = UInt(64.W)
     // val VectorInst_Length = UInt(32.W)
+
+    val need_mrelease = Bool() // 执行完成后是否需要 mrelease
+    val token = UInt(5.W) // token idx for mrelease
 }
 
 //CUTE能接受的，Load模块能处理的微指令形式

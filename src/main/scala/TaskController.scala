@@ -194,6 +194,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Tail) := false.B
             MacroInst_FIFO_Tail := WrapInc(MacroInst_FIFO_Tail, MarcoInstFIFODepth)
             io.instfifo_release := true.B
+            io.ygjkctrl.mrelease.valid := MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease
+            io.ygjkctrl.mrelease.bits.tokenRd := MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).token
+            MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease := false.B
             if (YJPDebugEnable)
             {
                 printf("[TaskController<%d>]:Inst auto Clear!  MacroInst_FIFO_Head = %d, MacroInst_FIFO_Tail = %d\n", io.DebugTimeStampe,MacroInst_FIFO_Head, MacroInst_FIFO_Tail)
@@ -217,6 +220,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
         val MacroInst_Reg_Wire = Wire(new MacroInst)
         MacroInst_Reg_Wire := MacroInst_Reg.asTypeOf(MacroInst_Reg_Wire)
+        MacroInst_Reg_Wire.need_mrelease := false.B // default: no mrelease
         
         //funct为func去除最高位的部分
         val funct = io.ygjkctrl.config.bits.func(5,0)
@@ -378,6 +382,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                     MacroInst_FIFO_Tail := WrapInc(MacroInst_FIFO_Tail, MarcoInstFIFODepth)
                     io.ygjkctrl.cute_return_val := MacroInst_FIFO_Tail
                     // io.ygjkctrl.cute_return_val.valid := true.B
+                    io.ygjkctrl.mrelease.valid := MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease
+                    io.ygjkctrl.mrelease.bits.tokenRd := MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).token
+                    MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease := false.B
                     if (YJPDebugEnable)
                     {
                         printf("[TaskController<%d>]:Inst Clear!  MacroInst_FIFO_Head = %d, MacroInst_FIFO_Tail = %d\n", io.DebugTimeStampe,MacroInst_FIFO_Head, MacroInst_FIFO_Tail)
@@ -403,6 +410,17 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             }
         }.elsewhen(funct === 18.U)
         {
+        }.elsewhen(funct === 32.U) // mrelease
+        {
+            when(MacroInst_FIFO_Empty || MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Tail)) {
+                // When there's no matrix store in fifo, then directly return in mrelease
+                io.ygjkctrl.mrelease.valid := true.B
+                io.ygjkctrl.mrelease.bits.tokenRd := 0.U // TODO: Get tokenRd from instruction
+            }.otherwise {
+                // Update mrelease info in MacroInst_FIFO
+                MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease := true.B
+                MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).token := 0.U // TODO: Get token from instruction
+            }
         }
     }
     

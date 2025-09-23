@@ -35,6 +35,10 @@ class YGJKBuffer extends Bundle with YGJKParameters{
   val id = UInt(6.W)
 }
 
+class MreleaseIO extends Bundle{
+    val tokenRd = UInt(5.W)
+}
+
 class YGJKControl extends Bundle{
   val reset = Output(Bool())
   val acc_running = Input(Bool())
@@ -47,6 +51,7 @@ class YGJKControl extends Bundle{
     val cfgData2 = UInt(64.W)
     val func = UInt(7.W)
   })
+  val mrelease = Valid(new MreleaseIO)
 }
 
 class YGJKIO extends Bundle {
