@@ -206,6 +206,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     io.ygjkctrl.InstFIFO_Info := MacroInst_FIFO_Valid.asUInt
     io.ygjkctrl.InstFIFO_Full := MacroInst_FIFO_Full
     io.ygjkctrl.InstFIFO_Finish := MacroInst_FIFO_Total_Finish.asUInt
+    io.ygjkctrl.mrelease.valid := false.B
+    io.ygjkctrl.mrelease.bits.tokenRd := 0.U
+    io.ygjkctrl.amuCtrl.ready := !MacroInst_FIFO_Full
 
     io.ctrlCounter.InstQueueEmpty := MacroInst_FIFO_Empty
 
@@ -357,7 +360,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         }
       }.otherwise {
         // panic
-        assert(false, "Invalid AMU Ctrl Op")
+        printf("Invalid AMU Ctrl Op: %d\n", amuCtrl_Wire.op)
       }
     }
     

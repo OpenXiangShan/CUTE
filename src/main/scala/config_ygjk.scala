@@ -47,7 +47,7 @@ class YGJKControl extends Bundle{
   val InstFIFO_Full = Input((Bool()))
   val InstFIFO_Finish = Input((UInt(5.W)))
   val amuCtrl = Decoupled(new AmuCtrlIO)
-  val mrelease = Valid(new MreleaseIO)
+  val mrelease = Flipped(Valid(new MreleaseIO))
 }
 
 class YGJKIO extends Bundle {
