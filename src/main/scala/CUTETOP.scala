@@ -13,6 +13,7 @@ class CUTETopIO()(implicit p: Parameters) extends CuteBundle{
     val instfifo_head_id = Output(UInt(MarcoInstFIFODepthBitSize.W))
     val instfifo_tail_id = Output(UInt(MarcoInstFIFODepthBitSize.W))
     val instfifo_release = Output(Bool())
+    val mrelease = Decoupled(new MreleaseIO)
 }
 class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val io = IO(new CUTETopIO)
@@ -231,7 +232,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         CML.io.ToScarchPadIO <> CSpad(1).io.ScarchPadIO.FromMemoryLoader
     }
 
-
+    TaskCtrl.io.ygjkctrl.mrelease <> io.mrelease
 
 
 }

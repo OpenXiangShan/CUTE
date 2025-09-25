@@ -3,6 +3,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
+import cute.Bundles._
 // import boom.acc._
 
 trait YGJKParameters{
@@ -45,12 +46,7 @@ class YGJKControl extends Bundle{
   val InstFIFO_Info = Input((UInt(5.W)))
   val InstFIFO_Full = Input((Bool()))
   val InstFIFO_Finish = Input((UInt(5.W)))
-  val cute_return_val = (Input(UInt(32.W)))
-  val config  = Valid(new Bundle{
-    val cfgData1 = UInt(64.W)
-    val cfgData2 = UInt(64.W)
-    val func = UInt(7.W)
-  })
+  val amuCtrl = Decoupled(new AmuCtrlIO)
   val mrelease = Valid(new MreleaseIO)
 }
 

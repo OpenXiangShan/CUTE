@@ -3,6 +3,7 @@ package cute
 
 import chisel3._
 import chisel3.util._
+import cute.Bundles._
 import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
 // import boom.v3.util._
@@ -129,8 +130,6 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     io.AOP_MicroTask_Config.CUTEuop := 0.U.asTypeOf(io.AOP_MicroTask_Config.CUTEuop)
 
     io.ygjkctrl.acc_running := false.B
-    io.ygjkctrl.cute_return_val := 0xdeadbeefL.U
-    // io.ygjkctrl.cute_return_val.valid := false.B
     io.ygjkctrl.InstFIFO_Finish := 0.U
     io.ygjkctrl.InstFIFO_Full := 0.U
     io.ygjkctrl.InstFIFO_Info := 0.U
@@ -210,218 +209,156 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
     io.ctrlCounter.InstQueueEmpty := MacroInst_FIFO_Empty
 
-    when(io.ygjkctrl.config.valid)
-    {
-        // //输出指令
-        // if (YJPDebugEnable)
-        // {
-        //     printf("TaskController: func = %d, cfgData1 = %d, cfgData2 = %d\n",io.DebugTimeStampe, io.ygjkctrl.config.bits.func, io.ygjkctrl.config.bits.cfgData1, io.ygjkctrl.config.bits.cfgData2)
-        // }
+    when(io.ygjkctrl.amuCtrl.valid) {
+      // //输出指令
+      // if (YJPDebugEnable)
+      // {
+      //     printf("TaskController: func = %d, cfgData1 = %d, cfgData2 = %d\n",io.DebugTimeStampe, io.ygjkctrl.config.bits.func, io.ygjkctrl.config.bits.cfgData1, io.ygjkctrl.config.bits.cfgData2)
+      // }
 
-        val MacroInst_Reg_Wire = Wire(new MacroInst)
-        MacroInst_Reg_Wire := MacroInst_Reg.asTypeOf(MacroInst_Reg_Wire)
-        MacroInst_Reg_Wire.need_mrelease := false.B // default: no mrelease
-        
-        //funct为func去除最高位的部分
-        val funct = io.ygjkctrl.config.bits.func(5,0)
-        //funct === 0，将配置好的Marco指令加入指令FIFO
+      val MacroInst_Reg_Wire = Wire(new MacroInst)
+      MacroInst_Reg_Wire := MacroInst_Reg.asTypeOf(MacroInst_Reg_Wire)
+      MacroInst_Reg_Wire.need_mrelease := false.B // default: no mrelease
 
-        //funct === 1    配置加速器，cfgData1 = ATensor的起始地址，cfgData2 = next_reduce_dim的stride
-        //funct === 2    配置加速器，cfgData1 = BTensor的起始地址，cfgData2 = next_reduce_dim的stride
-        //funct === 3    配置加速器，cfgData1 = CTensor的起始地址，cfgData2 = next_reduce_dim的stride
-        //funct === 4    配置加速器，cfgData1 = DTensor的起始地址，cfgData2 = next_reduce_dim的stride
+      val amuCtrl_Wire = Wire(new AmuCtrlIO)
+      amuCtrl_Wire := io.ygjkctrl.amuCtrl.bits
 
-        //funct === 5    配置加速器，cfgData1 = (M[0~19bit]，N[20~39bit]，K[40~59bit])
-        //               对于卷积就是cfgData1 = (ohow[0~19bit]，oc[20~39bit]，ic[40~59bit])
-        //                         cfgData2 = kernel_stride 对于矩阵乘来说是0，对于卷积来说是下一个卷积核的起始地址卷积核是(kh,kw,oc,ic)排的
+      val amuMma_Wire = Wire(new AmuMmaIO)
+      amuMma_Wire := amuCtrl_Wire.data.asTypeOf(new AmuMmaIO)
+      val amuLsu_Wire = Wire(new AmuLsuIO)
+      amuLsu_Wire := amuCtrl_Wire.data.asTypeOf(new AmuLsuIO)
+      val amuRelease_Wire = Wire(new AmuReleaseIO)
+      amuRelease_Wire := amuCtrl_Wire.data.asTypeOf(new AmuReleaseIO)
 
-        //funct === 6    配置加速器，cfgData1 = (element_type[0~7bit]，bias_type[8~15bit]，transpose_result[16~23bit],conv_stride[24~31bit],conv_oh_max[32~47bit],conv_ow_max[48~63bit])
-        //               配置加速器，cfgData2 = (kernel_size[0~7bit]，kernel_stride[8~15bit]，conv_oh_per_add[16~25]，conv_ow_per_add[26~35]， conv_oh_index[36~45bit],conv_oh_index[46~55bit])
-        //val conv_oh_per_add //避免在计算过程中进行除法运算，这里可以提前计算好
-        //val conv_ow_per_add //避免在计算过程中进行取余运算，这里可以提前计算好
+      when(amuCtrl_Wire.op === AmuCtrlIO.mmaOp()) {
+        MacroInst_Reg_Wire.Application_M := amuMma_Wire.mtilem
+        MacroInst_Reg_Wire.Application_N := amuMma_Wire.mtilen
+        MacroInst_Reg_Wire.Application_K := amuMma_Wire.mtilek
+        // MacroInst_Reg_Wire.element_type := amuMma_Wire.types // TODO: translate me!
+        // MacroInst_Reg_Wire.bias_data_type := amuMma_Wire.typed // TODO: translate me!
+        MacroInst_Reg_Wire.bias_type := CMemoryLoaderTaskType.TaskTypeTensorLoad
+        MacroInst_Reg_Wire.is_fp := amuMma_Wire.isfp
 
-        when(funct === 0.U)
-        {
-            //这里最好是生成一条VLSW送到加速器的指令buff里，然后在TaskController继续分解成不同期间的指令
-            //目前先实现成单条指令触发
+        MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+        get_configred := true.B
+      }.elsewhen(amuCtrl_Wire.op === AmuCtrlIO.mlsOp()) {
+        when(amuLsu_Wire.ls === 0.U) { // matrix load
+          when(amuLsu_Wire.isA === true.B) {
+            MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr := amuLsu_Wire.baseAddr
+            MacroInst_Reg_Wire.ApplicationTensor_A_Stride := amuLsu_Wire.stride
 
-            // assert(!MacroInst_FIFO_Full, "MacroInst FIFO is full")
-            when(!MacroInst_FIFO_Full)
-            {
-                val is_matmul_inst = MacroInst_Reg.asTypeOf(new MacroInst).conv_oh_max === 0.U && MacroInst_Reg.asTypeOf(new MacroInst).conv_ow_max === 0.U
-                val matmul_inst = MacroInst_Reg.asTypeOf(new MacroInst)
-                when(is_matmul_inst)
-                {
-                    matmul_inst.conv_oh_max := 1.U
-                    matmul_inst.conv_ow_max := MacroInst_Reg.asTypeOf(new MacroInst).Application_M
-                }
-                MacroInst_FIFO(MacroInst_FIFO_Head) := Mux(is_matmul_inst, matmul_inst.asUInt, MacroInst_Reg)
-                MacroInst_FIFO_Valid(MacroInst_FIFO_Head) := true.B
-                MacroInst_FIFO_Decode_Finish(MacroInst_FIFO_Head) := false.B
-                MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Head) := false.B
-                MacroInst_FIFO_Head := WrapInc(MacroInst_FIFO_Head, MarcoInstFIFODepth)
-                io.ygjkctrl.cute_return_val := MacroInst_FIFO_Head
-                // io.ygjkctrl.cute_return_val.valid := true.B
-                if (YJPDebugEnable)
-                {
-                    when(is_matmul_inst === false.B)
-                    {
-                        printf("[TaskController<%d>]:CONV Inst Insert!  MacroInst_FIFO_Head = %d, MacroInst_FIFO_Tail = %d\n", io.DebugTimeStampe,MacroInst_FIFO_Head, MacroInst_FIFO_Tail)
-                        //输出宏指令的的信息
-                        printf("[TaskController<%d>]:ApplicationTensor_A_BaseVaddr = %x, ApplicationTensor_A_Stride = %x, ApplicationTensor_B_BaseVaddr = %x, ApplicationTensor_B_Stride = %x, ApplicationTensor_C_BaseVaddr = %x, ApplicationTensor_C_Stride = %x, ApplicationTensor_D_BaseVaddr = %x, ApplicationTensor_D_Stride = %x, Application_M = %x, Application_N = %x, Application_K = %x, kernel_stride = %x, element_type = %x, bias_type = %x, transpose_result = %x, conv_stride = %x, conv_oh_max = %x, conv_ow_max = %x, kernel_size = %x, conv_oh_per_add = %x, conv_ow_per_add = %x, conv_oh_index = %x, conv_ow_index = %x\n", io.DebugTimeStampe, MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr, MacroInst_Reg_Wire.ApplicationTensor_A_Stride, MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr, MacroInst_Reg_Wire.ApplicationTensor_B_Stride, MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr, MacroInst_Reg_Wire.ApplicationTensor_C_Stride, MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr, MacroInst_Reg_Wire.ApplicationTensor_D_Stride, MacroInst_Reg_Wire.Application_M, MacroInst_Reg_Wire.Application_N, MacroInst_Reg_Wire.Application_K, MacroInst_Reg_Wire.kernel_stride, MacroInst_Reg_Wire.element_type, MacroInst_Reg_Wire.bias_type, MacroInst_Reg_Wire.transpose_result, MacroInst_Reg_Wire.conv_stride, MacroInst_Reg_Wire.conv_oh_max, MacroInst_Reg_Wire.conv_ow_max, MacroInst_Reg_Wire.kernel_size, MacroInst_Reg_Wire.conv_oh_per_add, MacroInst_Reg_Wire.conv_ow_per_add, MacroInst_Reg_Wire.conv_oh_index, MacroInst_Reg_Wire.conv_ow_index)
-                    }.elsewhen(is_matmul_inst === true.B)
-                    {
-                        printf("[TaskController<%d>]:MATMUL Inst Insert!  MacroInst_FIFO_Head = %d, MacroInst_FIFO_Tail = %d\n", io.DebugTimeStampe,MacroInst_FIFO_Head, MacroInst_FIFO_Tail)
-                        //输出宏指令的的信息
-                        printf("[TaskController<%d>]:ApplicationTensor_A_BaseVaddr = %x, ApplicationTensor_A_Stride = %x, ApplicationTensor_B_BaseVaddr = %x, ApplicationTensor_B_Stride = %x, ApplicationTensor_C_BaseVaddr = %x, ApplicationTensor_C_Stride = %x, ApplicationTensor_D_BaseVaddr = %x, ApplicationTensor_D_Stride = %x, Application_M = %x, Application_N = %x, Application_K = %x, kernel_stride = %x, element_type = %x, bias_type = %x, transpose_result = %x, conv_stride = %x, conv_oh_max = %x, conv_ow_max = %x, kernel_size = %x, conv_oh_per_add = %x, conv_ow_per_add = %x, conv_oh_index = %x, conv_ow_index = %x\n", io.DebugTimeStampe, matmul_inst.ApplicationTensor_A_BaseVaddr, matmul_inst.ApplicationTensor_A_Stride, matmul_inst.ApplicationTensor_B_BaseVaddr, matmul_inst.ApplicationTensor_B_Stride, matmul_inst.ApplicationTensor_C_BaseVaddr, matmul_inst.ApplicationTensor_C_Stride, matmul_inst.ApplicationTensor_D_BaseVaddr, matmul_inst.ApplicationTensor_D_Stride, matmul_inst.Application_M, matmul_inst.Application_N, matmul_inst.Application_K, matmul_inst.kernel_stride, matmul_inst.element_type, matmul_inst.bias_type, matmul_inst.transpose_result, matmul_inst.conv_stride, matmul_inst.conv_oh_max, matmul_inst.conv_ow_max, matmul_inst.kernel_size, matmul_inst.conv_oh_per_add, matmul_inst.conv_ow_per_add, matmul_inst.conv_oh_index, matmul_inst.conv_ow_index)
-                    }
+            MacroInst_Reg_Wire.Application_M := amuLsu_Wire.row
+            MacroInst_Reg_Wire.Application_K := amuLsu_Wire.column
 
-
-                }
-
-                get_configred := false.B
-            }.otherwise
-            {
-                io.ygjkctrl.cute_return_val := 0xdeadbeefL.U
-                // io.ygjkctrl.cute_return_val.valid := true.B
-                if (YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Inst Insert!  MacroInst FIFO is Full!\n", io.DebugTimeStampe)
-                }
+            switch(amuLsu_Wire.widths.asUInt) {
+              is(MSew.e32) {
+                MacroInst_Reg_Wire.element_type := ElementDataType.DataTypeWidth32
+              }
+              is(MSew.e16) {
+                MacroInst_Reg_Wire.element_type := ElementDataType.DataTypeWidth16
+              }
+              is(MSew.e8) {
+                MacroInst_Reg_Wire.element_type := ElementDataType.DataTypeWidth8
+              }
+              is(MSew.e4) {
+                MacroInst_Reg_Wire.element_type := ElementDataType.DataTypeWidth4
+              }
             }
 
-
-        }.elsewhen(funct === 1.U)
-        {
-            MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr := io.ygjkctrl.config.bits.cfgData1
-            MacroInst_Reg_Wire.ApplicationTensor_A_Stride := io.ygjkctrl.config.bits.cfgData2
             MacroInst_Reg := MacroInst_Reg_Wire.asUInt
-
             get_configred := true.B
-            
-        }.elsewhen(funct === 2.U)
-        {
-            MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr := io.ygjkctrl.config.bits.cfgData1
-            MacroInst_Reg_Wire.ApplicationTensor_B_Stride := io.ygjkctrl.config.bits.cfgData2
-            MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+          }.elsewhen(amuLsu_Wire.isB === true.B) {
+            MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr := amuLsu_Wire.baseAddr
+            MacroInst_Reg_Wire.ApplicationTensor_B_Stride := amuLsu_Wire.stride
 
-            get_configred := true.B
-        }.elsewhen(funct === 3.U)
-        {
-            MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr := io.ygjkctrl.config.bits.cfgData1
-            MacroInst_Reg_Wire.ApplicationTensor_C_Stride := io.ygjkctrl.config.bits.cfgData2
-            MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+            MacroInst_Reg_Wire.Application_N := amuLsu_Wire.row
+            MacroInst_Reg_Wire.Application_K := amuLsu_Wire.column
 
-            get_configred := true.B
-        }.elsewhen(funct === 4.U)
-        {
-            MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr := io.ygjkctrl.config.bits.cfgData1
-            MacroInst_Reg_Wire.ApplicationTensor_D_Stride := io.ygjkctrl.config.bits.cfgData2
-            MacroInst_Reg := MacroInst_Reg_Wire.asUInt
-
-            get_configred := true.B
-        }.elsewhen(funct === 5.U)
-        {
-            assert(MacroInst_Reg_Wire.Application_M.getWidth <= 20)
-            assert(MacroInst_Reg_Wire.Application_N.getWidth <= 20)
-            assert(MacroInst_Reg_Wire.Application_K.getWidth <= 20)
-            MacroInst_Reg_Wire.Application_M := io.ygjkctrl.config.bits.cfgData1(MacroInst_Reg_Wire.Application_M.getWidth-1,0)
-            MacroInst_Reg_Wire.Application_N := io.ygjkctrl.config.bits.cfgData1(MacroInst_Reg_Wire.Application_N.getWidth+19,20)
-            MacroInst_Reg_Wire.Application_K := io.ygjkctrl.config.bits.cfgData1(MacroInst_Reg_Wire.Application_K.getWidth+39,40)
-            MacroInst_Reg_Wire.kernel_stride := io.ygjkctrl.config.bits.cfgData2
-            MacroInst_Reg := MacroInst_Reg_Wire.asUInt
-
-            get_configred := true.B
-        }.elsewhen(funct === 6.U)
-        {
-            assert(MacroInst_Reg_Wire.element_type.getWidth <= 8)
-            assert(MacroInst_Reg_Wire.bias_type.getWidth <= 8)
-            assert(MacroInst_Reg_Wire.transpose_result.getWidth <= 8)
-            assert(MacroInst_Reg_Wire.conv_stride.getWidth <= 8)
-            assert(MacroInst_Reg_Wire.conv_oh_max.getWidth <= 16)
-            assert(MacroInst_Reg_Wire.conv_ow_max.getWidth <= 16)
-
-            assert(MacroInst_Reg_Wire.kernel_size.getWidth <= 4)
-            assert(MacroInst_Reg_Wire.conv_oh_per_add.getWidth <= 15)
-            assert(MacroInst_Reg_Wire.conv_ow_per_add.getWidth <= 15)
-            assert(MacroInst_Reg_Wire.conv_oh_index.getWidth <= 15)
-            assert(MacroInst_Reg_Wire.conv_ow_index.getWidth <= 15)
-
-
-
-            MacroInst_Reg_Wire.element_type := io.ygjkctrl.config.bits.cfgData1(MacroInst_Reg_Wire.element_type.getWidth-1,0)
-            MacroInst_Reg_Wire.bias_type := io.ygjkctrl.config.bits.cfgData1(MacroInst_Reg_Wire.bias_type.getWidth-1+8,8)
-            MacroInst_Reg_Wire.transpose_result := io.ygjkctrl.config.bits.cfgData1(MacroInst_Reg_Wire.transpose_result.getWidth-1+16,16)
-            MacroInst_Reg_Wire.conv_stride := io.ygjkctrl.config.bits.cfgData1(MacroInst_Reg_Wire.conv_stride.getWidth-1+24,24)
-            MacroInst_Reg_Wire.conv_oh_max := io.ygjkctrl.config.bits.cfgData1(MacroInst_Reg_Wire.conv_oh_max.getWidth-1+32,32)
-            MacroInst_Reg_Wire.conv_ow_max := io.ygjkctrl.config.bits.cfgData1(MacroInst_Reg_Wire.conv_ow_max.getWidth-1+48,48)
-            MacroInst_Reg_Wire.kernel_size := io.ygjkctrl.config.bits.cfgData2(MacroInst_Reg_Wire.kernel_size.getWidth-1,0)
-            MacroInst_Reg_Wire.conv_oh_per_add := io.ygjkctrl.config.bits.cfgData2(MacroInst_Reg_Wire.conv_oh_per_add.getWidth-1+4,4)
-            MacroInst_Reg_Wire.conv_ow_per_add := io.ygjkctrl.config.bits.cfgData2(MacroInst_Reg_Wire.conv_ow_per_add.getWidth-1+19,19)
-            MacroInst_Reg_Wire.conv_oh_index := io.ygjkctrl.config.bits.cfgData2(MacroInst_Reg_Wire.conv_oh_index.getWidth-1+34,34)
-            MacroInst_Reg_Wire.conv_ow_index := io.ygjkctrl.config.bits.cfgData2(MacroInst_Reg_Wire.conv_ow_index.getWidth-1+49,49)
-            MacroInst_Reg_Wire.bias_data_type := ElementDataType.DataTypeWidth32
-            MacroInst_Reg := MacroInst_Reg_Wire.asUInt
-
-            get_configred := true.B
-        }.elsewhen(funct === 16.U)
-        {
-            if(TaskCtrl_AutoClear)
-            {
-                io.ygjkctrl.cute_return_val := 0xdeadbeefL.U
-                printf("[TaskController<%d>]:Inst auto Clear!  MacroInst_FIFO is Empty!\n", io.DebugTimeStampe)
+            switch(amuLsu_Wire.widths.asUInt) {
+              is(MSew.e32) {
+                MacroInst_Reg_Wire.element_type := ElementDataType.DataTypeWidth32
+              }
+              is(MSew.e16) {
+                MacroInst_Reg_Wire.element_type := ElementDataType.DataTypeWidth16
+              }
+              is(MSew.e8) {
+                MacroInst_Reg_Wire.element_type := ElementDataType.DataTypeWidth8
+              }
+              is(MSew.e4) {
+                MacroInst_Reg_Wire.element_type := ElementDataType.DataTypeWidth4
+              }
             }
-            else
-            {
-                //clear指令，将队尾的宏指令清除
-                when(!MacroInst_FIFO_Empty&&MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Tail))
-                {
-                    MacroInst_FIFO_Valid(MacroInst_FIFO_Tail) := false.B
-                    MacroInst_FIFO_Decode_Finish(MacroInst_FIFO_Tail) := false.B
-                    MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Tail) := false.B
-                    MacroInst_FIFO_Tail := WrapInc(MacroInst_FIFO_Tail, MarcoInstFIFODepth)
-                    io.ygjkctrl.cute_return_val := MacroInst_FIFO_Tail
-                    // io.ygjkctrl.cute_return_val.valid := true.B
-                    io.ygjkctrl.mrelease.valid := MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease
-                    io.ygjkctrl.mrelease.bits.tokenRd := MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).token
-                    MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease := false.B
-                    if (YJPDebugEnable)
-                    {
-                        printf("[TaskController<%d>]:Inst Clear!  MacroInst_FIFO_Head = %d, MacroInst_FIFO_Tail = %d\n", io.DebugTimeStampe,MacroInst_FIFO_Head, MacroInst_FIFO_Tail)
-                    }
-                }.otherwise
-                {
-                    io.ygjkctrl.cute_return_val := 0xdeadbeefL.U
-                    // io.ygjkctrl.cute_return_val.valid := true.B
-                    if (YJPDebugEnable)
-                    {
-                        printf("[TaskController<%d>]:Inst Clear!  MacroInst_FIFO is Empty or Not Finish!\n", io.DebugTimeStampe)
-                    }
-                }   
+
+            MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+            get_configred := true.B
+          }.elsewhen(amuLsu_Wire.isC === true.B) {
+            MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr := amuLsu_Wire.baseAddr
+            MacroInst_Reg_Wire.ApplicationTensor_C_Stride := amuLsu_Wire.stride
+
+            MacroInst_Reg_Wire.Application_M := amuLsu_Wire.row
+            MacroInst_Reg_Wire.Application_N := amuLsu_Wire.column
+
+            switch(amuLsu_Wire.widths.asUInt) {
+              is(MSew.e32) {
+                MacroInst_Reg_Wire.bias_data_type := ElementDataType.DataTypeWidth32
+              }
+              is(MSew.e16) {
+                MacroInst_Reg_Wire.bias_data_type := ElementDataType.DataTypeWidth16
+              }
+              is(MSew.e8) {
+                MacroInst_Reg_Wire.bias_data_type := ElementDataType.DataTypeWidth8
+              }
+              is(MSew.e4) {
+                MacroInst_Reg_Wire.bias_data_type := ElementDataType.DataTypeWidth4
+              }
             }
-        }.elsewhen(funct === 17.U)
-        {
-            //查询当前完成宏指令的尾编号的位置
-            io.ygjkctrl.cute_return_val := MacroInst_FIFO_Tail
-            // io.ygjkctrl.cute_return_val.valid := true.B
-            if (YJPDebugEnable)
-            {
-                printf("[TaskController<%d>]:Inst Query!  MacroInst_FIFO_Head = %d, MacroInst_FIFO_Tail = %d\n", io.DebugTimeStampe,MacroInst_FIFO_Head, MacroInst_FIFO_Tail)
+            MacroInst_Reg_Wire.bias_type := CMemoryLoaderTaskType.TaskTypeTensorLoad
+
+            MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+            get_configred := true.B
+          }
+        }.otherwise { // matrix store
+          assert(amuLsu_Wire.isC === true.B, "AMU LSU is not C")
+          MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr := amuLsu_Wire.baseAddr
+          MacroInst_Reg_Wire.ApplicationTensor_D_Stride := amuLsu_Wire.stride
+
+          MacroInst_Reg_Wire.Application_M := amuLsu_Wire.row
+          MacroInst_Reg_Wire.Application_N := amuLsu_Wire.column
+
+          MacroInst_Reg_Wire.bias_type := CMemoryLoaderTaskType.TaskTypeTensorLoad
+
+          MacroInst_Reg_Wire.conv_oh_max := 1.U
+          MacroInst_Reg_Wire.conv_ow_max := MacroInst_Reg_Wire.Application_M
+
+          assert(amuLsu_Wire.widths.asUInt === MSew.e32, "Store matrix only support e32")
+          
+          when (!MacroInst_FIFO_Full) {
+            MacroInst_FIFO(MacroInst_FIFO_Head) := MacroInst_Reg_Wire.asUInt
+            MacroInst_FIFO_Valid(MacroInst_FIFO_Head) := true.B
+            MacroInst_FIFO_Decode_Finish(MacroInst_FIFO_Head) := false.B
+            MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Head) := false.B
+            MacroInst_FIFO_Head := WrapInc(MacroInst_FIFO_Head, MarcoInstFIFODepth)
+            get_configred := false.B
+          }.otherwise {
+            if (YJPDebugEnable) {
+                printf("[TaskController<%d>]:Inst Insert!  MacroInst FIFO is Full!\n", io.DebugTimeStampe)
             }
-        }.elsewhen(funct === 18.U)
-        {
-        }.elsewhen(funct === 32.U) // mrelease
-        {
-            when(MacroInst_FIFO_Empty || MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Tail)) {
-                // When there's no matrix store in fifo, then directly return in mrelease
-                io.ygjkctrl.mrelease.valid := true.B
-                io.ygjkctrl.mrelease.bits.tokenRd := 0.U // TODO: Get tokenRd from instruction
-            }.otherwise {
-                // Update mrelease info in MacroInst_FIFO
-                MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease := true.B
-                MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).token := 0.U // TODO: Get token from instruction
-            }
+          }
         }
+      }.elsewhen(amuCtrl_Wire.op === AmuCtrlIO.releaseOp()) {
+        when(MacroInst_FIFO_Empty || MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Tail)) {
+          // When there's no matrix store in fifo, then directly return in mrelease
+          io.ygjkctrl.mrelease.valid := true.B
+          io.ygjkctrl.mrelease.bits.tokenRd := amuRelease_Wire.tokenRd
+        }.otherwise {
+          // Update mrelease info in MacroInst_FIFO
+          MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease := true.B
+          MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).token := amuRelease_Wire.tokenRd
+        }
+      }.otherwise {
+        // panic
+        assert(false, "Invalid AMU Ctrl Op")
+      }
     }
     
 
@@ -781,7 +718,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             Compute_MicroInst.Is_Reorder_Only_Ops := true.B
             Compute_MicroInst.Is_EasyScale_Only_Ops := false.B
             Compute_MicroInst.Is_VecFIFO_Ops := false.B
-
+            Compute_MicroInst.Is_Fp := Decoding_MacroInst.is_fp
 
             val Compute_Resource_Info = Wire(new ComputeMicroInst_Resource_Info)
             Compute_Resource_Info.A_SCPID := Decode_A_SCP_ID

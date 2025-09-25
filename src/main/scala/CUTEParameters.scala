@@ -562,6 +562,8 @@ class MacroInst()(implicit p: Parameters) extends CuteBundle{
     val kernel_size = UInt(log2Ceil(KernelSizeMax).W) //卷积核的大小
     val kernel_stride = UInt((64.W)) //kernel_stride是每一个index的卷积核的大小，我们要求卷积核的数据排布是(kh,kw,oc,ic)
 
+    val is_fp                               = (Bool())      //是否是浮点数的计算
+
     // val VectorOpInstAddr = UInt(64.W)
     // val VectorInst_Length = UInt(32.W)
 
@@ -642,6 +644,8 @@ class ComputeMicroInst()(implicit p: Parameters) extends CuteBundle{
     val ScaratchpadTensor_N                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
     val ScaratchpadTensor_K                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
     val Have_Store_Micro_Inst               = (Bool())      //是否有依赖于这条计算指令的Store的指令
+
+    val Is_Fp = Bool() //是否是浮点数的计算
 }
 
 //用于描述微指令间依赖关系和资源依赖关系的信息，用于下一阶段的微指令(Store)能否发射的信息
@@ -1212,6 +1216,7 @@ case object  ElementDataType extends Field[UInt]{
     val DataTypeWidth32 = 4.U(DataTypeBitWidth.W)
     val DataTypeWidth16 = 2.U(DataTypeBitWidth.W)
     val DataTypeWidth8  = 1.U(DataTypeBitWidth.W)
+    val DataTypeWidth4  = 7.U(DataTypeBitWidth.W)
 
     val DataTypeI8I8I32     = 0.U(DataTypeBitWidth.W)     //I8 * I8 * I32
     val DataTypeF16F16F32   = 1.U(DataTypeBitWidth.W)     //FP16 * FP16 * FP32

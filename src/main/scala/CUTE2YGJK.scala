@@ -14,26 +14,12 @@ import org.chipsalliance.cde.config._
 class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.baseParams) extends Config((site, here, up) => {
     case CuteParamsKey => CoustomCuteParam
 })
-class WithCUTE(EnableCUTEList: Seq[Int]) extends Config((site, here, up) => {
-    case BuildRoCC => up(BuildRoCC, site) ++ EnableCUTEList.collect {
-        case tileId if tileId == site(TileKey).tileId =>
-            (p: Parameters) => {
-                println("[CUTE2YGJK] TileID: " + tileId)
-                val regWidth = 64 // 寄存器位宽
-                val cute = LazyModule(new RoCC2CUTE(OpcodeSet.all)(p))
-                cute
-            }
-    }
-    case CuteParamsKey => {
-        CuteParams.baseParams
-    }
-})
 
-class RoCC2CUTE(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) with CUTEImplParameters{
-  override lazy val module = new CUTETile(this)
- lazy val LLCMemPort = LazyModule(new Cute2TL)
- atlNode := TLWidthWidget(outsideDataWidthByte) := LLCMemPort.node
-}
+// class RoCC2CUTE(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) with CUTEImplParameters{
+//   override lazy val module = new CUTETile(this)
+//  lazy val LLCMemPort = LazyModule(new Cute2TL)
+//  atlNode := TLWidthWidget(outsideDataWidthByte) := LLCMemPort.node
+// }
 
 
 
@@ -164,135 +150,135 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
 
 
 
-class CUTETile(outer: RoCC2CUTE) extends LazyRoCCModuleImp(outer) with CUTEImplParameters {
-    val acc = Module(new CUTEV2Top)
-    val mem = (outer.LLCMemPort.module)
+// class CUTETile(outer: RoCC2CUTE) extends LazyRoCCModuleImp(outer) with CUTEImplParameters {
+//     val acc = Module(new CUTEV2Top)
+//     val mem = (outer.LLCMemPort.module)
 
-    val rs1 = RegInit(0.U(64.W))
-    val rs2 = RegInit(0.U(64.W))
-    val rd_data = RegInit(0.U(64.W))
-    val rd = RegInit(0.U(5.W))
-    val func = RegInit(0.U(7.W))
-    val canResp = RegInit(false.B)
-    val ac_busy = RegInit(false.B)
-    val configV = RegInit(false.B)
+//     val rs1 = RegInit(0.U(64.W))
+//     val rs2 = RegInit(0.U(64.W))
+//     val rd_data = RegInit(0.U(64.W))
+//     val rd = RegInit(0.U(5.W))
+//     val func = RegInit(0.U(7.W))
+//     val canResp = RegInit(false.B)
+//     val ac_busy = RegInit(false.B)
+//     val configV = RegInit(false.B)
 
-    val count = RegInit(0.U(64.W))
-    when(ac_busy){
-      count := count + 1.U
-    }
-    val compute = RegInit(0.U(64.W))
-    when(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 0.U){
-      compute := 0.U
-    }.elsewhen(ac_busy){
-      compute := compute + 1.U
-    }
+//     val count = RegInit(0.U(64.W))
+//     when(ac_busy){
+//       count := count + 1.U
+//     }
+//     val compute = RegInit(0.U(64.W))
+//     when(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 0.U){
+//       compute := 0.U
+//     }.elsewhen(ac_busy){
+//       compute := compute + 1.U
+//     }
 
-    val memNum_r = RegInit(0.U(64.W))
-    val memNum_w = RegInit(0.U(64.W))
+//     val memNum_r = RegInit(0.U(64.W))
+//     val memNum_w = RegInit(0.U(64.W))
 
-    val missAddr = RegInit(0.U(vaddrBits.W))
+//     val missAddr = RegInit(0.U(vaddrBits.W))
 
-    val jk_idle :: jk_compute :: jk_resp :: jk_lmmu_miss :: Nil = Enum(4)
-    val jk_state = RegInit(jk_idle)
+//     val jk_idle :: jk_compute :: jk_resp :: jk_lmmu_miss :: Nil = Enum(4)
+//     val jk_state = RegInit(jk_idle)
 
-    mem.io.mmu <> acc.io.mmu2llc
+//     mem.io.mmu <> acc.io.mmu2llc
 
 
-    //一拍的时间接受指令，下一拍的时间返回结果
-    //后面可以设置成一个指令fifo
-    io.cmd.ready := !canResp
-    when(io.cmd.fire && io.cmd.bits.inst.xd === true.B){
-      canResp := true.B
-    }.elsewhen(io.resp.fire){
-      canResp := false.B
-    }
-    // if (YJPDebugEnable)
-    // {
-    //     //输出io.cmd的信息和io.resp的信息
-    //     printf("[CUTE2YGJK.top]io.cmd.fire: %x, io.cmd.bits.inst: %x, io.cmd.bits.rs1: %x, io.cmd.bits.rs2: %x, io.cmd.bits.inst.rd: %x, io.cmd.bits.inst.funct: %x\n", io.cmd.fire, io.cmd.bits.inst.asUInt, io.cmd.bits.rs1, io.cmd.bits.rs2, io.cmd.bits.inst.rd, io.cmd.bits.inst.funct)
-    //     //输出valid和ready信息
-    //     printf("[CUTE2YGJK.top]io.cmd.valid: %x, io.cmd.ready: %x, io.resp.valid: %x, io.resp.ready: %x\n", io.cmd.valid, io.cmd.ready, io.resp.valid, io.resp.ready)
-    // }
+//     //一拍的时间接受指令，下一拍的时间返回结果
+//     //后面可以设置成一个指令fifo
+//     io.cmd.ready := !canResp
+//     when(io.cmd.fire && io.cmd.bits.inst.xd === true.B){
+//       canResp := true.B
+//     }.elsewhen(io.resp.fire){
+//       canResp := false.B
+//     }
+//     // if (YJPDebugEnable)
+//     // {
+//     //     //输出io.cmd的信息和io.resp的信息
+//     //     printf("[CUTE2YGJK.top]io.cmd.fire: %x, io.cmd.bits.inst: %x, io.cmd.bits.rs1: %x, io.cmd.bits.rs2: %x, io.cmd.bits.inst.rd: %x, io.cmd.bits.inst.funct: %x\n", io.cmd.fire, io.cmd.bits.inst.asUInt, io.cmd.bits.rs1, io.cmd.bits.rs2, io.cmd.bits.inst.rd, io.cmd.bits.inst.funct)
+//     //     //输出valid和ready信息
+//     //     printf("[CUTE2YGJK.top]io.cmd.valid: %x, io.cmd.ready: %x, io.resp.valid: %x, io.resp.ready: %x\n", io.cmd.valid, io.cmd.ready, io.resp.valid, io.resp.ready)
+//     // }
 
-    rd := io.cmd.bits.inst.rd    //下一拍一定会返回
-    io.resp.bits.rd := rd
-    io.resp.bits.data := rd_data
-    io.resp.valid := canResp
+//     rd := io.cmd.bits.inst.rd    //下一拍一定会返回
+//     io.resp.bits.rd := rd
+//     io.resp.bits.data := rd_data
+//     io.resp.valid := canResp
 
-    when(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 1.U){ //查询加速器是否在运行
-      rd_data := ac_busy
-    }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 2.U){ //查询加速器运行时间
-      rd_data := count
-    }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 3.U){ //查询加速器对外访存读次数
-      rd_data := memNum_r
-    }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 4.U){ //查询加速器对外访存写次数
-      rd_data := memNum_w
-    }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 5.U){ //查询加速器计算时间
-      rd_data := compute
-    }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 6.U){ //查询CUTE宏指令的完成情况
-      rd_data := acc.io.ctrl2top.InstFIFO_Finish
-    }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 7.U){ //查询CUTE宏指令队列是否已满
-      rd_data := acc.io.ctrl2top.InstFIFO_Full
-    }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 8.U){ //查询CUTE宏指令队列目前有多少指令
-      rd_data := acc.io.ctrl2top.InstFIFO_Info 
-    }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct >= 64.U){
-      rd_data := acc.io.ctrl2top.cute_return_val
-    }
+//     when(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 1.U){ //查询加速器是否在运行
+//       rd_data := ac_busy
+//     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 2.U){ //查询加速器运行时间
+//       rd_data := count
+//     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 3.U){ //查询加速器对外访存读次数
+//       rd_data := memNum_r
+//     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 4.U){ //查询加速器对外访存写次数
+//       rd_data := memNum_w
+//     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 5.U){ //查询加速器计算时间
+//       rd_data := compute
+//     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 6.U){ //查询CUTE宏指令的完成情况
+//       rd_data := acc.io.ctrl2top.InstFIFO_Finish
+//     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 7.U){ //查询CUTE宏指令队列是否已满
+//       rd_data := acc.io.ctrl2top.InstFIFO_Full
+//     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 8.U){ //查询CUTE宏指令队列目前有多少指令
+//       rd_data := acc.io.ctrl2top.InstFIFO_Info 
+//     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct >= 64.U){
+//       rd_data := acc.io.ctrl2top.cute_return_val
+//     }
 
-    when(acc.io.mmu2llc.Request.fire){
-        when(acc.io.mmu2llc.Request.bits.RequestType_isWrite === 0.U){
-            memNum_r := memNum_r + 1.U
-        }.elsewhen(acc.io.mmu2llc.Request.bits.RequestType_isWrite === 1.U){
-            memNum_w := memNum_w + 1.U
-        }
-    }
-    io.interrupt := false.B
-    // io.badvaddr_ygjk := Mux(jk_state=/=jk_resp, missAddr, missAddr+1.U)
-    switch(jk_state){
-      is(jk_idle){
-        when(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct(5,0) === 0.U){
-          ac_busy := true.B
-          jk_state := jk_compute
-          count := 0.U
-          memNum_r := 0.U
-          memNum_w := 0.U
-        }
-      }
+//     when(acc.io.mmu2llc.Request.fire){
+//         when(acc.io.mmu2llc.Request.bits.RequestType_isWrite === 0.U){
+//             memNum_r := memNum_r + 1.U
+//         }.elsewhen(acc.io.mmu2llc.Request.bits.RequestType_isWrite === 1.U){
+//             memNum_w := memNum_w + 1.U
+//         }
+//     }
+//     io.interrupt := false.B
+//     // io.badvaddr_ygjk := Mux(jk_state=/=jk_resp, missAddr, missAddr+1.U)
+//     switch(jk_state){
+//       is(jk_idle){
+//         when(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct(5,0) === 0.U){
+//           ac_busy := true.B
+//           jk_state := jk_compute
+//           count := 0.U
+//           memNum_r := 0.U
+//           memNum_w := 0.U
+//         }
+//       }
 
-      is(jk_compute){
-        if (YJPDebugEnable)
-        {
-            printf(p"[CUTE2YGJK.top]ac_busy = $ac_busy\n")
-        }
-        when(acc.io.ctrl2top.acc_running === false.B && mem.io.idle){
-          jk_state := jk_resp
-        }
-      }
+//       is(jk_compute){
+//         if (YJPDebugEnable)
+//         {
+//             printf(p"[CUTE2YGJK.top]ac_busy = $ac_busy\n")
+//         }
+//         when(acc.io.ctrl2top.acc_running === false.B && mem.io.idle){
+//           jk_state := jk_resp
+//         }
+//       }
 
-      is(jk_resp){
-//        io.interrupt := true.B
-        ac_busy := false.B
-        when(io.cmd.fire && io.cmd.bits.inst.opcode === "h2B".U && io.cmd.bits.inst.funct === 0.U){
-          // 收到中断响应
-          jk_state := jk_idle
-        }
-      }
-    }
-    //opcode对应的是路由到某个加速器用的，CUSTOM0、CUSTOM1、CUSTOM2、CUSTOM3这四组opcode
-    //我们这里默认使用opcode为0x0B的指令，将funct的最高位为1的指令作为配置指令。
-    acc.io.ctrl2top.config.valid := io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct(6) === 1.U
-    //输出指令信息,io.cmd.bits.inst.funct
-    // printf("funct: %x\n", io.cmd.bits.inst.funct)
-    when(io.cmd.fire){
-        if (YJPDebugEnable)
-        {
-            printf("CUTE: opcode: %x, rs1: %x, rs2: %x, rd: %x, funct: %x\n", io.cmd.bits.inst.opcode, io.cmd.bits.rs1, io.cmd.bits.rs2, io.cmd.bits.inst.rd, io.cmd.bits.inst.funct)
-        }
-    }
-    acc.io.ctrl2top.config.bits.cfgData1 := io.cmd.bits.rs1
-    acc.io.ctrl2top.config.bits.cfgData2 := io.cmd.bits.rs2
-    acc.io.ctrl2top.config.bits.func := io.cmd.bits.inst.funct
-    acc.io.ctrl2top.reset := false.B  //多次重启时置位，未实现
+//       is(jk_resp){
+// //        io.interrupt := true.B
+//         ac_busy := false.B
+//         when(io.cmd.fire && io.cmd.bits.inst.opcode === "h2B".U && io.cmd.bits.inst.funct === 0.U){
+//           // 收到中断响应
+//           jk_state := jk_idle
+//         }
+//       }
+//     }
+//     //opcode对应的是路由到某个加速器用的，CUSTOM0、CUSTOM1、CUSTOM2、CUSTOM3这四组opcode
+//     //我们这里默认使用opcode为0x0B的指令，将funct的最高位为1的指令作为配置指令。
+//     acc.io.ctrl2top.config.valid := io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct(6) === 1.U
+//     //输出指令信息,io.cmd.bits.inst.funct
+//     // printf("funct: %x\n", io.cmd.bits.inst.funct)
+//     when(io.cmd.fire){
+//         if (YJPDebugEnable)
+//         {
+//             printf("CUTE: opcode: %x, rs1: %x, rs2: %x, rd: %x, funct: %x\n", io.cmd.bits.inst.opcode, io.cmd.bits.rs1, io.cmd.bits.rs2, io.cmd.bits.inst.rd, io.cmd.bits.inst.funct)
+//         }
+//     }
+//     acc.io.ctrl2top.config.bits.cfgData1 := io.cmd.bits.rs1
+//     acc.io.ctrl2top.config.bits.cfgData2 := io.cmd.bits.rs2
+//     acc.io.ctrl2top.config.bits.func := io.cmd.bits.inst.funct
+//     acc.io.ctrl2top.reset := false.B  //多次重启时置位，未实现
 
-}
+// }
