@@ -212,13 +212,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
     io.ctrlCounter.InstQueueEmpty := MacroInst_FIFO_Empty
 
-    when(io.ygjkctrl.amuCtrl.valid) {
-      // //输出指令
-      // if (YJPDebugEnable)
-      // {
-      //     printf("TaskController: func = %d, cfgData1 = %d, cfgData2 = %d\n",io.DebugTimeStampe, io.ygjkctrl.config.bits.func, io.ygjkctrl.config.bits.cfgData1, io.ygjkctrl.config.bits.cfgData2)
-      // }
-
+    when(io.ygjkctrl.amuCtrl.fire) {
       val MacroInst_Reg_Wire = Wire(new MacroInst)
       MacroInst_Reg_Wire := MacroInst_Reg.asTypeOf(MacroInst_Reg_Wire)
       MacroInst_Reg_Wire.need_mrelease := false.B // default: no mrelease
