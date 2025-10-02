@@ -141,7 +141,16 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     //TODO:12.17先完成宏指令的流程，然后再完成微指令的流程
     
     //宏指令描述寄存器
-    val MacroInst_Reg = RegInit(0.U(new MacroInst().getWidth.W))
+    val MacroInst_Init = WireInit(0.U.asTypeOf(new MacroInst()))
+    MacroInst_Init.conv_stride := 1.U
+    MacroInst_Init.conv_oh_max := 1.U
+    MacroInst_Init.conv_ow_max := 16384.U
+    MacroInst_Init.kernel_size := 1.U
+    MacroInst_Init.conv_oh_per_add := 0.U
+    MacroInst_Init.conv_ow_per_add := 64.U
+    MacroInst_Init.conv_oh_index := 0.U
+    MacroInst_Init.conv_ow_index := 0.U // TODO: make sure this is correct
+    val MacroInst_Reg = RegInit(MacroInst_Init)
     //宏指令描述的是矩阵乘任务或者卷积任务的描述
 // void CUTE_MATMUL_MarcoTask(void *A,void *B,void *C,void *D,int Application_M,int Application_N,int Application_K,int element_type,int bias_type,\
 // uint64_t stride_A,uint64_t stride_B,uint64_t stride_C,uint64_t stride_D,bool transpose_result,int conv_oh_index,int conv_ow_index,int conv_oh_max,int conv_ow_max,void * VectorOp,int VectorInst_Length)
@@ -164,7 +173,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
     //宏指令MarcroInst_FIFO,深度为4
     //宏指令描述的是矩阵乘任务或者卷积任务的描述
-    val MacroInst_FIFO = RegInit(VecInit(Seq.fill(MarcoInstFIFODepth)(0.U(new MacroInst().getWidth.W))))
+    val MacroInst_FIFO = RegInit(VecInit(Seq.fill(MarcoInstFIFODepth)(0.U.asTypeOf(new MacroInst()))))
     val MacroInst_FIFO_Head = RegInit(0.U(MarcoInstFIFODepthBitSize.W))
     val MacroInst_FIFO_Tail = RegInit(0.U(MarcoInstFIFODepthBitSize.W))
     // performance-counter 宏指令不空是代表cute memory bound, 空的时候代表cute idle
@@ -193,9 +202,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Tail) := false.B
             MacroInst_FIFO_Tail := WrapInc(MacroInst_FIFO_Tail, MarcoInstFIFODepth)
             io.instfifo_release := true.B
-            io.ygjkctrl.mrelease.valid := MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease
-            io.ygjkctrl.mrelease.bits.tokenRd := MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).token
-            MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease := false.B
+            io.ygjkctrl.mrelease.valid := MacroInst_FIFO(MacroInst_FIFO_Tail).need_mrelease
+            io.ygjkctrl.mrelease.bits.tokenRd := MacroInst_FIFO(MacroInst_FIFO_Tail).token
+            MacroInst_FIFO(MacroInst_FIFO_Tail).need_mrelease := false.B
             if (YJPDebugEnable)
             {
                 printf("[TaskController<%d>]:Inst auto Clear!  MacroInst_FIFO_Head = %d, MacroInst_FIFO_Tail = %d\n", io.DebugTimeStampe,MacroInst_FIFO_Head, MacroInst_FIFO_Tail)
@@ -214,7 +223,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
     when(io.ygjkctrl.amuCtrl.fire) {
       val MacroInst_Reg_Wire = Wire(new MacroInst)
-      MacroInst_Reg_Wire := MacroInst_Reg.asTypeOf(MacroInst_Reg_Wire)
+      MacroInst_Reg_Wire := MacroInst_Reg
       MacroInst_Reg_Wire.need_mrelease := false.B // default: no mrelease
 
       val amuCtrl_Wire = Wire(new AmuCtrlIO)
@@ -222,10 +231,13 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
       val amuMma_Wire = Wire(new AmuMmaIO)
       amuMma_Wire := amuCtrl_Wire.data.asTypeOf(new AmuMmaIO)
+      dontTouch(amuMma_Wire) // for debug
       val amuLsu_Wire = Wire(new AmuLsuIO)
       amuLsu_Wire := amuCtrl_Wire.data.asTypeOf(new AmuLsuIO)
+      dontTouch(amuLsu_Wire) // for debug
       val amuRelease_Wire = Wire(new AmuReleaseIO)
       amuRelease_Wire := amuCtrl_Wire.data.asTypeOf(new AmuReleaseIO)
+      dontTouch(amuRelease_Wire) // for debug
 
       when(amuCtrl_Wire.op === AmuCtrlIO.mmaOp()) {
         MacroInst_Reg_Wire.Application_M := amuMma_Wire.mtilem
@@ -236,7 +248,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         MacroInst_Reg_Wire.bias_type := CMemoryLoaderTaskType.TaskTypeTensorLoad
         MacroInst_Reg_Wire.is_fp := amuMma_Wire.isfp
 
-        MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+        MacroInst_Reg := MacroInst_Reg_Wire
         get_configred := true.B
       }.elsewhen(amuCtrl_Wire.op === AmuCtrlIO.mlsOp()) {
         when(amuLsu_Wire.ls === 0.U) { // matrix load
@@ -262,7 +274,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
               }
             }
 
-            MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+            MacroInst_Reg := MacroInst_Reg_Wire
             get_configred := true.B
           }.elsewhen(amuLsu_Wire.isB === true.B) {
             MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr := amuLsu_Wire.baseAddr
@@ -286,7 +298,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
               }
             }
 
-            MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+            MacroInst_Reg := MacroInst_Reg_Wire
             get_configred := true.B
           }.elsewhen(amuLsu_Wire.isC === true.B) {
             MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr := amuLsu_Wire.baseAddr
@@ -311,7 +323,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             }
             MacroInst_Reg_Wire.bias_type := CMemoryLoaderTaskType.TaskTypeTensorLoad
 
-            MacroInst_Reg := MacroInst_Reg_Wire.asUInt
+            MacroInst_Reg := MacroInst_Reg_Wire
             get_configred := true.B
           }
         }.otherwise { // matrix store
@@ -330,12 +342,27 @@ class TaskController(implicit p: Parameters) extends CuteModule{
           assert(amuLsu_Wire.widths.asUInt === MSew.e32, "Store matrix only support e32")
           
           when (!MacroInst_FIFO_Full) {
-            MacroInst_FIFO(MacroInst_FIFO_Head) := MacroInst_Reg_Wire.asUInt
+            MacroInst_FIFO(MacroInst_FIFO_Head) := MacroInst_Reg_Wire
             MacroInst_FIFO_Valid(MacroInst_FIFO_Head) := true.B
             MacroInst_FIFO_Decode_Finish(MacroInst_FIFO_Head) := false.B
             MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Head) := false.B
             MacroInst_FIFO_Head := WrapInc(MacroInst_FIFO_Head, MarcoInstFIFODepth)
             get_configred := false.B
+            printf("[TaskController<%d>]:MMA info:\n", io.DebugTimeStampe)
+            printf("MacroInst_Reg_Wire.Application_M = %d\n",MacroInst_Reg_Wire.Application_M)
+            printf("MacroInst_Reg_Wire.Application_N = %d\n", MacroInst_Reg_Wire.Application_N)
+            printf("MacroInst_Reg_Wire.Application_K = %d\n", MacroInst_Reg_Wire.Application_K)
+            printf("MacroInst_Reg_Wire.element_type = %d\n", MacroInst_Reg_Wire.element_type)
+            printf("MacroInst_Reg_Wire.bias_type = %d\n", MacroInst_Reg_Wire.bias_type)
+            printf("MacroInst_Reg_Wire.is_fp = %d\n", MacroInst_Reg_Wire.is_fp)
+            printf("MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr)
+            printf("MacroInst_Reg_Wire.ApplicationTensor_A_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_A_Stride)
+            printf("MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr)
+            printf("MacroInst_Reg_Wire.ApplicationTensor_B_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_B_Stride)
+            printf("MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr)
+            printf("MacroInst_Reg_Wire.ApplicationTensor_C_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_C_Stride)
+            printf("MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr)
+            printf("MacroInst_Reg_Wire.ApplicationTensor_D_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_D_Stride)
           }.otherwise {
             if (YJPDebugEnable) {
                 printf("[TaskController<%d>]:Inst Insert!  MacroInst FIFO is Full!\n", io.DebugTimeStampe)
@@ -349,8 +376,8 @@ class TaskController(implicit p: Parameters) extends CuteModule{
           io.ygjkctrl.mrelease.bits.tokenRd := amuRelease_Wire.tokenRd
         }.otherwise {
           // Update mrelease info in MacroInst_FIFO
-          MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).need_mrelease := true.B
-          MacroInst_FIFO(MacroInst_FIFO_Tail).asTypeOf(new MacroInst).token := amuRelease_Wire.tokenRd
+          MacroInst_FIFO(MacroInst_FIFO_Tail).need_mrelease := true.B
+          MacroInst_FIFO(MacroInst_FIFO_Tail).token := amuRelease_Wire.tokenRd
         }
       }.otherwise {
         // panic
@@ -360,7 +387,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     
 
     //当宏指令FIFO不为空时，且宏指令不在译码，将宏指令FIFO的指令取出
-    val Decoding_MacroInst = MacroInst_FIFO(MarcoInst_FIFO_Decode_Head).asTypeOf(new MacroInst)
+    val Decoding_MacroInst = MacroInst_FIFO(MarcoInst_FIFO_Decode_Head)
     val MarcoInst_Can_Decode = MacroInst_FIFO_Valid(MarcoInst_FIFO_Decode_Head) && !MacroInst_FIFO_Decode_Finish(MarcoInst_FIFO_Decode_Head)
 
     val Decoding_MarcoInst_Going = RegInit(false.B)
@@ -381,13 +408,13 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     val C_SCP_Free = RegInit(VecInit(Seq.fill(2)(true.B)))
 
     //微指令队列
-    val Load_MicroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U(new LoadMicroInst().getWidth.W))))
+    val Load_MicroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U.asTypeOf(new LoadMicroInst()))))
     val Load_MicroInst_FINISH_Ready_GO = RegInit(VecInit(Seq.fill(4)(false.B)))//Load微指令是否完成
     val Load_MicroInst_FINISH_Ready_Commit = RegInit(VecInit(Seq.fill(4)(false.B)))//Load微指令是否可以提交
     val Compute_MicroInst_FINISH_Ready_GO = RegInit(VecInit(Seq.fill(4)(false.B)))//Compute微指令是否完成
     val Compute_MicroInst_FINISH_Ready_Commit = RegInit(VecInit(Seq.fill(4)(false.B)))//Compute微指令是否可以提交
-    val Compute_MicroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U(new ComputeMicroInst().getWidth.W))))
-    val Store_MicroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U(new StoreMicroInst().getWidth.W))))
+    val Compute_MicroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U.asTypeOf(new ComputeMicroInst()))))
+    val Store_MicroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U.asTypeOf(new StoreMicroInst()))))
 
     val Load_MicroInst_FIFO_Head = RegInit(0.U(2.W))
     val Load_MicroInst_FIFO_Tail = RegInit(0.U(2.W))
@@ -682,7 +709,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
             when(Have_Load_Micro_Inst && Can_Decode_More_Micro_Inst)
             {
-                Load_MicroInst_FIFO(Load_MicroInst_FIFO_Head) := Load_MicroInst.asUInt
+                Load_MicroInst_FIFO(Load_MicroInst_FIFO_Head) := Load_MicroInst
                 Load_MicroInst_FIFO_Head := WrapInc(Load_MicroInst_FIFO_Head, 4)
                 Load_MicroInst_FINISH_Ready_GO(Load_MicroInst_FIFO_Head) := false.B
                 Load_MicroInst_FINISH_Ready_Commit(Load_MicroInst_FIFO_Head) := false.B
@@ -725,7 +752,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             
             when(Have_Compute_Micro_Inst && Can_Decode_More_Micro_Inst)
             {
-                Compute_MicroInst_FIFO(Compute_MicroInst_FIFO_Head) := Compute_MicroInst.asUInt
+                Compute_MicroInst_FIFO(Compute_MicroInst_FIFO_Head) := Compute_MicroInst
                 Compute_MicroInst_Resource_Info_FIFO(Compute_MicroInst_FIFO_Head) := Compute_Resource_Info.asUInt
                 Compute_MicroInst_FINISH_Ready_GO(Compute_MicroInst_FIFO_Head) := false.B
                 Compute_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_FIFO_Head) := false.B
@@ -760,7 +787,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             Store_Resource_Info.Marco_Inst_FIFO_Index := MarcoInst_FIFO_Decode_Head
             when(Have_Store_Micro_Inst && Can_Decode_More_Micro_Inst)
             {
-                Store_MicroInst_FIFO(Store_MicroInst_FIFO_Head) := Store_MicroInst.asUInt
+                Store_MicroInst_FIFO(Store_MicroInst_FIFO_Head) := Store_MicroInst
                 Store_MicroInst_Resource_Info_FIFO(Store_MicroInst_FIFO_Head) := Store_Resource_Info.asUInt
                 Store_MicroInst_FIFO_Head := WrapInc(Store_MicroInst_FIFO_Head, 4)
                 if (YJPDebugEnable)
@@ -829,7 +856,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     io.ctrlCounter.CLoad := Load_Micro_Inst_Wait_C_Finish
     when(!Load_MicroInst_FINISH_All)
     {
-        val Load_MicroInst = Load_MicroInst_FIFO(Load_MicroInst_FINISH_Head).asTypeOf(new LoadMicroInst)//取出的Load指令
+        val Load_MicroInst = Load_MicroInst_FIFO(Load_MicroInst_FINISH_Head) //取出的Load指令
 
         //发射这条指令，填AML、BML、CML的config输入
         val Can_Issue_AML_Micro_Inst = io.AML_MicroTask_Config.MicroTaskReady && A_SCP_Free(Load_MicroInst.A_SCPID) //缺少ASCP的空闲状态,保证同时任务被发射
@@ -967,7 +994,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
     when(!Compute_MicroInst_FINISH_All)
     {
-        val Compute_MicroInst = Compute_MicroInst_FIFO(Compute_MicroInst_FINISH_HEAD).asTypeOf(new ComputeMicroInst)//取出的Compute指令
+        val Compute_MicroInst = Compute_MicroInst_FIFO(Compute_MicroInst_FINISH_HEAD) //取出的Compute指令
         val Compute_MicroInst_Resource_Info = Compute_MicroInst_Resource_Info_FIFO(Compute_MicroInst_FINISH_HEAD).asTypeOf(new ComputeMicroInst_Resource_Info)
 
         val Dependent_Load_Finish_Ready_Go = Load_MicroInst_FINISH_Ready_GO(Compute_MicroInst_Resource_Info.Load_Micro_Inst_FIFO_Index)
@@ -1132,7 +1159,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     io.ctrlCounter.DStore := Store_Micro_Inst_Wait_C_Finish
     when(!Store_MicroInst_FIFO_Empty)
     {
-        val Store_MicroInst = Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail).asTypeOf(new StoreMicroInst)//取出的Store指令
+        val Store_MicroInst = Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
         val Store_MicroInst_Resource_Info = Store_MicroInst_Resource_Info_FIFO(Store_MicroInst_FIFO_Tail).asTypeOf(new StoreMicroInst_Resource_Info)
 
         val Dependent_Compute_Finish_Ready_Go = Compute_MicroInst_FINISH_Ready_GO(Store_MicroInst_Resource_Info.Compute_Micro_Inst_FIFO_Index)
