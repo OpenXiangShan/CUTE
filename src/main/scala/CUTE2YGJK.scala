@@ -10,6 +10,7 @@ import freechips.rocketchip.tilelink._
 // import boom.common._
 import org.chipsalliance.cde.config._
 // import boom.exu.ygjk.{YGJKParameters}
+import coupledL2.{MatrixKey, MatrixField, AmeIndexKey, AmeIndexField}
 
 class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.baseParams) extends Config((site, here, up) => {
     case CuteParamsKey => CoustomCuteParam
@@ -26,9 +27,13 @@ class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.basePar
 
 class Cute2TL(implicit p: Parameters) extends LazyModule with CUTEImplParameters {
   lazy val module = new CUTE2TLImp(this)
-  val node = TLClientNode(Seq(TLClientPortParameters(Seq(TLClientParameters(
-    name = "Cute",
-    sourceId = IdRange(0, LLCSourceMaxNum))))))
+  val node = TLClientNode(Seq(TLMasterPortParameters.v1(
+    clients = Seq(TLMasterParameters.v1(
+      name = "CUTE",
+      sourceId = IdRange(0, LLCSourceMaxNum)
+    )),
+    requestFields = Seq(MatrixField(2), AmeIndexField())
+  )))
 }
 
 //这里的CUTE到LLC的节点
@@ -39,6 +44,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
   val io = IO(new Bundle{
     val mmu = (new MMU2TLIO)
     val idle = Output(Bool())
+    val matrix_data_in = Flipped(Decoupled(tl_out.d.bits.cloneType))
   })
 
   val data = io.mmu.Request.bits.RequestData
@@ -92,19 +98,29 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     //统计busy，一共有多少个在飞行中的请求,及有多少个ture.B
     // printf("[CUTE2YGJK.node]busy: %d\n", busy.count(_ === true.B))
   }
-  tl_out.d.ready := io.mmu.Response.ready
+  // tl_out.d returns write acknowledgment (AccessAck), io.matrix_data_in returns read data.
+  // Both may be valid at the same time and compete for the busy(source) flag.
+  // Here, io.matrix_data_in is given higher priority than tl_out.d,
+  // so when io.matrix_data_in fires, tl_out.d will not fire.
+  io.matrix_data_in.ready := io.mmu.Response.ready
+  tl_out.d.ready := io.mmu.Response.ready && !io.matrix_data_in.valid
   when(tl_out.d.bits.opcode === TLMessages.AccessAck && tl_out.d.valid && busy(tl_out.d.bits.source) === true.B)//写回的ack，直接确认，不需要等待,怎么可能会不被响应？？
   {
     tl_out.d.ready := true.B
   }
-  when(tl_out.d.fire){
-    busy(tl_out.d.bits.source) := false.B
+  when(io.matrix_data_in.fire || tl_out.d.fire){
+    // io.matrix_data_in and tl_out.d may both be valid at the same time,
+    // but the previously set priority rule for tl_out.d.ready ensures that when io.matrix_data_in is valid,
+    // the one that fires must be io.matrix_data_in. Therefore, when io.matrix_data_in is valid,
+    // the source must come from io.matrix_data_in.
+    val d_bits = Mux(io.matrix_data_in.valid, io.matrix_data_in.bits, tl_out.d.bits)
+    busy(d_bits.source) := false.B
     if (YJPDebugEnable)
     {
-        when(tl_out.d.bits.opcode === TLMessages.AccessAckData){
-            printf("[CUTE2YGJK.node]tl_out.d.fire: %x, tl_out.d.bits.data: %x\n", tl_out.d.bits.opcode, tl_out.d.bits.data)
+        when(d_bits.opcode === TLMessages.AccessAckData){
+            printf("[CUTE2YGJK.node]io.matrix_data_in.fire: %x, matrix_data_in.bits.data: %x\n", io.matrix_data_in.bits.opcode, io.matrix_data_in.bits.data)
         }
-        when(tl_out.d.bits.opcode === TLMessages.AccessAck){
+        when(d_bits.opcode === TLMessages.AccessAck){
             printf("[CUTE2YGJK.node]tl_out.d.fire: %x.AccessAck\n", tl_out.d.bits.opcode)
         }
     }
@@ -112,7 +128,8 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
 
   if(YJPDebugEnable){
     val nack_cnt = RegInit(0.U(32.W))
-    when(tl_out.d.valid && tl_out.d.ready === false.B){
+    val any_d_valid = tl_out.d.valid || io.matrix_data_in.valid
+    when(any_d_valid && io.mmu.Response.ready === false.B){
       nack_cnt := nack_cnt + 1.U
         printf("[CUTE2YGJK.node]nack_cnt: %d\n", nack_cnt)
     }.otherwise(
@@ -126,10 +143,17 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     (io.mmu.Request.bits.RequestType_isWrite === 1.U) -> edge.Put(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(outsideDataWidthByte).U, data,io.mmu.Request.bits.RequestMask)._2
   ))
 
-  io.mmu.Response.valid := tl_out.d.valid && (tl_out.d.bits.opcode === TLMessages.AccessAckData || tl_out.d.bits.opcode === TLMessages.AccessAck)
+  // Assign MatrixKey to cooperate with HBL2.
+  tl_out.a.bits.user.lift(MatrixKey).foreach(_ := "b01".U)
+  tl_out.a.bits.user.lift(AmeIndexKey).foreach { ameIndex =>
+    require(ameIndex.getWidth >= id.getWidth, "AmeIndex should cover Cute2TL id range.")
+    ameIndex := id
+  }
+
+  io.mmu.Response.valid := tl_out.d.valid || io.matrix_data_in.valid
   io.mmu.Request.ready := tl_out.a.ready && !(busy.reduce(_&_))
-  io.mmu.Response.bits.ReseponseData := tl_out.d.bits.data
-  io.mmu.Response.bits.ReseponseSourceID := tl_out.d.bits.source
+  io.mmu.Response.bits.ReseponseData := Mux(io.matrix_data_in.valid, io.matrix_data_in.bits.data, tl_out.d.bits.data)
+  io.mmu.Response.bits.ReseponseSourceID := Mux(io.matrix_data_in.valid, io.matrix_data_in.bits.source, tl_out.d.bits.source)
 
   val time_stamp = RegInit(0.U(64.W))
   time_stamp := time_stamp + 1.U
