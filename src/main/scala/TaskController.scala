@@ -133,6 +133,8 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     io.ygjkctrl.InstFIFO_Finish := 0.U
     io.ygjkctrl.InstFIFO_Full := 0.U
     io.ygjkctrl.InstFIFO_Info := 0.U
+    io.ygjkctrl.mrelease.valid := false.B
+    io.ygjkctrl.mrelease.bits.tokenRd := 0.U
     io.instfifo_release := 0.U
 
     //TODO:构思微指令Test的流程
@@ -215,8 +217,6 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     io.ygjkctrl.InstFIFO_Info := MacroInst_FIFO_Valid.asUInt
     io.ygjkctrl.InstFIFO_Full := MacroInst_FIFO_Full
     io.ygjkctrl.InstFIFO_Finish := MacroInst_FIFO_Total_Finish.asUInt
-    io.ygjkctrl.mrelease.valid := false.B
-    io.ygjkctrl.mrelease.bits.tokenRd := 0.U
     io.ygjkctrl.amuCtrl.ready := !MacroInst_FIFO_Full
 
     io.ctrlCounter.InstQueueEmpty := MacroInst_FIFO_Empty
