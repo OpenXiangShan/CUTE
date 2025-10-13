@@ -1023,7 +1023,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         val Can_Issue_ADC_Micro_Inst = io.ADC_MicroTask_Config.MicroTaskReady //缺少ASCP的空闲状态,保证同时任务被发射
         val Can_Issue_BDC_Micro_Inst = io.BDC_MicroTask_Config.MicroTaskReady //缺少BSCP的空闲状态,保证同时任务被发射
         val Can_Issue_CDC_Micro_Inst = io.CDC_MicroTask_Config.MicroTaskReady //缺少CSCP的空闲状态,保证同时任务被发射
-        val Can_Issue_AOP_Micro_Inst = io.AOP_MicroTask_Config.MicroTaskReady 
+        val Can_Issue_AOP_Micro_Inst = true.B
 
         val Can_Issue_Compute_Micro_Inst = Can_Issue_ADC_Micro_Inst && Can_Issue_BDC_Micro_Inst && Can_Issue_CDC_Micro_Inst && Dependent_Load_Finish_Ready_Go && Can_Issue_AOP_Micro_Inst
 
