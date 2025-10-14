@@ -370,14 +370,14 @@ class TaskController(implicit p: Parameters) extends CuteModule{
           }
         }
       }.elsewhen(amuCtrl_Wire.op === AmuCtrlIO.releaseOp()) {
-        when(MacroInst_FIFO_Empty || MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Tail)) {
+        when(MacroInst_FIFO_Empty || MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Head)) {
           // When there's no matrix store in fifo, then directly return in mrelease
           io.ygjkctrl.mrelease.valid := true.B
           io.ygjkctrl.mrelease.bits.tokenRd := amuRelease_Wire.tokenRd
         }.otherwise {
           // Update mrelease info in MacroInst_FIFO
-          MacroInst_FIFO(MacroInst_FIFO_Tail).need_mrelease := true.B
-          MacroInst_FIFO(MacroInst_FIFO_Tail).token := amuRelease_Wire.tokenRd
+          MacroInst_FIFO(WrapDec(MacroInst_FIFO_Head, MarcoInstFIFODepth)).need_mrelease := true.B
+          MacroInst_FIFO(WrapDec(MacroInst_FIFO_Head, MarcoInstFIFODepth)).token := amuRelease_Wire.tokenRd
         }
       }.otherwise {
         // panic

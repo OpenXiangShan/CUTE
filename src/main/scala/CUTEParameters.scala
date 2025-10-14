@@ -22,6 +22,19 @@ object WrapInc
   }
 }
 
+object WrapDec
+{
+  def apply(value: UInt, n: Int): UInt = {
+    if (isPow2(n)) {
+      (value - 1.U)(log2Ceil(n)-1,0)
+    } else {
+      val wrap = (value === 0.U)
+      Mux(wrap, (n-1).U, value - 1.U)
+    }
+  }
+}
+
+
 class DebugInfoIO()(implicit p: Parameters) extends CuteBundle{
     val DebugTimeStampe = UInt(64.W)
 }
