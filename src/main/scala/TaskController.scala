@@ -348,21 +348,23 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Head) := false.B
             MacroInst_FIFO_Head := WrapInc(MacroInst_FIFO_Head, MarcoInstFIFODepth)
             get_configred := false.B
-            printf("[TaskController<%d>]:MMA info:\n", io.DebugTimeStampe)
-            printf("MacroInst_Reg_Wire.Application_M = %d\n",MacroInst_Reg_Wire.Application_M)
-            printf("MacroInst_Reg_Wire.Application_N = %d\n", MacroInst_Reg_Wire.Application_N)
-            printf("MacroInst_Reg_Wire.Application_K = %d\n", MacroInst_Reg_Wire.Application_K)
-            printf("MacroInst_Reg_Wire.element_type = %d\n", MacroInst_Reg_Wire.element_type)
-            printf("MacroInst_Reg_Wire.bias_type = %d\n", MacroInst_Reg_Wire.bias_type)
-            printf("MacroInst_Reg_Wire.is_fp = %d\n", MacroInst_Reg_Wire.is_fp)
-            printf("MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr)
-            printf("MacroInst_Reg_Wire.ApplicationTensor_A_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_A_Stride)
-            printf("MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr)
-            printf("MacroInst_Reg_Wire.ApplicationTensor_B_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_B_Stride)
-            printf("MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr)
-            printf("MacroInst_Reg_Wire.ApplicationTensor_C_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_C_Stride)
-            printf("MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr)
-            printf("MacroInst_Reg_Wire.ApplicationTensor_D_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_D_Stride)
+            if (YJPDebugEnable) {
+              printf("[TaskController<%d>]:MMA info:\n", io.DebugTimeStampe)
+              printf("  MacroInst_Reg_Wire.Application_M = %d\n",MacroInst_Reg_Wire.Application_M)
+              printf("  MacroInst_Reg_Wire.Application_N = %d\n", MacroInst_Reg_Wire.Application_N)
+              printf("  MacroInst_Reg_Wire.Application_K = %d\n", MacroInst_Reg_Wire.Application_K)
+              printf("  MacroInst_Reg_Wire.element_type = %d\n", MacroInst_Reg_Wire.element_type)
+              printf("  MacroInst_Reg_Wire.bias_type = %d\n", MacroInst_Reg_Wire.bias_type)
+              printf("  MacroInst_Reg_Wire.is_fp = %d\n", MacroInst_Reg_Wire.is_fp)
+              printf("  MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr)
+              printf("  MacroInst_Reg_Wire.ApplicationTensor_A_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_A_Stride)
+              printf("  MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr)
+              printf("  MacroInst_Reg_Wire.ApplicationTensor_B_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_B_Stride)
+              printf("  MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr)
+              printf("  MacroInst_Reg_Wire.ApplicationTensor_C_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_C_Stride)
+              printf("  MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr)
+              printf("  MacroInst_Reg_Wire.ApplicationTensor_D_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_D_Stride)
+            }
           }.otherwise {
             if (YJPDebugEnable) {
                 printf("[TaskController<%d>]:Inst Insert!  MacroInst FIFO is Full!\n", io.DebugTimeStampe)
