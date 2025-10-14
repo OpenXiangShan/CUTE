@@ -91,6 +91,19 @@ object CuteParams {
         // Debug = CuteDebugParams.AMLDebugEnable
     )
 
+    def CUTE_32Tops_128SCP = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_M = 256,
+        Tensor_N = 256,
+        Tensor_K = 64,
+        Matrix_M = 16,
+        Matrix_N = 16,
+        ReduceWidthByte = 32,
+        Debug = CuteDebugParams.AllDebugOn,
+    )
+
     def CUTE_2Tops = baseParams.copy(
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
@@ -101,6 +114,19 @@ object CuteParams {
         Matrix_M = 4,
         Matrix_N = 4,
         ReduceWidthByte = 32,
+    )
+
+    def CUTE_2Tops_debug = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_M = 64,
+        Tensor_N = 64,
+        Tensor_K = 64,
+        Matrix_M = 4,
+        Matrix_N = 4,
+        ReduceWidthByte = 32,
+        Debug = CuteDebugParams.AllDebugOn,
     )
 }
 
