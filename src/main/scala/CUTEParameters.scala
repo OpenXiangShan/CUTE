@@ -610,7 +610,7 @@ class MacroInst()(implicit p: Parameters) extends CuteBundle{
     // val VectorInst_Length = UInt(32.W)
 
     val need_mrelease = Bool() // 执行完成后是否需要 mrelease
-    val token = UInt(5.W) // token idx for mrelease
+    val token = Vec(32, Bool()) // token idx for mrelease
 }
 
 //CUTE能接受的，Load模块能处理的微指令形式

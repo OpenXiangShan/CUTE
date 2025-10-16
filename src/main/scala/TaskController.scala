@@ -134,7 +134,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     io.ygjkctrl.InstFIFO_Full := 0.U
     io.ygjkctrl.InstFIFO_Info := 0.U
     io.ygjkctrl.mrelease.valid := false.B
-    io.ygjkctrl.mrelease.bits.tokenRd := 0.U
+    io.ygjkctrl.mrelease.bits.tokenRd.foreach(_ := false.B)
     io.instfifo_release := 0.U
 
     //TODO:构思微指令Test的流程
@@ -375,11 +375,11 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         when(MacroInst_FIFO_Empty || MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Head)) {
           // When there's no matrix store in fifo, then directly return in mrelease
           io.ygjkctrl.mrelease.valid := true.B
-          io.ygjkctrl.mrelease.bits.tokenRd := amuRelease_Wire.tokenRd
+          io.ygjkctrl.mrelease.bits.tokenRd(amuRelease_Wire.tokenRd) := true.B
         }.otherwise {
           // Update mrelease info in MacroInst_FIFO
           MacroInst_FIFO(WrapDec(MacroInst_FIFO_Head, MarcoInstFIFODepth)).need_mrelease := true.B
-          MacroInst_FIFO(WrapDec(MacroInst_FIFO_Head, MarcoInstFIFODepth)).token := amuRelease_Wire.tokenRd
+          MacroInst_FIFO(WrapDec(MacroInst_FIFO_Head, MarcoInstFIFODepth)).token(amuRelease_Wire.tokenRd) := true.B
         }
       }.otherwise {
         // panic
