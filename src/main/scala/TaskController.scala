@@ -348,7 +348,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Head) := false.B
             MacroInst_FIFO_Head := WrapInc(MacroInst_FIFO_Head, MarcoInstFIFODepth)
             get_configred := false.B
-            if (YJPDebugEnable) {
+            if (YJPDebugEnable || PerfDebugEnable) {
               printf("[TaskController<%d>]:MMA info:\n", io.DebugTimeStampe)
               printf("  MacroInst_Reg_Wire.Application_M = %d\n",MacroInst_Reg_Wire.Application_M)
               printf("  MacroInst_Reg_Wire.Application_N = %d\n", MacroInst_Reg_Wire.Application_N)
@@ -922,7 +922,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
             Will_Issuse_CML_Load := Need_Issue_CML_Micro_Inst
 
-            if (YJPDebugEnable)
+            if (YJPDebugEnable || PerfDebugEnable)
             {
                 printf("[TaskController<%d>]:Load MicroInst Issue! Issue AML_MicroTask = %d, Issue BML_MicroTask = %d, Issue CML_MicroTask = %d\n",io.DebugTimeStampe, Need_Issue_AML_Micro_Inst, Need_Issue_BML_Micro_Inst, Need_Issue_CML_Micro_Inst)
                 //SCPID
@@ -963,7 +963,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 Load_MicroInst_FINISH_Head := WrapInc(Load_MicroInst_FINISH_Head, 4)
                 Load_MicroInst_FINISH_Ready_GO(Load_MicroInst_FINISH_Head) := true.B
                 Load_Micro_Inst_Issue_State_Reg := issue_state_idle
-                if (YJPDebugEnable)
+                if (YJPDebugEnable || PerfDebugEnable)
                 {
                     printf("[TaskController<%d>]:Load MicroInst Finish!  Load_MicroInst_FIFO_Head = %d, Load_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail)
                 }
@@ -977,7 +977,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     {
         Load_MicroInst_FIFO_Tail := WrapInc(Load_MicroInst_FIFO_Tail, 4)
         Load_MicroInst_FINISH_Ready_Commit(Load_MicroInst_FIFO_Tail) := false.B
-        if (YJPDebugEnable)
+        if (YJPDebugEnable || PerfDebugEnable)
         {
             printf("[TaskController<%d>]:Load MicroInst Commit!  Load_MicroInst_FIFO_Head = %d, Load_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail)
         }
@@ -1072,7 +1072,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
             Load_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_Resource_Info.Load_Micro_Inst_FIFO_Index) := true.B//标记这条Load指令已经可以被提交了
             
-            if (YJPDebugEnable)
+            if (YJPDebugEnable || PerfDebugEnable)
             {
                 printf("[TaskController<%d>]:Compute MicroInst Issue! \n",io.DebugTimeStampe)
                 //SCPID
@@ -1136,7 +1136,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                     }
                 }
 
-                if (YJPDebugEnable)
+                if (YJPDebugEnable || PerfDebugEnable)
                 {
                     printf("[TaskController<%d>]:Compute MicroInst Finish!  Compute_MicroInst_FIFO_Head = %d, Compute_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail)
                 }
@@ -1149,7 +1149,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     {
         Compute_MicroInst_FIFO_Tail := WrapInc(Compute_MicroInst_FIFO_Tail, 4)
         Compute_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_FIFO_Tail) := false.B
-        if (YJPDebugEnable)
+        if (YJPDebugEnable || PerfDebugEnable)
         {
             printf("[TaskController<%d>]:Compute MicroInst Commit!  Compute_MicroInst_FIFO_Head = %d, Compute_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail)
         }
@@ -1195,7 +1195,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             Store_Micro_Inst_Wait_C_Finish := true.B
             Store_Micro_Inst_Issue_State_Reg := issue_state_issue
             Compute_MicroInst_FINISH_Ready_Commit(Store_MicroInst_Resource_Info.Compute_Micro_Inst_FIFO_Index) := true.B//标记这条Compute指令已经可以被提交了
-            if (YJPDebugEnable)
+            if (YJPDebugEnable || PerfDebugEnable)
             {
                 printf("[TaskController<%d>]:Store MicroInst Issue! \n",io.DebugTimeStampe)
             }
@@ -1207,7 +1207,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             {
                 Store_Micro_Inst_Wait_C_Finish := false.B
                 C_SCP_Free(Store_MicroInst_Resource_Info.C_SCPID) := true.B
-                if(YJPDebugEnable)
+                if(YJPDebugEnable || PerfDebugEnable)
                 {
                     printf("[TaskController<%d>]:Store MicroInst C Finish! \n",io.DebugTimeStampe)
                 }
@@ -1219,12 +1219,12 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 when(Store_Micro_Inst_Is_Last_Store)
                 {
                     MacroInst_FIFO_Total_Finish(Store_MicroInst_Resource_Info.Marco_Inst_FIFO_Index) := true.B
-                    if (YJPDebugEnable)
+                    if (YJPDebugEnable || PerfDebugEnable)
                     {
                         printf("[TaskController<%d>]:MacroInst Finish!  MarcoInst_FIFO_Index = %d\n",io.DebugTimeStampe, Store_MicroInst_Resource_Info.Marco_Inst_FIFO_Index)
                     }
                 }
-                if (YJPDebugEnable)
+                if (YJPDebugEnable || PerfDebugEnable)
                 {
                     printf("[TaskController<%d>]:Store MicroInst Finish!  Store_MicroInst_FIFO_Head = %d, Store_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Store_MicroInst_FIFO_Head, Store_MicroInst_FIFO_Tail)
                 }
