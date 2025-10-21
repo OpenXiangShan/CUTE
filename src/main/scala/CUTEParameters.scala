@@ -223,7 +223,6 @@ case class CuteDebugParams(
     val YJPMACDebugEnable :Boolean  = false,
     val YJPPEDebugEnable :Boolean   = false,
     val YJPAfterOpsDebugEnable :Boolean   = false,
-    val PerfDebugEnable :Boolean = true,
 )
 
 object CuteMMUParams {
@@ -434,8 +433,6 @@ trait CUTEImplParameters{
     val YJPMACDebugEnable         = DebugParams.YJPMACDebugEnable
     val YJPPEDebugEnable          = DebugParams.YJPPEDebugEnable
     val YJPAfterOpsDebugEnable    = DebugParams.YJPAfterOpsDebugEnable
-
-    val PerfDebugEnable = DebugParams.PerfDebugEnable
 
     val ConvolutionApplicationConfigDataWidth = cuteParams.ConvolutionApplicationConfigDataWidth
     val ConvolutionDIM_Max = cuteParams.ConvolutionDIM_Max

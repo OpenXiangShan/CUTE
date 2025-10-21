@@ -5,11 +5,48 @@ import chisel3._
 import chisel3.util._
 import cute.Bundles._
 import org.chipsalliance.cde.config._
+import utility.ChiselDB
 // import boom.exu.ygjk._
 // import boom.v3.util._
 
 //TaskController代表,
 class TaskController(implicit p: Parameters) extends CuteModule{
+    // ChiselDB Bundle definitions for TaskController
+    // Using fixed bit widths for compatibility
+    // Note: ChiselDB automatically adds timestamp, no need to add it manually
+    class MacroInstEventEntry extends Bundle {
+      // 0: AutoClear, 1: Insert, 2: InsertFull, 3: DecodeStart, 4: Decode, 5: DecodeEnd, 6: Finish
+      val eventType = UInt(8.W)
+      val head = UInt(3.W)  // MarcoInstFIFODepthBitSize
+      val tail = UInt(3.W)  // MarcoInstFIFODepthBitSize
+      val Macro_Inst_FIFO_Index = UInt(3.W)  // MarcoInstFIFODepthBitSize
+      val Macro_Inst = new MacroInst
+    }
+
+    class LoadMicroInstEventEntry extends Bundle {
+      val eventType = UInt(8.W)  // 0: Insert, 1: Issue, 2: AFinish, 3: BFinish, 4: CFinish, 5: Finish, 6: Commit
+      val head = UInt(2.W)
+      val tail = UInt(2.W)
+      val Load_MicroInst = new LoadMicroInst
+      val Load_MicroInst_FIFO_Index = UInt(3.W)  // LoadMicroInstFIFODepthBitSize
+    }
+
+    class ComputeMicroInstEventEntry extends Bundle {
+      val eventType = UInt(8.W)  // 0: Insert, 1: Issue, 2: AFinish, 3: BFinish, 4: CFinish, 5: AopFinish, 6: Finish, 7: FinishWithoutStore, 8: Commit
+      val head = UInt(2.W)
+      val tail = UInt(2.W)
+      val Compute_MicroInst = new ComputeMicroInst
+      val Compute_MicroInst_FIFO_Index = UInt(3.W)  // ComputeMicroInstFIFODepthBitSize
+    }
+
+    class StoreMicroInstEventEntry extends Bundle {
+      val eventType = UInt(8.W)  // 0: Insert, 1: Issue, 2: CFinish, 3: Finish
+      val head = UInt(2.W)
+      val tail = UInt(2.W)
+      val Store_MicroInst = new StoreMicroInst
+      val Store_MicroInst_FIFO_Index = UInt(3.W)  // StoreMicroInstFIFODepthBitSize
+    }
+
     val io = IO(new Bundle{
         val ygjkctrl = Flipped(new YGJKControl)
         val instfifo_head_id = Output(UInt(MarcoInstFIFODepthBitSize.W))
@@ -35,6 +72,12 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     val get_configred = RegInit(false.B)
 
     io.ctrlCounter.getConfigured := get_configred
+
+    // Create ChiselDB tables
+    val macroInstEventTable = ChiselDB.createTable("MacroInstEvent", new MacroInstEventEntry, basicDB = true)
+    val loadMicroInstEventTable = ChiselDB.createTable("LoadMicroInstEvent", new LoadMicroInstEventEntry, basicDB = true)
+    val computeMicroInstEventTable = ChiselDB.createTable("ComputeMicroInstEvent", new ComputeMicroInstEventEntry, basicDB = true)
+    val storeMicroInstEventTable = ChiselDB.createTable("StoreMicroInstEvent", new StoreMicroInstEventEntry, basicDB = true)
 
     //ADC_MicroTask_Config 的 默认配置
     io.ADC_MicroTask_Config.Is_Transpose := false.B
@@ -207,11 +250,22 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             io.ygjkctrl.mrelease.valid := MacroInst_FIFO(MacroInst_FIFO_Tail).need_mrelease
             io.ygjkctrl.mrelease.bits.tokenRd := MacroInst_FIFO(MacroInst_FIFO_Tail).token
             MacroInst_FIFO(MacroInst_FIFO_Tail).need_mrelease := false.B
-            if (YJPDebugEnable)
-            {
-                printf("[TaskController<%d>]:Inst auto Clear!  MacroInst_FIFO_Head = %d, MacroInst_FIFO_Tail = %d\n", io.DebugTimeStampe,MacroInst_FIFO_Head, MacroInst_FIFO_Tail)
-            }
         }
+
+        // ChiselDB
+        val entry = Wire(new MacroInstEventEntry)
+        entry.eventType := 0.U  // AutoClear
+        entry.head := MacroInst_FIFO_Head
+        entry.tail := MacroInst_FIFO_Tail
+        entry.Macro_Inst := MacroInst_FIFO(MacroInst_FIFO_Tail)
+        entry.Macro_Inst_FIFO_Index := MacroInst_FIFO_Tail
+        macroInstEventTable.log(
+            data = entry,
+            en = MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Tail),
+            site = "MacroInstAutoClear",
+            clock = clock,
+            reset = reset
+        )
     }
 
     io.ygjkctrl.InstFIFO_Info := MacroInst_FIFO_Valid.asUInt
@@ -348,27 +402,36 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Head) := false.B
             MacroInst_FIFO_Head := WrapInc(MacroInst_FIFO_Head, MarcoInstFIFODepth)
             get_configred := false.B
-            if (YJPDebugEnable || PerfDebugEnable) {
-              printf("[TaskController<%d>]:MMA info:\n", io.DebugTimeStampe)
-              printf("  MacroInst_Reg_Wire.Application_M = %d\n",MacroInst_Reg_Wire.Application_M)
-              printf("  MacroInst_Reg_Wire.Application_N = %d\n", MacroInst_Reg_Wire.Application_N)
-              printf("  MacroInst_Reg_Wire.Application_K = %d\n", MacroInst_Reg_Wire.Application_K)
-              printf("  MacroInst_Reg_Wire.element_type = %d\n", MacroInst_Reg_Wire.element_type)
-              printf("  MacroInst_Reg_Wire.bias_type = %d\n", MacroInst_Reg_Wire.bias_type)
-              printf("  MacroInst_Reg_Wire.is_fp = %d\n", MacroInst_Reg_Wire.is_fp)
-              printf("  MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_A_BaseVaddr)
-              printf("  MacroInst_Reg_Wire.ApplicationTensor_A_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_A_Stride)
-              printf("  MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_B_BaseVaddr)
-              printf("  MacroInst_Reg_Wire.ApplicationTensor_B_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_B_Stride)
-              printf("  MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_C_BaseVaddr)
-              printf("  MacroInst_Reg_Wire.ApplicationTensor_C_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_C_Stride)
-              printf("  MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr = %d\n", MacroInst_Reg_Wire.ApplicationTensor_D_BaseVaddr)
-              printf("  MacroInst_Reg_Wire.ApplicationTensor_D_Stride = %d\n", MacroInst_Reg_Wire.ApplicationTensor_D_Stride)
-            }
+
+            // ChiselDB
+            val entry = Wire(new MacroInstEventEntry)
+            entry.eventType := 1.U  // Insert
+            entry.head := MacroInst_FIFO_Head
+            entry.tail := MacroInst_FIFO_Tail
+            entry.Macro_Inst := MacroInst_Reg_Wire
+            entry.Macro_Inst_FIFO_Index := MacroInst_FIFO_Head
+            macroInstEventTable.log(
+              data = entry,
+              en = io.ygjkctrl.amuCtrl.fire && amuCtrl_Wire.op === AmuCtrlIO.mlsOp() && amuLsu_Wire.ls === 1.U && !MacroInst_FIFO_Full,
+              site = "MacroInstInsert",
+              clock = clock,
+              reset = reset
+            )
           }.otherwise {
-            if (YJPDebugEnable) {
-                printf("[TaskController<%d>]:Inst Insert!  MacroInst FIFO is Full!\n", io.DebugTimeStampe)
-            }
+            // ChiselDB
+            val entry = Wire(new MacroInstEventEntry)
+            entry.eventType := 2.U  // InsertFull
+            entry.head := MacroInst_FIFO_Head
+            entry.tail := MacroInst_FIFO_Tail
+            entry.Macro_Inst := MacroInst_Reg_Wire
+            entry.Macro_Inst_FIFO_Index := MacroInst_FIFO_Head
+            macroInstEventTable.log(
+              data = entry,
+              en = io.ygjkctrl.amuCtrl.fire && amuCtrl_Wire.op === AmuCtrlIO.mlsOp() && amuLsu_Wire.ls === 1.U && MacroInst_FIFO_Full,
+              site = "MacroInstInsertFull",
+              clock = clock,
+              reset = reset
+            )
           }
         }
       }.elsewhen(amuCtrl_Wire.op === AmuCtrlIO.releaseOp()) {
@@ -519,10 +582,20 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             Current_Tile_Tensor_K_Iter := 0.U
             Decoding_MarcoInst_Going := true.B
 
-            if (YJPDebugEnable)
-            {
-                printf("[TaskController<%d>]:MacroInst Decode Start!  MacroInst_FIFO_Head = %d, MacroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, MacroInst_FIFO_Head, MacroInst_FIFO_Tail)
-            }
+            // ChiselDB
+            val entry = Wire(new MacroInstEventEntry)
+            entry.eventType := 3.U  // DecodeStart
+            entry.head := MacroInst_FIFO_Head
+            entry.tail := MacroInst_FIFO_Tail
+            entry.Macro_Inst := Decoding_MacroInst
+            entry.Macro_Inst_FIFO_Index := MarcoInst_FIFO_Decode_Head
+            macroInstEventTable.log(
+                data = entry,
+                en = MarcoInst_Can_Decode && !Decoding_MarcoInst_Going,
+                site = "MacroInstDecodeStart",
+                clock = clock,
+                reset = reset
+            )
         }.otherwise
         {
             val Have_Load_Micro_Inst    = WireInit(true.B)//由宏指令拆解出的微指令，每次拆解都有一个Load指令
@@ -567,12 +640,22 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
             when(Can_Decode_More_Micro_Inst)
             {
-
-                if (YJPDebugEnable)
-                {
-                    //输出宏指令当前的迭代情况
-                    printf("[TaskController<%d>]:MacroInst Decode!  Current_Tile_M_Iter = %d, Current_Tile_N_Iter = %d, Current_Tile_K_Iter = %d, Current_Tile_OH_Index = %d, Current_Tile_OW_Index = %d, Current_Tile_KH_Index = %d, Current_Tile_KW_Index = %d\n",io.DebugTimeStampe, Current_Tile_M_Iter, Current_Tile_N_Iter, Current_Tile_K_Iter, Current_Tile_OH_Index, Current_Tile_OW_Index, Current_Tile_KH_Index, Current_Tile_KW_Index)
-                }
+                //输出宏指令当前的迭代情况
+                // TODO: store it with chiselDB
+                // printf("[TaskController<%d>]:MacroInst Decode!  Current_Tile_M_Iter = %d, Current_Tile_N_Iter = %d, Current_Tile_K_Iter = %d, Current_Tile_OH_Index = %d, Current_Tile_OW_Index = %d, Current_Tile_KH_Index = %d, Current_Tile_KW_Index = %d\n",io.DebugTimeStampe, Current_Tile_M_Iter, Current_Tile_N_Iter, Current_Tile_K_Iter, Current_Tile_OH_Index, Current_Tile_OW_Index, Current_Tile_KH_Index, Current_Tile_KW_Index)
+                // val entry = Wire(new MacroInstEventEntry)
+                // entry.eventType := 4.U  // Decode
+                // entry.head := MacroInst_FIFO_Head
+                // entry.tail := MacroInst_FIFO_Tail
+                // entry.Macro_Inst := Decoding_MacroInst
+                // entry.Macro_Inst_FIFO_Index := 0.U
+                // macroInstEventTable.log(
+                //     data = entry,
+                //     en = true.B,
+                //     site = "MacroInstDecode",
+                //     clock = clock,
+                //     reset = reset
+                // )
                 //Current_ScaratchpadTensor_M必须4的倍数
                 Current_ScaratchpadTensor_M := Mux(Current_Tile_M_Iter + Tensor_M.U >= Decoding_MacroInst.Application_M, (Decoding_MacroInst.Application_M - Current_Tile_M_Iter), Tensor_M.U)
                 Current_ScaratchpadTensor_N := Mux(Current_Tile_N_Iter + Tensor_N.U >= Decoding_MacroInst.Application_N, Decoding_MacroInst.Application_N - Current_Tile_N_Iter, Tensor_N.U)
@@ -646,11 +729,21 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                                     MarcoInst_FIFO_Decode_Head := WrapInc(MarcoInst_FIFO_Decode_Head, 4)
                                     MacroInst_FIFO_Decode_Finish(MarcoInst_FIFO_Decode_Head) := true.B
                                     StoreMicroInst_Is_Last_Store := true.B
-                                    if (YJPDebugEnable)
-                                    {
-                                        printf("[TaskController<%d>]:MacroInst Decode End!  MacroInst_FIFO_Head = %d, MacroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, MacroInst_FIFO_Head, MacroInst_FIFO_Tail)
-                                    }
                                     
+                                    // ChiselDB
+                                    val entry = Wire(new MacroInstEventEntry)
+                                    entry.eventType := 5.U  // DecodeEnd
+                                    entry.head := MacroInst_FIFO_Head
+                                    entry.tail := MacroInst_FIFO_Tail
+                                    entry.Macro_Inst := Decoding_MacroInst
+                                    entry.Macro_Inst_FIFO_Index := MarcoInst_FIFO_Decode_Head
+                                    macroInstEventTable.log(
+                                        data = entry,
+                                        en = MarcoInst_Can_Decode && Decoding_MarcoInst_Going && Can_Decode_More_Micro_Inst && Current_Tile_K_Iter + Decode_Tensor_K_iter_Add >= Decoding_MacroInst.Application_K && Current_Tile_KW_Index + 1.U >= Decoding_MacroInst.kernel_size && Current_Tile_KH_Index + 1.U >= Decoding_MacroInst.kernel_size && Current_Tile_N_Iter + Tensor_N.U >= Decoding_MacroInst.Application_N && Current_Tile_M_Iter + Tensor_M.U >= Decoding_MacroInst.Application_M,
+                                        site = "MacroInstDecodeEnd",
+                                        clock = clock,
+                                        reset = reset
+                                    )
                                 }
                             }
                         }
@@ -715,14 +808,21 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 Load_MicroInst_FIFO_Head := WrapInc(Load_MicroInst_FIFO_Head, 4)
                 Load_MicroInst_FINISH_Ready_GO(Load_MicroInst_FIFO_Head) := false.B
                 Load_MicroInst_FINISH_Ready_Commit(Load_MicroInst_FIFO_Head) := false.B
-                if (YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Load MicroInst Insert!  Load_MicroInst_FIFO_Head = %d, Load_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail)
-                    //输出Load_MicroInst.ApplicationTensor_A的所有信息
-                    printf("[TaskController<%d>]:Load_MicroInst.ApplicationTensor_A_BaseVaddr = %x, ApplicationTensor_A_Stride = %x\n, ApplicationTensor_B_BaseVaddr = %x, ApplicationTensor_B_Stride = %x\n, ApplicationTensor_C_BaseVaddr = %x, ApplicationTensor_C_Stride = %x\n, ScaratchpadTensor_M = %x, ScaratchpadTensor_N = %x, ScaratchpadTensor_K = %x, conv_stride = %x\n, element_type = %x, bias_type = %x, transpose_result = %x,  conv_oh_max = %x, conv_ow_max = %x, kernel_size = %x, conv_oh_per_add = %x, conv_ow_per_add = %x, conv_oh_index = %x, conv_ow_index = %x\n", io.DebugTimeStampe, Load_MicroInst.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr, Load_MicroInst.ApplicationTensor_A.ApplicationTensor_A_Stride_M, Load_MicroInst.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr, Load_MicroInst.ApplicationTensor_B.ApplicationTensor_B_Stride_N, Load_MicroInst.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr, Load_MicroInst.ApplicationTensor_C.ApplicationTensor_C_Stride_M, Load_MicroInst.ScaratchpadTensor_M, Load_MicroInst.ScaratchpadTensor_N, Load_MicroInst.ScaratchpadTensor_K, Decoding_MacroInst.conv_stride, Decoding_MacroInst.element_type, Decoding_MacroInst.bias_type, Decoding_MacroInst.transpose_result, Decoding_MacroInst.conv_oh_max, Decoding_MacroInst.conv_ow_max, Decoding_MacroInst.kernel_size, Decoding_MacroInst.conv_oh_per_add, Decoding_MacroInst.conv_ow_per_add, Load_MicroInst.Convolution_Current_OH_Index, Load_MicroInst.Convolution_Current_OW_Index)
-                    //输出SCPID,分别标注ABC
-                    printf("[TaskController<%d>]:Load_MicroInst.SCPID = A:%x, B:%x, C:%x\n", io.DebugTimeStampe, Load_MicroInst.A_SCPID, Load_MicroInst.B_SCPID, Load_MicroInst.C_SCPID)
-                }
+                
+                // ChiselDB
+                val entry = Wire(new LoadMicroInstEventEntry)
+                entry.eventType := 0.U  // Insert
+                entry.head := Load_MicroInst_FIFO_Head
+                entry.tail := Load_MicroInst_FIFO_Tail
+                entry.Load_MicroInst := Load_MicroInst
+                entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FIFO_Head
+                loadMicroInstEventTable.log(
+                    data = entry,
+                    en = Decoding_MarcoInst_Going && Have_Load_Micro_Inst && Can_Decode_More_Micro_Inst,
+                    site = "LoadMicroInstInsert",
+                    clock = clock,
+                    reset = reset
+                )
             }
 
             //生成Compute指令
@@ -759,14 +859,21 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 Compute_MicroInst_FINISH_Ready_GO(Compute_MicroInst_FIFO_Head) := false.B
                 Compute_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_FIFO_Head) := false.B
                 Compute_MicroInst_FIFO_Head := WrapInc(Compute_MicroInst_FIFO_Head, 4)
-                if (YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Compute MicroInst Insert!  Compute_MicroInst_FIFO_Head = %d, Compute_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail)
-                    //输出Compute_MicroInst的所有信息
-                    printf("[TaskController<%d>]:Compute_MicroInst.ScaratchpadTensor_M = %x, ScaratchpadTensor_N = %x, ScaratchpadTensor_K = %x\n", io.DebugTimeStampe, Compute_MicroInst.ScaratchpadTensor_M, Compute_MicroInst.ScaratchpadTensor_N, Compute_MicroInst.ScaratchpadTensor_K)
-                    //输出SCPID
-                    printf("[TaskController<%d>]:Compute_MicroInst.A_SCPID = %x, B_SCPID = %x, C_SCPID = %x\n", io.DebugTimeStampe, Compute_Resource_Info.A_SCPID, Compute_Resource_Info.B_SCPID, Compute_Resource_Info.C_SCPID)
-                }
+
+                // ChiselDB
+                val entry = Wire(new ComputeMicroInstEventEntry)
+                entry.eventType := 0.U  // Insert
+                entry.head := Compute_MicroInst_FIFO_Head
+                entry.tail := Compute_MicroInst_FIFO_Tail
+                entry.Compute_MicroInst := Compute_MicroInst
+                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FIFO_Head
+                computeMicroInstEventTable.log(
+                    data = entry,
+                    en = Decoding_MarcoInst_Going && Have_Compute_Micro_Inst && Can_Decode_More_Micro_Inst,
+                    site = "ComputeMicroInstInsert",
+                    clock = clock,
+                    reset = reset
+                )
             }
 
             //生成Store指令
@@ -792,14 +899,21 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 Store_MicroInst_FIFO(Store_MicroInst_FIFO_Head) := Store_MicroInst
                 Store_MicroInst_Resource_Info_FIFO(Store_MicroInst_FIFO_Head) := Store_Resource_Info.asUInt
                 Store_MicroInst_FIFO_Head := WrapInc(Store_MicroInst_FIFO_Head, 4)
-                if (YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Store MicroInst Insert!  Store_MicroInst_FIFO_Head = %d, Store_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Store_MicroInst_FIFO_Head, Store_MicroInst_FIFO_Tail)
-                    //输出Store_MicroInst的所有信息
-                    printf("[TaskController<%d>]:Store_MicroInst.ApplicationTensor_D_BaseVaddr = %x, ApplicationTensor_D_Stride = %x\n, ScaratchpadTensor_M = %x, ScaratchpadTensor_N = %x, Is_Transpose = %x\n", io.DebugTimeStampe, Store_MicroInst.ApplicationTensor_D.ApplicationTensor_D_BaseVaddr, Store_MicroInst.ApplicationTensor_D.ApplicationTensor_D_Stride_M, Store_MicroInst.ScaratchpadTensor_M, Store_MicroInst.ScaratchpadTensor_N, Store_MicroInst.Is_Transpose)
-                    //输出SCPID
-                    printf("[TaskController<%d>]:Store_MicroInst.C_SCPID = %x\n", io.DebugTimeStampe, Store_Resource_Info.C_SCPID)
-                }
+
+                // ChiselDB
+                val entry = Wire(new StoreMicroInstEventEntry)
+                entry.eventType := 0.U  // Insert
+                entry.head := Store_MicroInst_FIFO_Head
+                entry.tail := Store_MicroInst_FIFO_Tail
+                entry.Store_MicroInst := Store_MicroInst
+                entry.Store_MicroInst_FIFO_Index := Store_MicroInst_FIFO_Head
+                storeMicroInstEventTable.log(
+                    data = entry,
+                    en = Decoding_MarcoInst_Going && Have_Store_Micro_Inst && Can_Decode_More_Micro_Inst,
+                    site = "StoreMicroInstInsert",
+                    clock = clock,
+                    reset = reset
+                )
             }
         }
     }
@@ -922,12 +1036,20 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
             Will_Issuse_CML_Load := Need_Issue_CML_Micro_Inst
 
-            if (YJPDebugEnable || PerfDebugEnable)
-            {
-                printf("[TaskController<%d>]:Load MicroInst Issue! Issue AML_MicroTask = %d, Issue BML_MicroTask = %d, Issue CML_MicroTask = %d\n",io.DebugTimeStampe, Need_Issue_AML_Micro_Inst, Need_Issue_BML_Micro_Inst, Need_Issue_CML_Micro_Inst)
-                //SCPID
-                printf("[TaskController<%d>]:Load MicroInst Issue! AML_SCP_ID = %d, BML_SCP_ID = %d, CML_SCP_ID = %d\n",io.DebugTimeStampe, Current_AML_SCP_ID, Current_BML_SCP_ID, Current_CML_SCP_ID)
-            }
+            // ChiselDB
+            val entry = Wire(new LoadMicroInstEventEntry)
+            entry.eventType := 1.U  // Issue
+            entry.head := Load_MicroInst_FIFO_Head
+            entry.tail := Load_MicroInst_FIFO_Tail
+            entry.Load_MicroInst := Load_MicroInst
+            entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FINISH_Head
+            loadMicroInstEventTable.log(
+                data = entry,
+                en = !Load_MicroInst_FINISH_All && Can_Issue_Load_Micro_Inst && Load_Micro_Inst_Issue_State_Reg === issue_state_idle,
+                site = "LoadMicroInstIssue",
+                clock = clock,
+                reset = reset
+            )
         }.elsewhen(Load_Micro_Inst_Issue_State_Reg === issue_state_issue)
         {
             //等待这条指令完成
@@ -937,36 +1059,80 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             when(Load_Micro_Inst_Wait_A_Finish && io.AML_MicroTask_Config.MicroTaskEndValid)
             {
                 Load_Micro_Inst_Wait_A_Finish := false.B
-                if(YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Load MicroInst A Finish! \n",io.DebugTimeStampe)
-                }
+
+                // ChiselDB
+                val entry = Wire(new LoadMicroInstEventEntry)
+                entry.eventType := 2.U  // AFinish
+                entry.head := Load_MicroInst_FIFO_Head
+                entry.tail := Load_MicroInst_FIFO_Tail
+                entry.Load_MicroInst := Load_MicroInst
+                entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FINISH_Head
+                loadMicroInstEventTable.log(
+                    data = entry,
+                    en = !Load_MicroInst_FINISH_All && Load_Micro_Inst_Issue_State_Reg === issue_state_issue && Load_Micro_Inst_Wait_A_Finish && io.AML_MicroTask_Config.MicroTaskEndValid,
+                    site = "LoadMicroInstAFinish",
+                    clock = clock,
+                    reset = reset
+                )
             }
             when(Load_Micro_Inst_Wait_B_Finish && io.BML_MicroTask_Config.MicroTaskEndValid)
             {
                 Load_Micro_Inst_Wait_B_Finish := false.B
-                if(YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Load MicroInst B Finish! \n",io.DebugTimeStampe)
-                }
+
+                // ChiselDB
+                val entry = Wire(new LoadMicroInstEventEntry)
+                entry.eventType := 3.U  // BFinish
+                entry.head := Load_MicroInst_FIFO_Head
+                entry.tail := Load_MicroInst_FIFO_Tail
+                entry.Load_MicroInst := Load_MicroInst
+                entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FINISH_Head
+                loadMicroInstEventTable.log(
+                    data = entry,
+                    en = !Load_MicroInst_FINISH_All && Load_Micro_Inst_Issue_State_Reg === issue_state_issue && Load_Micro_Inst_Wait_B_Finish && io.BML_MicroTask_Config.MicroTaskEndValid,
+                    site = "LoadMicroInstBFinish",
+                    clock = clock,
+                    reset = reset
+                )
             }
             when(Load_Micro_Inst_Wait_C_Finish && io.CML_MicroTask_Config.MicroTaskEndValid)
             {
                 Load_Micro_Inst_Wait_C_Finish := false.B
-                if(YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Load MicroInst C Finish! \n",io.DebugTimeStampe)
-                }
+                
+                // ChiselDB
+                val entry = Wire(new LoadMicroInstEventEntry)
+                entry.eventType := 4.U  // CFinish
+                entry.head := Load_MicroInst_FIFO_Head
+                entry.tail := Load_MicroInst_FIFO_Tail
+                entry.Load_MicroInst := Load_MicroInst
+                entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FINISH_Head
+                loadMicroInstEventTable.log(
+                    data = entry,
+                    en = !Load_MicroInst_FINISH_All && Load_Micro_Inst_Issue_State_Reg === issue_state_issue && Load_Micro_Inst_Wait_C_Finish && io.CML_MicroTask_Config.MicroTaskEndValid,
+                    site = "LoadMicroInstCFinish",
+                    clock = clock,
+                    reset = reset
+                )
             }
             when(!Load_Micro_Inst_Wait_A_Finish && !Load_Micro_Inst_Wait_B_Finish && !Load_Micro_Inst_Wait_C_Finish)
             {
                 Load_MicroInst_FINISH_Head := WrapInc(Load_MicroInst_FINISH_Head, 4)
                 Load_MicroInst_FINISH_Ready_GO(Load_MicroInst_FINISH_Head) := true.B
                 Load_Micro_Inst_Issue_State_Reg := issue_state_idle
-                if (YJPDebugEnable || PerfDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Load MicroInst Finish!  Load_MicroInst_FIFO_Head = %d, Load_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail)
-                }
+
+                // ChiselDB
+                val entry = Wire(new LoadMicroInstEventEntry)
+                entry.eventType := 5.U  // Finish
+                entry.head := Load_MicroInst_FIFO_Head
+                entry.tail := Load_MicroInst_FIFO_Tail
+                entry.Load_MicroInst := Load_MicroInst
+                entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FINISH_Head
+                loadMicroInstEventTable.log(
+                    data = entry,
+                    en = !Load_MicroInst_FINISH_All && Load_Micro_Inst_Issue_State_Reg === issue_state_issue && !Load_Micro_Inst_Wait_A_Finish && !Load_Micro_Inst_Wait_B_Finish && !Load_Micro_Inst_Wait_C_Finish,
+                    site = "LoadMicroInstFinish",
+                    clock = clock,
+                    reset = reset
+                )
             }
         }
         
@@ -977,10 +1143,21 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     {
         Load_MicroInst_FIFO_Tail := WrapInc(Load_MicroInst_FIFO_Tail, 4)
         Load_MicroInst_FINISH_Ready_Commit(Load_MicroInst_FIFO_Tail) := false.B
-        if (YJPDebugEnable || PerfDebugEnable)
-        {
-            printf("[TaskController<%d>]:Load MicroInst Commit!  Load_MicroInst_FIFO_Head = %d, Load_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail)
-        }
+        
+        // ChiselDB
+        val entry = Wire(new LoadMicroInstEventEntry)
+        entry.eventType := 6.U  // Commit
+        entry.head := Load_MicroInst_FIFO_Head
+        entry.tail := Load_MicroInst_FIFO_Tail
+        entry.Load_MicroInst := Load_MicroInst_FIFO(Load_MicroInst_FIFO_Tail)
+        entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FIFO_Tail
+        loadMicroInstEventTable.log(
+            data = entry,
+            en = Load_MicroInst_FINISH_Ready_Commit(Load_MicroInst_FIFO_Tail),
+            site = "LoadMicroInstCommit",
+            clock = clock,
+            reset = reset
+        )
     }
 
     // val issue_state_idle :: issue_state_issue :: Nil = Enum(2)
@@ -1072,12 +1249,20 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
             Load_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_Resource_Info.Load_Micro_Inst_FIFO_Index) := true.B//标记这条Load指令已经可以被提交了
             
-            if (YJPDebugEnable || PerfDebugEnable)
-            {
-                printf("[TaskController<%d>]:Compute MicroInst Issue! \n",io.DebugTimeStampe)
-                //SCPID
-                printf("[TaskController<%d>]:Compute MicroInst Issue! ADC_SCP_ID = %d, BDC_SCP_ID = %d, CDC_SCP_ID = %d\n",io.DebugTimeStampe, Compute_MicroInst_Resource_Info.A_SCPID, Compute_MicroInst_Resource_Info.B_SCPID, Compute_MicroInst_Resource_Info.C_SCPID)
-            }
+            // ChiselDB
+            val entry = Wire(new ComputeMicroInstEventEntry)
+            entry.eventType := 1.U  // Issue
+            entry.head := Compute_MicroInst_FIFO_Head
+            entry.tail := Compute_MicroInst_FIFO_Tail
+            entry.Compute_MicroInst := Compute_MicroInst
+            entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
+            computeMicroInstEventTable.log(
+                data = entry,
+                en = !Compute_MicroInst_FINISH_All && Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_idle,
+                site = "ComputeMicroInstIssue",
+                clock = clock,
+                reset = reset
+            )
         }.elsewhen(Compute_Micro_Inst_Issue_State_Reg === issue_state_issue)
         {
             io.ADC_MicroTask_Config.MicroTaskEndReady := Compute_Micro_Inst_Wait_A_Finish
@@ -1087,36 +1272,80 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             when(Compute_Micro_Inst_Wait_A_Finish && io.ADC_MicroTask_Config.MicroTaskEndValid)
             {
                 Compute_Micro_Inst_Wait_A_Finish := false.B
-                if(YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Compute MicroInst A Finish! \n",io.DebugTimeStampe)
-                }
+
+                // ChiselDB
+                val entry = Wire(new ComputeMicroInstEventEntry)
+                entry.eventType := 2.U  // AFinish
+                entry.head := Compute_MicroInst_FIFO_Head
+                entry.tail := Compute_MicroInst_FIFO_Tail
+                entry.Compute_MicroInst := Compute_MicroInst
+                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                computeMicroInstEventTable.log(
+                    data = entry,
+                    en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && Compute_Micro_Inst_Wait_A_Finish && io.ADC_MicroTask_Config.MicroTaskEndValid,
+                    site = "ComputeMicroInstAFinish",
+                    clock = clock,
+                    reset = reset
+                )
                 A_SCP_Free(Current_ADC_SCP_ID) := true.B
             }
             when(Compute_Micro_Inst_Wait_B_Finish && io.BDC_MicroTask_Config.MicroTaskEndValid)
             {
                 Compute_Micro_Inst_Wait_B_Finish := false.B
-                if(YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Compute MicroInst B Finish! \n",io.DebugTimeStampe)
-                }
+                
+                // ChiselDB
+                val entry = Wire(new ComputeMicroInstEventEntry)
+                entry.eventType := 3.U  // BFinish
+                entry.head := Compute_MicroInst_FIFO_Head
+                entry.tail := Compute_MicroInst_FIFO_Tail
+                entry.Compute_MicroInst := Compute_MicroInst
+                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                computeMicroInstEventTable.log(
+                    data = entry,
+                    en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && Compute_Micro_Inst_Wait_B_Finish && io.BDC_MicroTask_Config.MicroTaskEndValid,
+                    site = "ComputeMicroInstBFinish",
+                    clock = clock,
+                    reset = reset
+                )
                 B_SCP_Free(Current_BDC_SCP_ID) := true.B
             }
             when(Compute_Micro_Inst_Wait_C_Finish && io.CDC_MicroTask_Config.MicroTaskEndValid)
             {
                 Compute_Micro_Inst_Wait_C_Finish := false.B
-                if(YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Compute MicroInst C Finish! \n",io.DebugTimeStampe)
-                }
+                
+                // ChiselDB
+                val entry = Wire(new ComputeMicroInstEventEntry)
+                entry.eventType := 4.U  // CFinish
+                entry.head := Compute_MicroInst_FIFO_Head
+                entry.tail := Compute_MicroInst_FIFO_Tail
+                entry.Compute_MicroInst := Compute_MicroInst
+                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                computeMicroInstEventTable.log(
+                    data = entry,
+                    en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && Compute_Micro_Inst_Wait_C_Finish && io.CDC_MicroTask_Config.MicroTaskEndValid,
+                    site = "ComputeMicroInstCFinish",
+                    clock = clock,
+                    reset = reset
+                )
             }
             when(Compute_Micro_Inst_Wait_Aop_Finish && io.AOP_MicroTask_Config.MicroTaskEndValid)
             {
                 Compute_Micro_Inst_Wait_Aop_Finish := false.B
-                if(YJPDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Compute MicroInst Aop Finish! \n",io.DebugTimeStampe)
-                }
+                
+                // ChiselDB
+                val entry = Wire(new ComputeMicroInstEventEntry)
+                entry.eventType := 5.U  // AopFinish
+                entry.head := Compute_MicroInst_FIFO_Head
+                entry.tail := Compute_MicroInst_FIFO_Tail
+                entry.Compute_MicroInst := Compute_MicroInst
+                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                computeMicroInstEventTable.log(
+                    data = entry,
+                    en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && Compute_Micro_Inst_Wait_Aop_Finish && io.AOP_MicroTask_Config.MicroTaskEndValid,
+                    site = "ComputeMicroInstAopFinish",
+                    clock = clock,
+                    reset = reset
+                )
             }
             when(!Compute_Micro_Inst_Wait_A_Finish && !Compute_Micro_Inst_Wait_B_Finish && !Compute_Micro_Inst_Wait_C_Finish)
             {
@@ -1130,16 +1359,37 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 {
                     Compute_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_FINISH_HEAD) := true.B
                     // Compute_Micro_Inst_Issue_State_Reg := issue_state_idle
-                    if (YJPDebugEnable)
-                    {
-                        printf("[TaskController<%d>]:Compute MicroInst Finish Without Store!Go to commit!!  Compute_MicroInst_FIFO_Head = %d, Compute_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail)
-                    }
+
+                    // ChiselDB
+                    val entry = Wire(new ComputeMicroInstEventEntry)
+                    entry.eventType := 7.U  // FinishWithoutStore
+                    entry.head := Compute_MicroInst_FIFO_Head
+                    entry.tail := Compute_MicroInst_FIFO_Tail
+                    entry.Compute_MicroInst := Compute_MicroInst
+                    entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                    computeMicroInstEventTable.log(
+                        data = entry,
+                        en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && !Compute_Micro_Inst_Wait_A_Finish && !Compute_Micro_Inst_Wait_B_Finish && !Compute_Micro_Inst_Wait_C_Finish && !Compute_MicroInst.Have_Store_Micro_Inst,
+                        site = "ComputeMicroInstFinishWithoutStore",
+                        clock = clock,
+                        reset = reset
+                    )
                 }
 
-                if (YJPDebugEnable || PerfDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Compute MicroInst Finish!  Compute_MicroInst_FIFO_Head = %d, Compute_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail)
-                }
+                // ChiselDB
+                val entry = Wire(new ComputeMicroInstEventEntry)
+                entry.eventType := 6.U  // Finish
+                entry.head := Compute_MicroInst_FIFO_Head
+                entry.tail := Compute_MicroInst_FIFO_Tail
+                entry.Compute_MicroInst := Compute_MicroInst
+                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                computeMicroInstEventTable.log(
+                    data = entry,
+                    en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && !Compute_Micro_Inst_Wait_A_Finish && !Compute_Micro_Inst_Wait_B_Finish && !Compute_Micro_Inst_Wait_C_Finish,
+                    site = "ComputeMicroInstFinish",
+                    clock = clock,
+                    reset = reset
+                )
             }
         }
     }
@@ -1149,10 +1399,21 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     {
         Compute_MicroInst_FIFO_Tail := WrapInc(Compute_MicroInst_FIFO_Tail, 4)
         Compute_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_FIFO_Tail) := false.B
-        if (YJPDebugEnable || PerfDebugEnable)
-        {
-            printf("[TaskController<%d>]:Compute MicroInst Commit!  Compute_MicroInst_FIFO_Head = %d, Compute_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail)
-        }
+        
+        // ChiselDB
+        val entry = Wire(new ComputeMicroInstEventEntry)
+        entry.eventType := 8.U  // Commit
+        entry.head := Compute_MicroInst_FIFO_Head
+        entry.tail := Compute_MicroInst_FIFO_Tail
+        entry.Compute_MicroInst := Compute_MicroInst_FIFO(Compute_MicroInst_FIFO_Tail)
+        entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FIFO_Tail
+        computeMicroInstEventTable.log(
+            data = entry,
+            en = Compute_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_FIFO_Tail),
+            site = "ComputeMicroInstCommit",
+            clock = clock,
+            reset = reset
+        )
     }
 
     val Store_Micro_Inst_Issue_State_Reg = RegInit(issue_state_idle)
@@ -1195,10 +1456,21 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             Store_Micro_Inst_Wait_C_Finish := true.B
             Store_Micro_Inst_Issue_State_Reg := issue_state_issue
             Compute_MicroInst_FINISH_Ready_Commit(Store_MicroInst_Resource_Info.Compute_Micro_Inst_FIFO_Index) := true.B//标记这条Compute指令已经可以被提交了
-            if (YJPDebugEnable || PerfDebugEnable)
-            {
-                printf("[TaskController<%d>]:Store MicroInst Issue! \n",io.DebugTimeStampe)
-            }
+            
+            // ChiselDB
+            val entry = Wire(new StoreMicroInstEventEntry)
+            entry.eventType := 1.U  // Issue
+            entry.head := Store_MicroInst_FIFO_Head
+            entry.tail := Store_MicroInst_FIFO_Tail
+            entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
+            entry.Store_MicroInst_FIFO_Index := Store_MicroInst_FIFO_Tail
+            storeMicroInstEventTable.log(
+                data = entry,
+                en = !Store_MicroInst_FIFO_Empty && !Will_Issuse_CML_Load && Can_Issue_Store_Micro_Inst && Store_Micro_Inst_Issue_State_Reg === issue_state_idle,
+                site = "StoreMicroInstIssue",
+                clock = clock,
+                reset = reset
+            )
 
         }.elsewhen(Store_Micro_Inst_Issue_State_Reg === issue_state_issue)
         {
@@ -1207,10 +1479,21 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             {
                 Store_Micro_Inst_Wait_C_Finish := false.B
                 C_SCP_Free(Store_MicroInst_Resource_Info.C_SCPID) := true.B
-                if(YJPDebugEnable || PerfDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Store MicroInst C Finish! \n",io.DebugTimeStampe)
-                }
+                
+                // ChiselDB
+                val entry = Wire(new StoreMicroInstEventEntry)
+                entry.eventType := 2.U  // CFinish
+                entry.head := Store_MicroInst_FIFO_Head
+                entry.tail := Store_MicroInst_FIFO_Tail
+                entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
+                entry.Store_MicroInst_FIFO_Index := Store_MicroInst_FIFO_Tail
+                storeMicroInstEventTable.log(
+                    data = entry,
+                    en = !Store_MicroInst_FIFO_Empty && Store_Micro_Inst_Issue_State_Reg === issue_state_issue && Store_Micro_Inst_Wait_C_Finish && io.CML_MicroTask_Config.MicroTaskEndValid,
+                    site = "StoreMicroInstCFinish",
+                    clock = clock,
+                    reset = reset
+                )
             }
             when(!Store_Micro_Inst_Wait_C_Finish)
             {
@@ -1219,15 +1502,36 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 when(Store_Micro_Inst_Is_Last_Store)
                 {
                     MacroInst_FIFO_Total_Finish(Store_MicroInst_Resource_Info.Marco_Inst_FIFO_Index) := true.B
-                    if (YJPDebugEnable || PerfDebugEnable)
-                    {
-                        printf("[TaskController<%d>]:MacroInst Finish!  MarcoInst_FIFO_Index = %d\n",io.DebugTimeStampe, Store_MicroInst_Resource_Info.Marco_Inst_FIFO_Index)
-                    }
+                    
+                    // ChiselDB
+                    val entry = Wire(new MacroInstEventEntry)
+                    entry.eventType := 6.U  // Finish
+                    entry.head := MacroInst_FIFO_Head
+                    entry.tail := MacroInst_FIFO_Tail
+                    entry.Macro_Inst := MacroInst_FIFO(MacroInst_FIFO_Tail)
+                    entry.Macro_Inst_FIFO_Index := Store_MicroInst_Resource_Info.Marco_Inst_FIFO_Index
+                    macroInstEventTable.log(
+                        data = entry,
+                        en = !Store_MicroInst_FIFO_Empty && Store_Micro_Inst_Issue_State_Reg === issue_state_issue && !Store_Micro_Inst_Wait_C_Finish && Store_Micro_Inst_Is_Last_Store,
+                        site = "MacroInstFinish",
+                        clock = clock,
+                        reset = reset
+                    )
                 }
-                if (YJPDebugEnable || PerfDebugEnable)
-                {
-                    printf("[TaskController<%d>]:Store MicroInst Finish!  Store_MicroInst_FIFO_Head = %d, Store_MicroInst_FIFO_Tail = %d\n",io.DebugTimeStampe, Store_MicroInst_FIFO_Head, Store_MicroInst_FIFO_Tail)
-                }
+                // ChiselDB
+                val entry = Wire(new StoreMicroInstEventEntry)
+                entry.eventType := 3.U  // Finish
+                entry.head := Store_MicroInst_FIFO_Head
+                entry.tail := Store_MicroInst_FIFO_Tail
+                entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
+                entry.Store_MicroInst_FIFO_Index := Store_MicroInst_FIFO_Tail
+                storeMicroInstEventTable.log(
+                    data = entry,
+                    en = !Store_MicroInst_FIFO_Empty && Store_Micro_Inst_Issue_State_Reg === issue_state_issue && !Store_Micro_Inst_Wait_C_Finish,
+                    site = "StoreMicroInstFinish",
+                    clock = clock,
+                    reset = reset
+                )
             }
         }
 
