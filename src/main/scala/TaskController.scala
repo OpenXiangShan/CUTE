@@ -11,42 +11,6 @@ import utility.ChiselDB
 
 //TaskController代表,
 class TaskController(implicit p: Parameters) extends CuteModule{
-    // ChiselDB Bundle definitions for TaskController
-    // Using fixed bit widths for compatibility
-    // Note: ChiselDB automatically adds timestamp, no need to add it manually
-    class MacroInstEventEntry extends Bundle {
-      // 0: AutoClear, 1: Insert, 2: InsertFull, 3: DecodeStart, 4: Decode, 5: DecodeEnd, 6: Finish
-      val eventType = UInt(8.W)
-      val head = UInt(3.W)  // MarcoInstFIFODepthBitSize
-      val tail = UInt(3.W)  // MarcoInstFIFODepthBitSize
-      val Macro_Inst_FIFO_Index = UInt(3.W)  // MarcoInstFIFODepthBitSize
-      val Macro_Inst = new MacroInst
-    }
-
-    class LoadMicroInstEventEntry extends Bundle {
-      val eventType = UInt(8.W)  // 0: Insert, 1: Issue, 2: AFinish, 3: BFinish, 4: CFinish, 5: Finish, 6: Commit
-      val head = UInt(2.W)
-      val tail = UInt(2.W)
-      val Load_MicroInst = new LoadMicroInst
-      val Load_MicroInst_FIFO_Index = UInt(3.W)  // LoadMicroInstFIFODepthBitSize
-    }
-
-    class ComputeMicroInstEventEntry extends Bundle {
-      val eventType = UInt(8.W)  // 0: Insert, 1: Issue, 2: AFinish, 3: BFinish, 4: CFinish, 5: AopFinish, 6: Finish, 7: FinishWithoutStore, 8: Commit
-      val head = UInt(2.W)
-      val tail = UInt(2.W)
-      val Compute_MicroInst = new ComputeMicroInst
-      val Compute_MicroInst_FIFO_Index = UInt(3.W)  // ComputeMicroInstFIFODepthBitSize
-    }
-
-    class StoreMicroInstEventEntry extends Bundle {
-      val eventType = UInt(8.W)  // 0: Insert, 1: Issue, 2: CFinish, 3: Finish
-      val head = UInt(2.W)
-      val tail = UInt(2.W)
-      val Store_MicroInst = new StoreMicroInst
-      val Store_MicroInst_FIFO_Index = UInt(3.W)  // StoreMicroInstFIFODepthBitSize
-    }
-
     val io = IO(new Bundle{
         val ygjkctrl = Flipped(new YGJKControl)
         val instfifo_head_id = Output(UInt(MarcoInstFIFODepthBitSize.W))
@@ -73,11 +37,93 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
     io.ctrlCounter.getConfigured := get_configred
 
+    // ChiselDB Bundle definitions for TaskController
+    // Base class for all event entries to reduce code duplication
+    // All events share: eventType, head, tail, and FIFO_Index fields
+    abstract class EventEntryBase(FifoDepthWidth: Int) extends Bundle {
+      val eventType = UInt(4.W)
+      val head = UInt(FifoDepthWidth.W)
+      val tail = UInt(FifoDepthWidth.W)
+      val FIFO_Index = UInt(FifoDepthWidth.W)  // All FIFOs use 3-bit index
+    }
+
+    // Macro Instruction Event Entry
+    // EventType: 0: AutoClear, 1: Insert, 2: InsertFull, 3: DecodeStart, 4: Decode, 5: DecodeEnd, 6: Finish
+    class MacroInstEventEntry extends EventEntryBase(MarcoInstFIFODepthBitSize) {
+      val Macro_Inst = new MacroInst
+    }
+
+    // Load Micro Instruction Event Entry
+    // EventType: 0: Insert, 1: Issue, 2: AFinish, 3: BFinish, 4: CFinish, 5: Finish, 6: Commit
+    class LoadMicroInstEventEntry extends EventEntryBase(2) {
+      val Load_MicroInst = new LoadMicroInst
+    }
+
+    // Compute Micro Instruction Event Entry
+    // EventType: 0: Insert, 1: Issue, 2: AFinish, 3: BFinish, 4: CFinish, 5: AopFinish, 6: Finish, 7: FinishWithoutStore, 8: Commit
+    class ComputeMicroInstEventEntry extends EventEntryBase(2) {
+      val Compute_MicroInst = new ComputeMicroInst
+    }
+
+    // Store Micro Instruction Event Entry
+    // EventType: 0: Insert, 1: Issue, 2: CFinish, 3: Finish
+    class StoreMicroInstEventEntry extends EventEntryBase(2) {
+      val Store_MicroInst = new StoreMicroInst
+    }
+
     // Create ChiselDB tables
     val macroInstEventTable = ChiselDB.createTable("MacroInstEvent", new MacroInstEventEntry, basicDB = true)
     val loadMicroInstEventTable = ChiselDB.createTable("LoadMicroInstEvent", new LoadMicroInstEventEntry, basicDB = true)
     val computeMicroInstEventTable = ChiselDB.createTable("ComputeMicroInstEvent", new ComputeMicroInstEventEntry, basicDB = true)
     val storeMicroInstEventTable = ChiselDB.createTable("StoreMicroInstEvent", new StoreMicroInstEventEntry, basicDB = true)
+
+    // Helper class to bundle entry and enable signal together with logging capability
+    class EventLogger[T <: EventEntryBase](entryType: T) {
+      val entry = WireInit(0.U.asTypeOf(entryType))
+      val en = WireInit(false.B)
+      
+      // Log method that can be called with eventType, head, tail, table, and site
+      def log(eventType: UInt, head: UInt, tail: UInt, table: utility.Table[T], site: String): Unit = {
+        entry.eventType := eventType
+        entry.head := head
+        entry.tail := tail
+        table.log(entry, en, site, clock, reset)
+      }
+    }
+
+    // Macro instruction event loggers
+    val macro_autoclear = new EventLogger(new MacroInstEventEntry)
+    val macro_insert = new EventLogger(new MacroInstEventEntry)
+    val macro_insertfull = new EventLogger(new MacroInstEventEntry)
+    val macro_decodestart = new EventLogger(new MacroInstEventEntry)
+    val macro_decodeend = new EventLogger(new MacroInstEventEntry)
+    val macro_finish = new EventLogger(new MacroInstEventEntry)
+
+    // Load micro instruction event loggers
+    val load_insert = new EventLogger(new LoadMicroInstEventEntry)
+    val load_issue = new EventLogger(new LoadMicroInstEventEntry)
+    val load_afinish = new EventLogger(new LoadMicroInstEventEntry)
+    val load_bfinish = new EventLogger(new LoadMicroInstEventEntry)
+    val load_cfinish = new EventLogger(new LoadMicroInstEventEntry)
+    val load_finish = new EventLogger(new LoadMicroInstEventEntry)
+    val load_commit = new EventLogger(new LoadMicroInstEventEntry)
+    
+    // Compute micro instruction event loggers
+    val comp_insert = new EventLogger(new ComputeMicroInstEventEntry)
+    val comp_issue = new EventLogger(new ComputeMicroInstEventEntry)
+    val comp_afinish = new EventLogger(new ComputeMicroInstEventEntry)
+    val comp_bfinish = new EventLogger(new ComputeMicroInstEventEntry)
+    val comp_cfinish = new EventLogger(new ComputeMicroInstEventEntry)
+    val comp_aopfinish = new EventLogger(new ComputeMicroInstEventEntry)
+    val comp_finish = new EventLogger(new ComputeMicroInstEventEntry)
+    val comp_finish_without_store = new EventLogger(new ComputeMicroInstEventEntry)
+    val comp_commit = new EventLogger(new ComputeMicroInstEventEntry)
+
+    // Store micro instruction event loggers
+    val store_insert = new EventLogger(new StoreMicroInstEventEntry)
+    val store_issue = new EventLogger(new StoreMicroInstEventEntry)
+    val store_cfinish = new EventLogger(new StoreMicroInstEventEntry)
+    val store_finish = new EventLogger(new StoreMicroInstEventEntry)
 
     //ADC_MicroTask_Config 的 默认配置
     io.ADC_MicroTask_Config.Is_Transpose := false.B
@@ -250,22 +296,12 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             io.ygjkctrl.mrelease.valid := MacroInst_FIFO(MacroInst_FIFO_Tail).need_mrelease
             io.ygjkctrl.mrelease.bits.tokenRd := MacroInst_FIFO(MacroInst_FIFO_Tail).token
             MacroInst_FIFO(MacroInst_FIFO_Tail).need_mrelease := false.B
-        }
 
-        // ChiselDB
-        val entry = Wire(new MacroInstEventEntry)
-        entry.eventType := 0.U  // AutoClear
-        entry.head := MacroInst_FIFO_Head
-        entry.tail := MacroInst_FIFO_Tail
-        entry.Macro_Inst := MacroInst_FIFO(MacroInst_FIFO_Tail)
-        entry.Macro_Inst_FIFO_Index := MacroInst_FIFO_Tail
-        macroInstEventTable.log(
-            data = entry,
-            en = MacroInst_FIFO_Total_Finish(MacroInst_FIFO_Tail),
-            site = "MacroInstAutoClear",
-            clock = clock,
-            reset = reset
-        )
+            // ChiselDB
+            macro_autoclear.entry.Macro_Inst := MacroInst_FIFO(MacroInst_FIFO_Tail)
+            macro_autoclear.entry.FIFO_Index := MacroInst_FIFO_Tail
+            macro_autoclear.en := true.B
+        }
     }
 
     io.ygjkctrl.InstFIFO_Info := MacroInst_FIFO_Valid.asUInt
@@ -403,35 +439,14 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             MacroInst_FIFO_Head := WrapInc(MacroInst_FIFO_Head, MarcoInstFIFODepth)
             get_configred := false.B
 
-            // ChiselDB
-            val entry = Wire(new MacroInstEventEntry)
-            entry.eventType := 1.U  // Insert
-            entry.head := MacroInst_FIFO_Head
-            entry.tail := MacroInst_FIFO_Tail
-            entry.Macro_Inst := MacroInst_Reg_Wire
-            entry.Macro_Inst_FIFO_Index := MacroInst_FIFO_Head
-            macroInstEventTable.log(
-              data = entry,
-              en = io.ygjkctrl.amuCtrl.fire && amuCtrl_Wire.op === AmuCtrlIO.mlsOp() && amuLsu_Wire.ls === 1.U && !MacroInst_FIFO_Full,
-              site = "MacroInstInsert",
-              clock = clock,
-              reset = reset
-            )
+            macro_insert.entry.Macro_Inst := MacroInst_Reg_Wire
+            macro_insert.entry.FIFO_Index := MacroInst_FIFO_Head
+            macro_insert.en := true.B
           }.otherwise {
             // ChiselDB
-            val entry = Wire(new MacroInstEventEntry)
-            entry.eventType := 2.U  // InsertFull
-            entry.head := MacroInst_FIFO_Head
-            entry.tail := MacroInst_FIFO_Tail
-            entry.Macro_Inst := MacroInst_Reg_Wire
-            entry.Macro_Inst_FIFO_Index := MacroInst_FIFO_Head
-            macroInstEventTable.log(
-              data = entry,
-              en = io.ygjkctrl.amuCtrl.fire && amuCtrl_Wire.op === AmuCtrlIO.mlsOp() && amuLsu_Wire.ls === 1.U && MacroInst_FIFO_Full,
-              site = "MacroInstInsertFull",
-              clock = clock,
-              reset = reset
-            )
+            macro_insertfull.entry.Macro_Inst := MacroInst_Reg_Wire
+            macro_insertfull.entry.FIFO_Index := MacroInst_FIFO_Head
+            macro_insertfull.en := true.B
           }
         }
       }.elsewhen(amuCtrl_Wire.op === AmuCtrlIO.releaseOp()) {
@@ -583,19 +598,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             Decoding_MarcoInst_Going := true.B
 
             // ChiselDB
-            val entry = Wire(new MacroInstEventEntry)
-            entry.eventType := 3.U  // DecodeStart
-            entry.head := MacroInst_FIFO_Head
-            entry.tail := MacroInst_FIFO_Tail
-            entry.Macro_Inst := Decoding_MacroInst
-            entry.Macro_Inst_FIFO_Index := MarcoInst_FIFO_Decode_Head
-            macroInstEventTable.log(
-                data = entry,
-                en = MarcoInst_Can_Decode && !Decoding_MarcoInst_Going,
-                site = "MacroInstDecodeStart",
-                clock = clock,
-                reset = reset
-            )
+            macro_decodestart.entry.Macro_Inst := Decoding_MacroInst
+            macro_decodestart.entry.FIFO_Index := MarcoInst_FIFO_Decode_Head
+            macro_decodestart.en := true.B
         }.otherwise
         {
             val Have_Load_Micro_Inst    = WireInit(true.B)//由宏指令拆解出的微指令，每次拆解都有一个Load指令
@@ -648,7 +653,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 // entry.head := MacroInst_FIFO_Head
                 // entry.tail := MacroInst_FIFO_Tail
                 // entry.Macro_Inst := Decoding_MacroInst
-                // entry.Macro_Inst_FIFO_Index := 0.U
+                // entry.FIFO_Index := 0.U
                 // macroInstEventTable.log(
                 //     data = entry,
                 //     en = true.B,
@@ -731,19 +736,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                                     StoreMicroInst_Is_Last_Store := true.B
                                     
                                     // ChiselDB
-                                    val entry = Wire(new MacroInstEventEntry)
-                                    entry.eventType := 5.U  // DecodeEnd
-                                    entry.head := MacroInst_FIFO_Head
-                                    entry.tail := MacroInst_FIFO_Tail
-                                    entry.Macro_Inst := Decoding_MacroInst
-                                    entry.Macro_Inst_FIFO_Index := MarcoInst_FIFO_Decode_Head
-                                    macroInstEventTable.log(
-                                        data = entry,
-                                        en = MarcoInst_Can_Decode && Decoding_MarcoInst_Going && Can_Decode_More_Micro_Inst && Current_Tile_K_Iter + Decode_Tensor_K_iter_Add >= Decoding_MacroInst.Application_K && Current_Tile_KW_Index + 1.U >= Decoding_MacroInst.kernel_size && Current_Tile_KH_Index + 1.U >= Decoding_MacroInst.kernel_size && Current_Tile_N_Iter + Tensor_N.U >= Decoding_MacroInst.Application_N && Current_Tile_M_Iter + Tensor_M.U >= Decoding_MacroInst.Application_M,
-                                        site = "MacroInstDecodeEnd",
-                                        clock = clock,
-                                        reset = reset
-                                    )
+                                    macro_decodeend.entry.Macro_Inst := Decoding_MacroInst
+                                    macro_decodeend.entry.FIFO_Index := MarcoInst_FIFO_Decode_Head
+                                    macro_decodeend.en := true.B
                                 }
                             }
                         }
@@ -809,20 +804,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 Load_MicroInst_FINISH_Ready_GO(Load_MicroInst_FIFO_Head) := false.B
                 Load_MicroInst_FINISH_Ready_Commit(Load_MicroInst_FIFO_Head) := false.B
                 
-                // ChiselDB
-                val entry = Wire(new LoadMicroInstEventEntry)
-                entry.eventType := 0.U  // Insert
-                entry.head := Load_MicroInst_FIFO_Head
-                entry.tail := Load_MicroInst_FIFO_Tail
-                entry.Load_MicroInst := Load_MicroInst
-                entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FIFO_Head
-                loadMicroInstEventTable.log(
-                    data = entry,
-                    en = Decoding_MarcoInst_Going && Have_Load_Micro_Inst && Can_Decode_More_Micro_Inst,
-                    site = "LoadMicroInstInsert",
-                    clock = clock,
-                    reset = reset
-                )
+                load_insert.entry.Load_MicroInst := Load_MicroInst
+                load_insert.entry.FIFO_Index := Load_MicroInst_FIFO_Head
+                load_insert.en := true.B
             }
 
             //生成Compute指令
@@ -860,20 +844,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 Compute_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_FIFO_Head) := false.B
                 Compute_MicroInst_FIFO_Head := WrapInc(Compute_MicroInst_FIFO_Head, 4)
 
-                // ChiselDB
-                val entry = Wire(new ComputeMicroInstEventEntry)
-                entry.eventType := 0.U  // Insert
-                entry.head := Compute_MicroInst_FIFO_Head
-                entry.tail := Compute_MicroInst_FIFO_Tail
-                entry.Compute_MicroInst := Compute_MicroInst
-                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FIFO_Head
-                computeMicroInstEventTable.log(
-                    data = entry,
-                    en = Decoding_MarcoInst_Going && Have_Compute_Micro_Inst && Can_Decode_More_Micro_Inst,
-                    site = "ComputeMicroInstInsert",
-                    clock = clock,
-                    reset = reset
-                )
+                comp_insert.entry.Compute_MicroInst := Compute_MicroInst
+                comp_insert.entry.FIFO_Index := Compute_MicroInst_FIFO_Head
+                comp_insert.en := true.B
             }
 
             //生成Store指令
@@ -900,20 +873,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 Store_MicroInst_Resource_Info_FIFO(Store_MicroInst_FIFO_Head) := Store_Resource_Info.asUInt
                 Store_MicroInst_FIFO_Head := WrapInc(Store_MicroInst_FIFO_Head, 4)
 
-                // ChiselDB
-                val entry = Wire(new StoreMicroInstEventEntry)
-                entry.eventType := 0.U  // Insert
-                entry.head := Store_MicroInst_FIFO_Head
-                entry.tail := Store_MicroInst_FIFO_Tail
-                entry.Store_MicroInst := Store_MicroInst
-                entry.Store_MicroInst_FIFO_Index := Store_MicroInst_FIFO_Head
-                storeMicroInstEventTable.log(
-                    data = entry,
-                    en = Decoding_MarcoInst_Going && Have_Store_Micro_Inst && Can_Decode_More_Micro_Inst,
-                    site = "StoreMicroInstInsert",
-                    clock = clock,
-                    reset = reset
-                )
+                store_insert.entry.Store_MicroInst := Store_MicroInst
+                store_insert.entry.FIFO_Index := Store_MicroInst_FIFO_Head
+                store_insert.en := true.B
             }
         }
     }
@@ -1036,20 +998,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
             Will_Issuse_CML_Load := Need_Issue_CML_Micro_Inst
 
-            // ChiselDB
-            val entry = Wire(new LoadMicroInstEventEntry)
-            entry.eventType := 1.U  // Issue
-            entry.head := Load_MicroInst_FIFO_Head
-            entry.tail := Load_MicroInst_FIFO_Tail
-            entry.Load_MicroInst := Load_MicroInst
-            entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FINISH_Head
-            loadMicroInstEventTable.log(
-                data = entry,
-                en = !Load_MicroInst_FINISH_All && Can_Issue_Load_Micro_Inst && Load_Micro_Inst_Issue_State_Reg === issue_state_idle,
-                site = "LoadMicroInstIssue",
-                clock = clock,
-                reset = reset
-            )
+            load_issue.entry.Load_MicroInst := Load_MicroInst
+            load_issue.entry.FIFO_Index := Load_MicroInst_FINISH_Head
+            load_issue.en := true.B
         }.elsewhen(Load_Micro_Inst_Issue_State_Reg === issue_state_issue)
         {
             //等待这条指令完成
@@ -1060,58 +1011,25 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             {
                 Load_Micro_Inst_Wait_A_Finish := false.B
 
-                // ChiselDB
-                val entry = Wire(new LoadMicroInstEventEntry)
-                entry.eventType := 2.U  // AFinish
-                entry.head := Load_MicroInst_FIFO_Head
-                entry.tail := Load_MicroInst_FIFO_Tail
-                entry.Load_MicroInst := Load_MicroInst
-                entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FINISH_Head
-                loadMicroInstEventTable.log(
-                    data = entry,
-                    en = !Load_MicroInst_FINISH_All && Load_Micro_Inst_Issue_State_Reg === issue_state_issue && Load_Micro_Inst_Wait_A_Finish && io.AML_MicroTask_Config.MicroTaskEndValid,
-                    site = "LoadMicroInstAFinish",
-                    clock = clock,
-                    reset = reset
-                )
+                load_afinish.entry.Load_MicroInst := Load_MicroInst
+                load_afinish.entry.FIFO_Index := Load_MicroInst_FINISH_Head
+                load_afinish.en := true.B
             }
             when(Load_Micro_Inst_Wait_B_Finish && io.BML_MicroTask_Config.MicroTaskEndValid)
             {
                 Load_Micro_Inst_Wait_B_Finish := false.B
 
-                // ChiselDB
-                val entry = Wire(new LoadMicroInstEventEntry)
-                entry.eventType := 3.U  // BFinish
-                entry.head := Load_MicroInst_FIFO_Head
-                entry.tail := Load_MicroInst_FIFO_Tail
-                entry.Load_MicroInst := Load_MicroInst
-                entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FINISH_Head
-                loadMicroInstEventTable.log(
-                    data = entry,
-                    en = !Load_MicroInst_FINISH_All && Load_Micro_Inst_Issue_State_Reg === issue_state_issue && Load_Micro_Inst_Wait_B_Finish && io.BML_MicroTask_Config.MicroTaskEndValid,
-                    site = "LoadMicroInstBFinish",
-                    clock = clock,
-                    reset = reset
-                )
+                load_bfinish.entry.Load_MicroInst := Load_MicroInst
+                load_bfinish.entry.FIFO_Index := Load_MicroInst_FINISH_Head
+                load_bfinish.en := true.B
             }
             when(Load_Micro_Inst_Wait_C_Finish && io.CML_MicroTask_Config.MicroTaskEndValid)
             {
                 Load_Micro_Inst_Wait_C_Finish := false.B
                 
-                // ChiselDB
-                val entry = Wire(new LoadMicroInstEventEntry)
-                entry.eventType := 4.U  // CFinish
-                entry.head := Load_MicroInst_FIFO_Head
-                entry.tail := Load_MicroInst_FIFO_Tail
-                entry.Load_MicroInst := Load_MicroInst
-                entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FINISH_Head
-                loadMicroInstEventTable.log(
-                    data = entry,
-                    en = !Load_MicroInst_FINISH_All && Load_Micro_Inst_Issue_State_Reg === issue_state_issue && Load_Micro_Inst_Wait_C_Finish && io.CML_MicroTask_Config.MicroTaskEndValid,
-                    site = "LoadMicroInstCFinish",
-                    clock = clock,
-                    reset = reset
-                )
+                load_cfinish.entry.Load_MicroInst := Load_MicroInst
+                load_cfinish.entry.FIFO_Index := Load_MicroInst_FINISH_Head
+                load_cfinish.en := true.B
             }
             when(!Load_Micro_Inst_Wait_A_Finish && !Load_Micro_Inst_Wait_B_Finish && !Load_Micro_Inst_Wait_C_Finish)
             {
@@ -1119,20 +1037,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 Load_MicroInst_FINISH_Ready_GO(Load_MicroInst_FINISH_Head) := true.B
                 Load_Micro_Inst_Issue_State_Reg := issue_state_idle
 
-                // ChiselDB
-                val entry = Wire(new LoadMicroInstEventEntry)
-                entry.eventType := 5.U  // Finish
-                entry.head := Load_MicroInst_FIFO_Head
-                entry.tail := Load_MicroInst_FIFO_Tail
-                entry.Load_MicroInst := Load_MicroInst
-                entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FINISH_Head
-                loadMicroInstEventTable.log(
-                    data = entry,
-                    en = !Load_MicroInst_FINISH_All && Load_Micro_Inst_Issue_State_Reg === issue_state_issue && !Load_Micro_Inst_Wait_A_Finish && !Load_Micro_Inst_Wait_B_Finish && !Load_Micro_Inst_Wait_C_Finish,
-                    site = "LoadMicroInstFinish",
-                    clock = clock,
-                    reset = reset
-                )
+                load_finish.entry.Load_MicroInst := Load_MicroInst
+                load_finish.entry.FIFO_Index := Load_MicroInst_FINISH_Head
+                load_finish.en := true.B
             }
         }
         
@@ -1144,20 +1051,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         Load_MicroInst_FIFO_Tail := WrapInc(Load_MicroInst_FIFO_Tail, 4)
         Load_MicroInst_FINISH_Ready_Commit(Load_MicroInst_FIFO_Tail) := false.B
         
-        // ChiselDB
-        val entry = Wire(new LoadMicroInstEventEntry)
-        entry.eventType := 6.U  // Commit
-        entry.head := Load_MicroInst_FIFO_Head
-        entry.tail := Load_MicroInst_FIFO_Tail
-        entry.Load_MicroInst := Load_MicroInst_FIFO(Load_MicroInst_FIFO_Tail)
-        entry.Load_MicroInst_FIFO_Index := Load_MicroInst_FIFO_Tail
-        loadMicroInstEventTable.log(
-            data = entry,
-            en = Load_MicroInst_FINISH_Ready_Commit(Load_MicroInst_FIFO_Tail),
-            site = "LoadMicroInstCommit",
-            clock = clock,
-            reset = reset
-        )
+        load_commit.entry.Load_MicroInst := Load_MicroInst_FIFO(Load_MicroInst_FIFO_Tail)
+        load_commit.entry.FIFO_Index := Load_MicroInst_FIFO_Tail
+        load_commit.en := true.B
     }
 
     // val issue_state_idle :: issue_state_issue :: Nil = Enum(2)
@@ -1249,20 +1145,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
             Load_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_Resource_Info.Load_Micro_Inst_FIFO_Index) := true.B//标记这条Load指令已经可以被提交了
             
-            // ChiselDB
-            val entry = Wire(new ComputeMicroInstEventEntry)
-            entry.eventType := 1.U  // Issue
-            entry.head := Compute_MicroInst_FIFO_Head
-            entry.tail := Compute_MicroInst_FIFO_Tail
-            entry.Compute_MicroInst := Compute_MicroInst
-            entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
-            computeMicroInstEventTable.log(
-                data = entry,
-                en = !Compute_MicroInst_FINISH_All && Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_idle,
-                site = "ComputeMicroInstIssue",
-                clock = clock,
-                reset = reset
-            )
+            comp_issue.entry.Compute_MicroInst := Compute_MicroInst
+            comp_issue.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
+            comp_issue.en := true.B
         }.elsewhen(Compute_Micro_Inst_Issue_State_Reg === issue_state_issue)
         {
             io.ADC_MicroTask_Config.MicroTaskEndReady := Compute_Micro_Inst_Wait_A_Finish
@@ -1273,79 +1158,35 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             {
                 Compute_Micro_Inst_Wait_A_Finish := false.B
 
-                // ChiselDB
-                val entry = Wire(new ComputeMicroInstEventEntry)
-                entry.eventType := 2.U  // AFinish
-                entry.head := Compute_MicroInst_FIFO_Head
-                entry.tail := Compute_MicroInst_FIFO_Tail
-                entry.Compute_MicroInst := Compute_MicroInst
-                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
-                computeMicroInstEventTable.log(
-                    data = entry,
-                    en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && Compute_Micro_Inst_Wait_A_Finish && io.ADC_MicroTask_Config.MicroTaskEndValid,
-                    site = "ComputeMicroInstAFinish",
-                    clock = clock,
-                    reset = reset
-                )
+                comp_afinish.entry.Compute_MicroInst := Compute_MicroInst
+                comp_afinish.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                comp_afinish.en := true.B
                 A_SCP_Free(Current_ADC_SCP_ID) := true.B
             }
             when(Compute_Micro_Inst_Wait_B_Finish && io.BDC_MicroTask_Config.MicroTaskEndValid)
             {
                 Compute_Micro_Inst_Wait_B_Finish := false.B
                 
-                // ChiselDB
-                val entry = Wire(new ComputeMicroInstEventEntry)
-                entry.eventType := 3.U  // BFinish
-                entry.head := Compute_MicroInst_FIFO_Head
-                entry.tail := Compute_MicroInst_FIFO_Tail
-                entry.Compute_MicroInst := Compute_MicroInst
-                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
-                computeMicroInstEventTable.log(
-                    data = entry,
-                    en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && Compute_Micro_Inst_Wait_B_Finish && io.BDC_MicroTask_Config.MicroTaskEndValid,
-                    site = "ComputeMicroInstBFinish",
-                    clock = clock,
-                    reset = reset
-                )
+                comp_bfinish.entry.Compute_MicroInst := Compute_MicroInst
+                comp_bfinish.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                comp_bfinish.en := true.B
                 B_SCP_Free(Current_BDC_SCP_ID) := true.B
             }
             when(Compute_Micro_Inst_Wait_C_Finish && io.CDC_MicroTask_Config.MicroTaskEndValid)
             {
                 Compute_Micro_Inst_Wait_C_Finish := false.B
                 
-                // ChiselDB
-                val entry = Wire(new ComputeMicroInstEventEntry)
-                entry.eventType := 4.U  // CFinish
-                entry.head := Compute_MicroInst_FIFO_Head
-                entry.tail := Compute_MicroInst_FIFO_Tail
-                entry.Compute_MicroInst := Compute_MicroInst
-                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
-                computeMicroInstEventTable.log(
-                    data = entry,
-                    en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && Compute_Micro_Inst_Wait_C_Finish && io.CDC_MicroTask_Config.MicroTaskEndValid,
-                    site = "ComputeMicroInstCFinish",
-                    clock = clock,
-                    reset = reset
-                )
+                comp_cfinish.entry.Compute_MicroInst := Compute_MicroInst
+                comp_cfinish.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                comp_cfinish.en := true.B
             }
             when(Compute_Micro_Inst_Wait_Aop_Finish && io.AOP_MicroTask_Config.MicroTaskEndValid)
             {
                 Compute_Micro_Inst_Wait_Aop_Finish := false.B
                 
-                // ChiselDB
-                val entry = Wire(new ComputeMicroInstEventEntry)
-                entry.eventType := 5.U  // AopFinish
-                entry.head := Compute_MicroInst_FIFO_Head
-                entry.tail := Compute_MicroInst_FIFO_Tail
-                entry.Compute_MicroInst := Compute_MicroInst
-                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
-                computeMicroInstEventTable.log(
-                    data = entry,
-                    en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && Compute_Micro_Inst_Wait_Aop_Finish && io.AOP_MicroTask_Config.MicroTaskEndValid,
-                    site = "ComputeMicroInstAopFinish",
-                    clock = clock,
-                    reset = reset
-                )
+                comp_aopfinish.entry.Compute_MicroInst := Compute_MicroInst
+                comp_aopfinish.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                comp_aopfinish.en := true.B
             }
             when(!Compute_Micro_Inst_Wait_A_Finish && !Compute_Micro_Inst_Wait_B_Finish && !Compute_Micro_Inst_Wait_C_Finish)
             {
@@ -1361,35 +1202,14 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                     // Compute_Micro_Inst_Issue_State_Reg := issue_state_idle
 
                     // ChiselDB
-                    val entry = Wire(new ComputeMicroInstEventEntry)
-                    entry.eventType := 7.U  // FinishWithoutStore
-                    entry.head := Compute_MicroInst_FIFO_Head
-                    entry.tail := Compute_MicroInst_FIFO_Tail
-                    entry.Compute_MicroInst := Compute_MicroInst
-                    entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
-                    computeMicroInstEventTable.log(
-                        data = entry,
-                        en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && !Compute_Micro_Inst_Wait_A_Finish && !Compute_Micro_Inst_Wait_B_Finish && !Compute_Micro_Inst_Wait_C_Finish && !Compute_MicroInst.Have_Store_Micro_Inst,
-                        site = "ComputeMicroInstFinishWithoutStore",
-                        clock = clock,
-                        reset = reset
-                    )
+                    comp_finish_without_store.entry.Compute_MicroInst := Compute_MicroInst
+                    comp_finish_without_store.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                    comp_finish_without_store.en := true.B
                 }
 
-                // ChiselDB
-                val entry = Wire(new ComputeMicroInstEventEntry)
-                entry.eventType := 6.U  // Finish
-                entry.head := Compute_MicroInst_FIFO_Head
-                entry.tail := Compute_MicroInst_FIFO_Tail
-                entry.Compute_MicroInst := Compute_MicroInst
-                entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FINISH_HEAD
-                computeMicroInstEventTable.log(
-                    data = entry,
-                    en = !Compute_MicroInst_FINISH_All && !Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_issue && !Compute_Micro_Inst_Wait_A_Finish && !Compute_Micro_Inst_Wait_B_Finish && !Compute_Micro_Inst_Wait_C_Finish,
-                    site = "ComputeMicroInstFinish",
-                    clock = clock,
-                    reset = reset
-                )
+                comp_finish.entry.Compute_MicroInst := Compute_MicroInst
+                comp_finish.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
+                comp_finish.en := true.B
             }
         }
     }
@@ -1400,20 +1220,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         Compute_MicroInst_FIFO_Tail := WrapInc(Compute_MicroInst_FIFO_Tail, 4)
         Compute_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_FIFO_Tail) := false.B
         
-        // ChiselDB
-        val entry = Wire(new ComputeMicroInstEventEntry)
-        entry.eventType := 8.U  // Commit
-        entry.head := Compute_MicroInst_FIFO_Head
-        entry.tail := Compute_MicroInst_FIFO_Tail
-        entry.Compute_MicroInst := Compute_MicroInst_FIFO(Compute_MicroInst_FIFO_Tail)
-        entry.Compute_MicroInst_FIFO_Index := Compute_MicroInst_FIFO_Tail
-        computeMicroInstEventTable.log(
-            data = entry,
-            en = Compute_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_FIFO_Tail),
-            site = "ComputeMicroInstCommit",
-            clock = clock,
-            reset = reset
-        )
+        comp_commit.entry.Compute_MicroInst := Compute_MicroInst_FIFO(Compute_MicroInst_FIFO_Tail)
+        comp_commit.entry.FIFO_Index := Compute_MicroInst_FIFO_Tail
+        comp_commit.en := true.B
     }
 
     val Store_Micro_Inst_Issue_State_Reg = RegInit(issue_state_idle)
@@ -1457,21 +1266,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             Store_Micro_Inst_Issue_State_Reg := issue_state_issue
             Compute_MicroInst_FINISH_Ready_Commit(Store_MicroInst_Resource_Info.Compute_Micro_Inst_FIFO_Index) := true.B//标记这条Compute指令已经可以被提交了
             
-            // ChiselDB
-            val entry = Wire(new StoreMicroInstEventEntry)
-            entry.eventType := 1.U  // Issue
-            entry.head := Store_MicroInst_FIFO_Head
-            entry.tail := Store_MicroInst_FIFO_Tail
-            entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
-            entry.Store_MicroInst_FIFO_Index := Store_MicroInst_FIFO_Tail
-            storeMicroInstEventTable.log(
-                data = entry,
-                en = !Store_MicroInst_FIFO_Empty && !Will_Issuse_CML_Load && Can_Issue_Store_Micro_Inst && Store_Micro_Inst_Issue_State_Reg === issue_state_idle,
-                site = "StoreMicroInstIssue",
-                clock = clock,
-                reset = reset
-            )
-
+            store_issue.entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
+            store_issue.entry.FIFO_Index := Store_MicroInst_FIFO_Tail
+            store_issue.en := true.B
         }.elsewhen(Store_Micro_Inst_Issue_State_Reg === issue_state_issue)
         {
             io.CML_MicroTask_Config.MicroTaskEndReady := Store_Micro_Inst_Wait_C_Finish
@@ -1480,20 +1277,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 Store_Micro_Inst_Wait_C_Finish := false.B
                 C_SCP_Free(Store_MicroInst_Resource_Info.C_SCPID) := true.B
                 
-                // ChiselDB
-                val entry = Wire(new StoreMicroInstEventEntry)
-                entry.eventType := 2.U  // CFinish
-                entry.head := Store_MicroInst_FIFO_Head
-                entry.tail := Store_MicroInst_FIFO_Tail
-                entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
-                entry.Store_MicroInst_FIFO_Index := Store_MicroInst_FIFO_Tail
-                storeMicroInstEventTable.log(
-                    data = entry,
-                    en = !Store_MicroInst_FIFO_Empty && Store_Micro_Inst_Issue_State_Reg === issue_state_issue && Store_Micro_Inst_Wait_C_Finish && io.CML_MicroTask_Config.MicroTaskEndValid,
-                    site = "StoreMicroInstCFinish",
-                    clock = clock,
-                    reset = reset
-                )
+                store_cfinish.entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
+                store_cfinish.entry.FIFO_Index := Store_MicroInst_FIFO_Tail
+                store_cfinish.en := true.B
             }
             when(!Store_Micro_Inst_Wait_C_Finish)
             {
@@ -1503,40 +1289,50 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 {
                     MacroInst_FIFO_Total_Finish(Store_MicroInst_Resource_Info.Marco_Inst_FIFO_Index) := true.B
                     
-                    // ChiselDB
-                    val entry = Wire(new MacroInstEventEntry)
-                    entry.eventType := 6.U  // Finish
-                    entry.head := MacroInst_FIFO_Head
-                    entry.tail := MacroInst_FIFO_Tail
-                    entry.Macro_Inst := MacroInst_FIFO(MacroInst_FIFO_Tail)
-                    entry.Macro_Inst_FIFO_Index := Store_MicroInst_Resource_Info.Marco_Inst_FIFO_Index
-                    macroInstEventTable.log(
-                        data = entry,
-                        en = !Store_MicroInst_FIFO_Empty && Store_Micro_Inst_Issue_State_Reg === issue_state_issue && !Store_Micro_Inst_Wait_C_Finish && Store_Micro_Inst_Is_Last_Store,
-                        site = "MacroInstFinish",
-                        clock = clock,
-                        reset = reset
-                    )
+                    macro_finish.entry.Macro_Inst := MacroInst_FIFO(MacroInst_FIFO_Tail)
+                    macro_finish.entry.FIFO_Index := Store_MicroInst_Resource_Info.Marco_Inst_FIFO_Index
+                    macro_finish.en := true.B
                 }
-                // ChiselDB
-                val entry = Wire(new StoreMicroInstEventEntry)
-                entry.eventType := 3.U  // Finish
-                entry.head := Store_MicroInst_FIFO_Head
-                entry.tail := Store_MicroInst_FIFO_Tail
-                entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
-                entry.Store_MicroInst_FIFO_Index := Store_MicroInst_FIFO_Tail
-                storeMicroInstEventTable.log(
-                    data = entry,
-                    en = !Store_MicroInst_FIFO_Empty && Store_Micro_Inst_Issue_State_Reg === issue_state_issue && !Store_Micro_Inst_Wait_C_Finish,
-                    site = "StoreMicroInstFinish",
-                    clock = clock,
-                    reset = reset
-                )
+
+                store_finish.entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
+                store_finish.entry.FIFO_Index := Store_MicroInst_FIFO_Tail
+                store_finish.en := true.B
             }
         }
-
-
     }
 
+    // ========== ChiselDB Logging Section ==========
+    // Macro Instruction Events
+    macro_autoclear.log(0.U, MacroInst_FIFO_Head, MacroInst_FIFO_Tail, macroInstEventTable, "MacroInstAutoClear")
+    macro_insert.log(1.U, MacroInst_FIFO_Head, MacroInst_FIFO_Tail, macroInstEventTable, "MacroInstInsert")
+    macro_insertfull.log(2.U, MacroInst_FIFO_Head, MacroInst_FIFO_Tail, macroInstEventTable, "MacroInstInsertFull")
+    macro_decodestart.log(3.U, MacroInst_FIFO_Head, MacroInst_FIFO_Tail, macroInstEventTable, "MacroInstDecodeStart")
+    macro_decodeend.log(5.U, MacroInst_FIFO_Head, MacroInst_FIFO_Tail, macroInstEventTable, "MacroInstDecodeEnd")
+    macro_finish.log(6.U, MacroInst_FIFO_Head, MacroInst_FIFO_Tail, macroInstEventTable, "MacroInstFinish")
 
+    // Load Micro Instruction Events
+    load_insert.log(0.U, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail, loadMicroInstEventTable, "LoadMicroInstInsert")
+    load_issue.log(1.U, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail, loadMicroInstEventTable, "LoadMicroInstIssue")
+    load_afinish.log(2.U, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail, loadMicroInstEventTable, "LoadMicroInstAFinish")
+    load_bfinish.log(3.U, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail, loadMicroInstEventTable, "LoadMicroInstBFinish")
+    load_cfinish.log(4.U, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail, loadMicroInstEventTable, "LoadMicroInstCFinish")
+    load_finish.log(5.U, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail, loadMicroInstEventTable, "LoadMicroInstFinish")
+    load_commit.log(6.U, Load_MicroInst_FIFO_Head, Load_MicroInst_FIFO_Tail, loadMicroInstEventTable, "LoadMicroInstCommit")
+
+    // Compute Micro Instruction Events
+    comp_insert.log(0.U, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail, computeMicroInstEventTable, "ComputeMicroInstInsert")
+    comp_issue.log(1.U, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail, computeMicroInstEventTable, "ComputeMicroInstIssue")
+    comp_afinish.log(2.U, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail, computeMicroInstEventTable, "ComputeMicroInstAFinish")
+    comp_bfinish.log(3.U, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail, computeMicroInstEventTable, "ComputeMicroInstBFinish")
+    comp_cfinish.log(4.U, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail, computeMicroInstEventTable, "ComputeMicroInstCFinish")
+    comp_aopfinish.log(5.U, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail, computeMicroInstEventTable, "ComputeMicroInstAopFinish")
+    comp_finish_without_store.log(6.U, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail, computeMicroInstEventTable, "ComputeMicroInstFinishWithoutStore")
+    comp_finish.log(7.U, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail, computeMicroInstEventTable, "ComputeMicroInstFinish")
+    comp_commit.log(8.U, Compute_MicroInst_FIFO_Head, Compute_MicroInst_FIFO_Tail, computeMicroInstEventTable, "ComputeMicroInstCommit")
+
+    // Store Micro Instruction Events
+    store_insert.log(0.U, Store_MicroInst_FIFO_Head, Store_MicroInst_FIFO_Tail, storeMicroInstEventTable, "StoreMicroInstInsert")
+    store_issue.log(1.U, Store_MicroInst_FIFO_Head, Store_MicroInst_FIFO_Tail, storeMicroInstEventTable, "StoreMicroInstIssue")
+    store_cfinish.log(2.U, Store_MicroInst_FIFO_Head, Store_MicroInst_FIFO_Tail, storeMicroInstEventTable, "StoreMicroInstCFinish")
+    store_finish.log(3.U, Store_MicroInst_FIFO_Head, Store_MicroInst_FIFO_Tail, storeMicroInstEventTable, "StoreMicroInstFinish")
 }
