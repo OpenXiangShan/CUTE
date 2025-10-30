@@ -7,38 +7,39 @@ import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
 // import boom.v3.util._
 
-//AMemoryLoader，用于加载B矩阵的数据，供给Scratchpad使用
-//从不同的存储介质中加载数据，供给Scratchpad使用
+//BMemoryLoader，用于加载B矩阵的数据，供给MatrixReg使用
+//从不同的存储介质中加载数据，供给MatrixReg使用
 
 //主要是从外部接口加载数据
 //需要一个加速器整体的访存模块，接受MemoryLoader的请求，然后根据请求的地址，返回数据，MeomoryLoader发出虚拟地址
 //这里其实涉及到一个比较隐蔽的问题，就是怎么设置这些页表来防止Linux的一些干扰，如SWAP、Lazy、CopyOnWrite等,这需要一系列的操作系统的支持
 //本地的mmu会完成虚实地址转换，根据memoryloader的请求，选择从不同的存储介质中加载数据
 
-//在本地最基础的是完成整体Tensor的加载，依据Scarchpad的设计，完成Tensor的切分以及将数据的填入Scaratchpad
+//在本地最基础的是完成整体Tensor的加载，依据MatrixReg的设计，完成Tensor的切分以及将数据的填入MatrixReg
 
 //注意，数据的reorder是可以离线完成的！这也属于编译器的一环。
 
 class BSourceIdSearch(implicit p: Parameters) extends CuteBundle{
-    val ScratchpadBankId = UInt(log2Ceil(BScratchpadNBanks).W)
-    val ScratchpadAddr = UInt(log2Ceil(BScratchpadBankNEntrys).W)
+    val MatrixRegBankId = UInt(log2Ceil(BMatrixRegNBanks).W)
+    val MatrixRegAddr = UInt(log2Ceil(BMatrixRegBankNEntrys).W)
 }
 
 //对于卷积，数据摆放是[khkwoc][ic],对于矩阵乘，数据摆放是[N][K]
 
 class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
-        //先整一个ScarchPad的接口的总体设计
-        val ToScarchPadIO = Flipped(new BMemoryLoaderScaratchpadIO)
+        //先整一个 MatrixReg 的接口的总体设计
+        val ToMatrixRegIO = Flipped(new BMemoryLoaderMatrixRegIO)
         val ConfigInfo = Flipped(new BMLMicroTaskConfigIO)
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
     })
+    // 对外统一使用 ToMatrixRegIO
 
-    io.ToScarchPadIO.BankAddr := 0.U.asTypeOf(io.ToScarchPadIO.BankAddr)
-    io.ToScarchPadIO.BankId.valid := false.B
-    io.ToScarchPadIO.BankId.bits := 0.U
-    io.ToScarchPadIO.Data := 0.U.asTypeOf(io.ToScarchPadIO.Data)
+    io.ToMatrixRegIO.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.BankAddr)
+    io.ToMatrixRegIO.BankId.valid := false.B
+    io.ToMatrixRegIO.BankId.bits := 0.U
+    io.ToMatrixRegIO.Data := 0.U.asTypeOf(io.ToMatrixRegIO.Data)
     io.LocalMMUIO.Request.valid := false.B
     io.LocalMMUIO.Request.bits := 0.U.asTypeOf(io.LocalMMUIO.Request.bits)
     io.LocalMMUIO.Response.ready := false.B
@@ -46,14 +47,14 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ConfigInfo.MicroTaskReady := false.B
 
 
-    val ScaratchpadBankAddr = io.ToScarchPadIO.BankAddr
-    val ScaratchpadData = io.ToScarchPadIO.Data
+    val MatrixRegBankAddr = io.ToMatrixRegIO.BankAddr
+    val MatrixRegData = io.ToMatrixRegIO.Data
 
 
     val ConfigInfo = io.ConfigInfo
 
-    val ScaratchpadTensor_N = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_K = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
     val Tensor_B_BaseVaddr = RegInit(0.U(MMUAddrWidth.W))
 
@@ -83,8 +84,8 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             state := s_mm_task
             memoryload_state := s_load_init
             // ApplicationTensor_M := io.ConfigInfo.bits.ApplicationTensor_M
-            ScaratchpadTensor_N := io.ConfigInfo.ScaratchpadTensor_N
-            ScaratchpadTensor_K := io.ConfigInfo.ScaratchpadTensor_K
+            MatrixRegTensor_N := io.ConfigInfo.MatrixRegTensor_N
+            MatrixRegTensor_K := io.ConfigInfo.MatrixRegTensor_K
             Tensor_B_BaseVaddr := io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr //这个不重要
             Tensor_Block_BaseAddr := io.ConfigInfo.ApplicationTensor_B.BlockTensor_B_BaseVaddr //这个是关键
             Conherent := io.ConfigInfo.Conherent
@@ -92,7 +93,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             if(YJPBMLDebugEnable)
             {
                 printf("[BML<%d>]BMemoryLoader Task Start\n",io.DebugInfo.DebugTimeStampe)
-                printf("[BML<%d>]ScaratchpadTensor_N:%d,ScaratchpadTensor_K:%d\n",io.DebugInfo.DebugTimeStampe,io.ConfigInfo.ScaratchpadTensor_N,io.ConfigInfo.ScaratchpadTensor_K)
+                printf("[BML<%d>]MatrixRegTensor_N:%d,MatrixRegTensor_K:%d\n",io.DebugInfo.DebugTimeStampe,io.ConfigInfo.MatrixRegTensor_N,io.ConfigInfo.MatrixRegTensor_K)
                 printf("[BML<%d>]Tensor_B_BaseVaddr:%x,Tensor_Block_BaseAddr:%x\n",io.DebugInfo.DebugTimeStampe,io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr,io.ConfigInfo.ApplicationTensor_B.BlockTensor_B_BaseVaddr)
                 printf("[BML<%d>]ApplicationTensor_B_Stride_N:%x\n",io.DebugInfo.DebugTimeStampe,io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_Stride_N)
             }
@@ -114,7 +115,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     //                                  CScartchpad = Tensor_M×Tensor_N×ResultWidth = 64×64×32bit = 16KB
 
 
-    //这里的Scaratchpad，有可以节省大小的方案，就是尽可能早的去标记某个数据是无效的，然后对下一个数据发出请求，这样对SRAM的读写端口数量要求就高了，多读写端口vsdoublebufferSRAM
+    //这里的MatrixReg，有可以节省大小的方案，就是尽可能早的去标记某个数据是无效的，然后对下一个数据发出请求，这样对SRAM的读写端口数量要求就高了，多读写端口vsdoublebufferSRAM
     //LLC的访存带宽我们设定成和每个bank的每个entry的大小一样。
 
     //处理取数逻辑，BScartchpad的数据大概率是LLC内的数据，所以我们可以直接从LLC中取数
@@ -122,37 +123,37 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     //如果是memoryload_state === s_load_working，那么我们就要开始取数
     //如果是memoryload_state === s_load_end，那么我们就要结束取数
     val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_N*ReduceGroupSize*ReduceWidthByte)+1).W)) //总共要加载的数据量
-    val CurrentLoaded_BlockTensor_N = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    val CurrentLoaded_BlockTensor_K = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    val CurrentLoaded_BlockTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val CurrentLoaded_BlockTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     
-    val MaxBlockTensor_N_Index = ScaratchpadTensor_N
-    val MaxBlockTensor_K_Index = ScaratchpadTensor_K
+    val MaxBlockTensor_N_Index = MatrixRegTensor_N
+    val MaxBlockTensor_K_Index = MatrixRegTensor_K
 
-    //一个cam来存储访存请求的source_id对应的Scarchpad的地址和bank号
-    //用sourceid做索引，存储Scarchpad的地址和bank号，是一组寄存器
+    //一个cam来存储访存请求的source_id对应的MatrixReg的地址和bank号
+    //用sourceid做索引，存储MatrixReg的地址和bank号，是一组寄存器
     
     // val SoureceIdSearchTable = VecInit(Seq.fill(SoureceMaxNum){RegInit(new BSourceIdSearch)})
     val SoureceIdSearchTable = RegInit(VecInit(Seq.fill(SoureceMaxNum)(0.U((new BSourceIdSearch).getWidth.W))))
     val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_N*ReduceGroupSize*ReduceWidthByte)).W))
 
-    val SCP_Fill_Table = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
-    val SCP_Fill_Table_SCP_Addr = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(BScratchpadBankNEntrys).W)))))//记录这个LLC回的数是在scp的哪个地址
-    val SCP_Fill_Table_Time = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/BScratchpadEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
-    val SCP_Fill_Table_Free = SCP_Fill_Table_Time.map(_ === 0.U)//记录这个FIFO能否能填数据
-    val SCP_Fill_Table_Valid = SCP_Fill_Table_Time.map(_ =/= 0.U)//记录这个FIFO里的数据是否有效
-    val SCP_Fill_Table_Insert_Index = PriorityEncoder(SCP_Fill_Table_Free)//返回第一个空位的index
-    val SCP_Fill_Table_Not_Full = SCP_Fill_Table_Free.reduce(_ || _)//这个FIFO是否还有空位
-    val MAX_Fill_Times = outsideDataWidthByte/BScratchpadEntryByteSize
+    val MReg_Fill_Table = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
+    val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(BMatrixRegBankNEntrys).W)))))//记录这个LLC回的数是在scp的哪个地址
+    val MReg_Fill_Table_Time = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/BMatrixRegEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
+    val MReg_Fill_Table_Free = MReg_Fill_Table_Time.map(_ === 0.U)//记录这个FIFO能否能填数据
+    val MReg_Fill_Table_Valid = MReg_Fill_Table_Time.map(_ =/= 0.U)//记录这个FIFO里的数据是否有效
+    val MReg_Fill_Table_Insert_Index = PriorityEncoder(MReg_Fill_Table_Free)//返回第一个空位的index
+    val MReg_Fill_Table_Not_Full = MReg_Fill_Table_Free.reduce(_ || _)//这个FIFO是否还有空位
+    val MAX_Fill_Times = outsideDataWidthByte/BMatrixRegEntryByteSize
 
-    val Bank_Fill_Search_FIFO = RegInit((VecInit(Seq.fill(BScratchpadNBanks)(VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))))//记录fifo里的数据是哪个bank的
-    val Bank_Fill_Search_FIFO_Head = RegInit((VecInit(Seq.fill(BScratchpadNBanks)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))//想要往scp里bank(x)写的最后一个scp_fill_fifo的index
-    val Bank_Fill_Search_FIFO_Tail = RegInit((VecInit(Seq.fill(BScratchpadNBanks)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))
-    val Bank_Fill_Search_FIFO_Full = WireInit(VecInit(Seq.fill(BScratchpadNBanks)(false.B)))
-    val Bank_Fill_Search_FIFO_Empty = WireInit(VecInit(Seq.fill(BScratchpadNBanks)(true.B)))
+    val Bank_Fill_Search_FIFO = RegInit((VecInit(Seq.fill(BMatrixRegNBanks)(VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))))//记录fifo里的数据是哪个bank的
+    val Bank_Fill_Search_FIFO_Head = RegInit((VecInit(Seq.fill(BMatrixRegNBanks)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))//想要往scp里bank(x)写的最后一个scp_fill_fifo的index
+    val Bank_Fill_Search_FIFO_Tail = RegInit((VecInit(Seq.fill(BMatrixRegNBanks)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))
+    val Bank_Fill_Search_FIFO_Full = WireInit(VecInit(Seq.fill(BMatrixRegNBanks)(false.B)))
+    val Bank_Fill_Search_FIFO_Empty = WireInit(VecInit(Seq.fill(BMatrixRegNBanks)(true.B)))
     val Bank_Fill_Valid = Bank_Fill_Search_FIFO_Head.zip(Bank_Fill_Search_FIFO_Tail).map{case (h,t) => h =/= t}//每个bank，是否有数据需要写scp
     val Have_Bank_Fill = Bank_Fill_Valid.reduce(_ || _)//是否有数据需要写scp
 
-    for(i <- 0 until BScratchpadNBanks){
+    for(i <- 0 until BMatrixRegNBanks){
         Bank_Fill_Search_FIFO_Full(i) := Bank_Fill_Search_FIFO_Tail(i) === WrapInc(Bank_Fill_Search_FIFO_Head(i), BMemoryLoaderReadFromMemoryFIFODepth)//fifo满了
         Bank_Fill_Search_FIFO_Empty(i) := Bank_Fill_Search_FIFO_Head(i) === Bank_Fill_Search_FIFO_Tail(i)//这个bank不需要写scp
     }
@@ -165,7 +166,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         TotalLoadSize := 0.U
         CurrentLoaded_BlockTensor_N := 0.U
         CurrentLoaded_BlockTensor_K := 0.U
-        MaxRequestIter := ScaratchpadTensor_K * ScaratchpadTensor_N * ReduceWidthByte.U / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
+        MaxRequestIter := MatrixRegTensor_K * MatrixRegTensor_N * ReduceWidthByte.U / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
     }.elsewhen(memoryload_state === s_load_working){
         //根据不同的MemoryOrder，执行不同的访存模式
 
@@ -183,10 +184,10 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             Request.valid := false.B
         }
 
-        //数据在Scarachpad中的编排
+        //数据在MatrixReg中的编排
         //数据会先排K，再排M
         //AVector一定是不同M的数据，K不断送入，直到K迭代完成，再换新的M，
-        //   K 0 1 2 3 4 5 6 7     time     AVector     ScaratchpadData也这么排布
+        //   K 0 1 2 3 4 5 6 7     time     AVector     MatrixRegData也这么排布
         // M                        0       0 8 g o             {bank[0] [1] [2] [3]}
         // 0   0 1 2 3 4 5 6 7      1       1 9 h p   |addr    0 |    0   8   g   o
         // 1   8 9 a b c d e f      2       2 a i q   |        1 |    1   9   h   p
@@ -205,13 +206,13 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         when(Request.fire && sourceId.valid){//符合条件的话，这条访存请求一定会被发出
             //Request.ready表明了LocalMMU会处理这条访存请求，sourceID valid，表明这条访存请求的sourceID是被LocalMMU认可有效才发送到这个模块的
             val TableItem = Wire(new BSourceIdSearch)
-            TableItem.ScratchpadBankId := CurrentLoaded_BlockTensor_N % BScratchpadNBanks.U
-            TableItem.ScratchpadAddr := ((CurrentLoaded_BlockTensor_N / BScratchpadNBanks.U) * ReduceGroupSize.U) + CurrentLoaded_BlockTensor_K
+            TableItem.MatrixRegBankId := CurrentLoaded_BlockTensor_N % BMatrixRegNBanks.U
+            TableItem.MatrixRegAddr := ((CurrentLoaded_BlockTensor_N / BMatrixRegNBanks.U) * ReduceGroupSize.U) + CurrentLoaded_BlockTensor_K
             SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
             if (YJPBMLDebugEnable)
             {
                 //输出id和request的信息
-                printf("[BML<%d>]sourceId:%d,ScratchpadBankId:%d,ScratchpadAddr:%d\n",io.DebugInfo.DebugTimeStampe,sourceId.bits,TableItem.ScratchpadBankId,TableItem.ScratchpadAddr)
+                printf("[BML<%d>]sourceId:%d,MatrixRegBankId:%d,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,sourceId.bits,TableItem.MatrixRegBankId,TableItem.MatrixRegAddr)
                 //输出这次request的信息
                 printf("[BML<%d>]RequestVirtualAddr:%x,RequestConherent:%d,RequestSourceID:%d,RequestType_isWrite:%d\n",io.DebugInfo.DebugTimeStampe,Request.bits.RequestVirtualAddr,Request.bits.RequestConherent,Request.bits.RequestSourceID,Request.bits.RequestType_isWrite)
             }
@@ -229,15 +230,15 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         when(io.LocalMMUIO.Response.valid)
         {
             val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
-            val ScratchpadBankId = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).ScratchpadBankId
-            current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(ScratchpadBankId)
+            val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).MatrixRegBankId
+            current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(MatrixRegBankId)
         }
         //接受访存的返回值
-        //一个cam来存储访存请求的source_id对应的Scarchpad的地址和bank号
-        //根据response的sourceid，找到对应的Scarchpad的Fill_Table的队伍头的索引，填充到Fill_Table中
-        if (ABMLNeedSCPFillTable)
+        //一个cam来存储访存请求的source_id对应的MatrixReg的地址和bank号
+        //根据response的sourceid，找到对应的MatrixReg的Fill_Table的队伍头的索引，填充到Fill_Table中
+        if (ABMLNeedMRegFillTable)
         {
-            io.LocalMMUIO.Response.ready := SCP_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
+            io.LocalMMUIO.Response.ready := MReg_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
         } else 
         {
             io.LocalMMUIO.Response.ready := true.B
@@ -246,83 +247,83 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             //Trick注意这个设计，是doublebuffer的，AB只能是doublebuffer，回数一定是不会堵的，而且我们有时间对数据进行压缩解压缩～
             //如果要做release设计，要么数据位宽翻倍，腾出周期来使得有空泡能给写任务进行，要么就是数据位宽不变，将读写端口变成独立的读和独立的写端口
             val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
-            val ScratchpadBankId = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).ScratchpadBankId
-            val ScratchpadAddr = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).ScratchpadAddr
+            val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).MatrixRegBankId
+            val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).MatrixRegAddr
             val ResponseData = io.LocalMMUIO.Response.bits.ReseponseData
-            val FIFOIndex = Bank_Fill_Search_FIFO_Head(ScratchpadBankId)//该bank的fill_fifo_index，标注了它当前在fillfifo的哪个位置，我们一共有bank个fill_fifo
+            val FIFOIndex = Bank_Fill_Search_FIFO_Head(MatrixRegBankId)//该bank的fill_fifo_index，标注了它当前在fillfifo的哪个位置，我们一共有bank个fill_fifo
 
-            if (!ABMLNeedSCPFillTable)
+            if (!ABMLNeedMRegFillTable)
             {
                 TotalLoadSize := TotalLoadSize + 1.U
-                for (i <- 0 until BScratchpadNBanks)
+                for (i <- 0 until BMatrixRegNBanks)
                 {
-                    when(ScratchpadBankId === i.U)
+                    when(MatrixRegBankId === i.U)
                     {
-                        io.ToScarchPadIO.BankAddr(i).bits := ScratchpadAddr
-                        io.ToScarchPadIO.Data(i).bits := ResponseData
-                        io.ToScarchPadIO.BankAddr(i).valid := true.B
-                        io.ToScarchPadIO.Data(i).valid := true.B
+                        io.ToMatrixRegIO.BankAddr(i).bits := MatrixRegAddr
+                        io.ToMatrixRegIO.Data(i).bits := ResponseData
+                        io.ToMatrixRegIO.BankAddr(i).valid := true.B
+                        io.ToMatrixRegIO.Data(i).valid := true.B
                     }
                 }
             }
 
-            SCP_Fill_Table(SCP_Fill_Table_Insert_Index) := ResponseData
-            SCP_Fill_Table_SCP_Addr(SCP_Fill_Table_Insert_Index) := ScratchpadAddr
-            SCP_Fill_Table_Time(SCP_Fill_Table_Insert_Index) := MAX_Fill_Times.U
+            MReg_Fill_Table(MReg_Fill_Table_Insert_Index) := ResponseData
+            MReg_Fill_Table_MReg_Addr(MReg_Fill_Table_Insert_Index) := MatrixRegAddr
+            MReg_Fill_Table_Time(MReg_Fill_Table_Insert_Index) := MAX_Fill_Times.U
 
-            Bank_Fill_Search_FIFO(ScratchpadBankId)(FIFOIndex) := SCP_Fill_Table_Insert_Index
-            Bank_Fill_Search_FIFO_Head(ScratchpadBankId) := WrapInc(Bank_Fill_Search_FIFO_Head(ScratchpadBankId), BMemoryLoaderReadFromMemoryFIFODepth)
+            Bank_Fill_Search_FIFO(MatrixRegBankId)(FIFOIndex) := MReg_Fill_Table_Insert_Index
+            Bank_Fill_Search_FIFO_Head(MatrixRegBankId) := WrapInc(Bank_Fill_Search_FIFO_Head(MatrixRegBankId), BMemoryLoaderReadFromMemoryFIFODepth)
             //需要一个fifo？TODO:需要fifo的设计是可能这里会堵，实际上我们满吞吐的doublebuff的设计，咱们这里是不会堵的，直接填就完事了？还是等总线上去握手？
-            //Scartchpad->MemoryLoader->MMU->Memory Bus->Memory上的长组合逻辑链，可以实现一下，为后续的开发做准备
+            //MatrixReg->MemoryLoader->MMU->Memory Bus->Memory上的长组合逻辑链，可以实现一下，为后续的开发做准备
             //否则就靠软件来保证数据流和访存流，保证访存流的稳定性，一定不会堵，就可以省下这个长组合逻辑的延迟？
-            //还有一点，我们的ScartchPad是写优先的呀！！！所以只要写端口数唯一，就不会堵，不需要fifo～～～
-            //Trick:写优先是真的很有说法，本来外部存储就是慢的，读快速存储器的任务等一等就好了，但是所有的ScartchPad都想要读数据的，不能等，所以写优先
+            //还有一点，我们的MatrixReg是写优先的呀！！！所以只要写端口数唯一，就不会堵，不需要fifo～～～
+            //Trick:写优先是真的很有说法，本来外部存储就是慢的，读快速存储器的任务等一等就好了，但是所有的MatrixReg都想要读数据的，不能等，所以写优先
             
             //根据response的的id
             //TODO:这里数据读取量定死了，需要为了支持边界情况，改一改
             if (YJPBMLDebugEnable)
             {
                 //输出这次response的信息
-                printf("[BML<%d>]ResponseData:%x,ScratchpadBankId:%d,ScratchpadAddr:%d\n",io.DebugInfo.DebugTimeStampe,ResponseData,ScratchpadBankId,ScratchpadAddr)
+                printf("[BML<%d>]ResponseData:%x,MatrixRegBankId:%d,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,ResponseData,MatrixRegBankId,MatrixRegAddr)
             }
         }
 
         // Fill_Table的回填优先级最高，一旦有回填任务就立即执行
         val HasScarhpadWrite = Have_Bank_Fill
-        val Current_Fill_SCP_Time = WireInit(VecInit(Seq.fill(BScratchpadNBanks)(0.U(1.W))))
-        if (ABMLNeedSCPFillTable)
+        val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(BMatrixRegNBanks)(0.U(1.W))))
+        if (ABMLNeedMRegFillTable)
         {
-            for (i <- 0 until BScratchpadNBanks){
+            for (i <- 0 until BMatrixRegNBanks){
                 when(Bank_Fill_Search_FIFO_Empty(i) === false.B){
                     val CurrentFIFOIndex = Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Tail(i))
-                    Current_Fill_SCP_Time(i) := 1.U
-                    val ScarchPadWriteRequest = io.ToScarchPadIO
-                    val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*BScratchpadEntryByteSize).W)))))
-                    FIFOData := SCP_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
-                    ScarchPadWriteRequest.BankAddr(i).bits := SCP_Fill_Table_SCP_Addr(CurrentFIFOIndex) + (MAX_Fill_Times.U - SCP_Fill_Table_Time(CurrentFIFOIndex))
-                    ScarchPadWriteRequest.BankAddr(i).valid := true.B
-                    ScarchPadWriteRequest.Data(i).bits := FIFOData(MAX_Fill_Times.U - SCP_Fill_Table_Time(CurrentFIFOIndex))
-                    ScarchPadWriteRequest.Data(i).valid := true.B
+                    Current_Fill_MReg_Time(i) := 1.U
+                    val MatrixRegWriteRequest = io.ToMatrixRegIO
+                    val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*BMatrixRegEntryByteSize).W)))))
+                    FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
+                    MatrixRegWriteRequest.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + (MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
+                    MatrixRegWriteRequest.BankAddr(i).valid := true.B
+                    MatrixRegWriteRequest.Data(i).bits := FIFOData(MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
+                    MatrixRegWriteRequest.Data(i).valid := true.B
 
-                    SCP_Fill_Table_Time(CurrentFIFOIndex) := SCP_Fill_Table_Time(CurrentFIFOIndex) - 1.U
-                    when(SCP_Fill_Table_Time(CurrentFIFOIndex) === 1.U){
+                    MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - 1.U
+                    when(MReg_Fill_Table_Time(CurrentFIFOIndex) === 1.U){
                         Bank_Fill_Search_FIFO_Tail(i) := WrapInc(Bank_Fill_Search_FIFO_Tail(i), BMemoryLoaderReadFromMemoryFIFODepth)
                     }
 
                     if (YJPCMLDebugEnable)
                     {
                         //输出fill_time 和 fifoindex
-                        printf("[BML BMemoryLoader_Load<%d>]bankid: %d,CurrentFIFOIndex %d,ScartchPadAddr: %x, SCP_Fill_Table_Time(CurrentFIFOIndex): %d\n", io.DebugInfo.DebugTimeStampe,i.U, CurrentFIFOIndex, SCP_Fill_Table_SCP_Addr(CurrentFIFOIndex), SCP_Fill_Table_Time(CurrentFIFOIndex))
-                        printf("[BML BMemoryLoader_Load<%d>]bankid: %d,ScartchPadAddr: %x, BankAddr: %x, Data: %x\n", io.DebugInfo.DebugTimeStampe,i.U, SCP_Fill_Table_SCP_Addr(CurrentFIFOIndex), ScarchPadWriteRequest.BankAddr(i).bits, ScarchPadWriteRequest.Data(i).bits)
+                        printf("[BML BMemoryLoader_Load<%d>]bankid: %d,CurrentFIFOIndex %d,ScartchPadAddr: %x, MReg_Fill_Table_Time(CurrentFIFOIndex): %d\n", io.DebugInfo.DebugTimeStampe,i.U, CurrentFIFOIndex, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), MReg_Fill_Table_Time(CurrentFIFOIndex))
+                        printf("[BML BMemoryLoader_Load<%d>]bankid: %d,ScartchPadAddr: %x, BankAddr: %x, Data: %x\n", io.DebugInfo.DebugTimeStampe,i.U, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), MatrixRegWriteRequest.BankAddr(i).bits, MatrixRegWriteRequest.Data(i).bits)
                     }
                 }
             }
         }
 
-        val Current_Load_Fill_Size = WireInit(0.U((log2Ceil(BScratchpadNBanks)+1).W))
-        Current_Load_Fill_Size := PopCount(Current_Fill_SCP_Time.asUInt)
+        val Current_Load_Fill_Size = WireInit(0.U((log2Ceil(BMatrixRegNBanks)+1).W))
+        Current_Load_Fill_Size := PopCount(Current_Fill_MReg_Time.asUInt)
 
-        if (ABMLNeedSCPFillTable)
+        if (ABMLNeedMRegFillTable)
         {
             TotalLoadSize := TotalLoadSize + Current_Load_Fill_Size
         }

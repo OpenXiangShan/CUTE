@@ -8,14 +8,14 @@ import org.chipsalliance.cde.config._
 // import boom.v3.util._
 
 
-//代表对MatrixTE供数的供数逻辑控制单元，隶属于TE，负责选取Scarchpad，选取Scarchpad的行，向TE供数。
-//主要问题在如何设计Scarchpad，在为两种模式供数时(矩阵乘运算和卷积运算)，不存在bank冲突，数据每拍都能完整供应上。
+//代表对MatrixTE供数的供数逻辑控制单元，隶属于TE，负责选取 MatrixReg、选取行，向TE供数。
+//主要问题在如何设计MatrixReg，在为两种模式供数时(矩阵乘运算和卷积运算)，不存在bank冲突，数据每拍都能完整供应上。
 //本模块的核心设计是以ConfigInfo为输入进行配置的，以模块内部寄存器为基础的，长时间运行的取数地址计算和状态机设计。
 class CDataController(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
 
-        //先整一个ScarchPad的接口的总体设计
-        val FromScarchPadIO = Flipped(new CDataControlScaratchpadIO)
+        //先整一个 MatrixReg 的接口的总体设计
+        val FromMatrixRegIO = Flipped(new CDataControlMatrixRegIO)
         val ConfigInfo = Flipped(new CDCMicroTaskConfigIO)
         val Matrix_C = DecoupledIO(UInt((ResultWidth*Matrix_M*Matrix_N).W))
         val ResultMatrix_D = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_M*Matrix_N).W)))
@@ -27,8 +27,8 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     io.Matrix_C.valid := false.B
     io.Matrix_C.bits := 0.U
     io.ResultMatrix_D.ready := false.B
-    io.FromScarchPadIO.WriteBankAddr := 0.U.asTypeOf(io.FromScarchPadIO.WriteBankAddr)
-    io.FromScarchPadIO.WriteRequestData := 0.U.asTypeOf(io.FromScarchPadIO.WriteRequestData)
+    io.FromMatrixRegIO.WriteBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.WriteBankAddr)
+    io.FromMatrixRegIO.WriteRequestData := 0.U.asTypeOf(io.FromMatrixRegIO.WriteRequestData)
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
     io.ConfigInfo.MicroTask_TEComputeEndValid := false.B
@@ -40,12 +40,12 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
     
 
-    io.FromScarchPadIO.ReadBankAddr := 0.U.asTypeOf(io.FromScarchPadIO.ReadBankAddr)
+    io.FromMatrixRegIO.ReadBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.ReadBankAddr)
 
-    val ScarchPadReadResponseData = io.FromScarchPadIO.ReadResponseData //1周期的延迟
-    // val ScarchPadChosen = io.FromScarchPadIO.Chosen
+    val MatrixRegReadResponseData = io.FromMatrixRegIO.ReadResponseData //1周期的延迟
+    // val MatrixRegChosen = io.FromMatrixRegIO.Chosen
 
-    io.FromScarchPadIO.WriteRequestData := 0.U.asTypeOf(io.FromScarchPadIO.WriteRequestData)
+    io.FromMatrixRegIO.WriteRequestData := 0.U.asTypeOf(io.FromMatrixRegIO.WriteRequestData)
 
     val ConfigInfo = io.ConfigInfo
 
@@ -56,9 +56,9 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     //计算状态机，用来配合流水线刷新
     val s_cal_idle :: s_cal_init :: s_cal_working :: s_cal_after_vecops :: s_cal_end :: Nil = Enum(5)
     val calculate_state = RegInit(s_cal_idle)
-    val ScaratchpadWorkingTensor_M = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadWorkingTensor_N = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadWorkingTensor_K = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegWorkingTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegWorkingTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegWorkingTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     
 
     val Is_Transpose                        = RegInit(false.B)      //是否需要转置
@@ -78,14 +78,14 @@ class CDataController(implicit p: Parameters) extends CuteModule{
             if (YJPCDCDebugEnable)
             {
                 //debug信息
-                printf("[CDataController<%d>]CDataController: ConfigInfo is valid! ScaratchpadWorkingTensor_M = %d,ScaratchpadWorkingTensor_N = %d,ScaratchpadWorkingTensor_K = %d\n",io.DebugInfo.DebugTimeStampe, ConfigInfo.ScaratchpadTensor_M, ConfigInfo.ScaratchpadTensor_N, ConfigInfo.ScaratchpadTensor_K)
+                printf("[CDataController<%d>]CDataController: ConfigInfo is valid! MatrixRegWorkingTensor_M = %d,MatrixRegWorkingTensor_N = %d,MatrixRegWorkingTensor_K = %d\n",io.DebugInfo.DebugTimeStampe, ConfigInfo.MatrixRegTensor_M, ConfigInfo.MatrixRegTensor_N, ConfigInfo.MatrixRegTensor_K)
                 printf("[CDataController<%d>]CDataController: Is_Transpose = %d,Is_AfterOps_Tile = %d,Is_Reorder_Only_Ops = %d,Is_EasyScale_Only_Ops = %d,Is_VecFIFO_Ops = %d,D_Datatype = %d\n",io.DebugInfo.DebugTimeStampe, ConfigInfo.Is_Transpose, ConfigInfo.Is_AfterOps_Tile, ConfigInfo.Is_Reorder_Only_Ops, ConfigInfo.Is_EasyScale_Only_Ops, ConfigInfo.Is_VecFIFO_Ops, ConfigInfo.ApplicationTensor_D.dataType)
             }
             state := s_mm_task  //切换到矩阵乘状态
-            ScaratchpadWorkingTensor_M := ConfigInfo.ScaratchpadTensor_M / Matrix_M.U * Matrix_M.U + (ConfigInfo.ScaratchpadTensor_M % Matrix_M.U =/= 0.U) * Matrix_M.U    //当前执行的矩阵乘任务的M, 取4的整数
+            MatrixRegWorkingTensor_M := ConfigInfo.MatrixRegTensor_M / Matrix_M.U * Matrix_M.U + (ConfigInfo.MatrixRegTensor_M % Matrix_M.U =/= 0.U) * Matrix_M.U    //当前执行的矩阵乘任务的M, 取4的整数
 
-            ScaratchpadWorkingTensor_N := ConfigInfo.ScaratchpadTensor_N    //当前执行的矩阵乘任务的N
-            ScaratchpadWorkingTensor_K := ConfigInfo.ScaratchpadTensor_K    //当前执行的矩阵乘任务的K的ReduceVector的数量
+            MatrixRegWorkingTensor_N := ConfigInfo.MatrixRegTensor_N    //当前执行的矩阵乘任务的N
+            MatrixRegWorkingTensor_K := ConfigInfo.MatrixRegTensor_K    //当前执行的矩阵乘任务的K的ReduceVector的数量
             
 
             Is_Transpose                := ConfigInfo.Is_Transpose          //是否需要转置
@@ -100,9 +100,9 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         }
     }
 
-    //数据在CScarachpad中的编排
+    //数据在C MatrixReg中的编排
     //数据会先排N，再排M
-    //   N 0 1 2 3 4 5 6 7              CScaratchpadData里的排布
+    //   N 0 1 2 3 4 5 6 7              CMatrixRegData里的排布
     // M                               {bank  [0]     [1]    [2]     [3]  }
     // 0   0 1 2 3 4 5 6 7   |addr    0 |    0123    89ab   ghij    opgr 
     // 1   8 9 a b c d e f   |        1 |    4567    cdef   klmn    stuv 
@@ -116,37 +116,37 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
     //矩阵乘的状态机，遍历所有数据就完事了
     //TODO:这里可以修改遍历顺序来节省带宽
-    //首先Scaratchpad的数据有Tensor_M*Tensor_K个，每个数据是ReduceWidth位
+    //首先MatrixReg的数据有Tensor_M*Tensor_K个，每个数据是ReduceWidth位
     //然后我们要把这些数据送入TE，每次送入的数据是Matrix_M个，每个数据是Matrix_N*ReduceWidth位
-    //我们的Scaratchpad是先排K再排M，所以我们的数据送入也是先送K再送M，每次送完一批K，重复Tensor_N/Matrix_N次，再切换M
-    val M_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    val N_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    val K_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    //我们的MatrixReg是先排K再排M，所以我们的数据送入也是先送K再送M，每次送完一批K，重复Tensor_N/Matrix_N次，再切换M
+    val M_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val N_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val K_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
     // 计算数据结果回填
     val addr_Iterator = RegInit(0.U(32.W)) //地址迭代器
-    val result_K_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    val result_K_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
-    val Store_M_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    val Store_N_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    val Store_M_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val Store_N_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
-    val M_IteratorMax = (ScaratchpadWorkingTensor_M / Matrix_M.U)
-    val N_IteratorMax = (ScaratchpadWorkingTensor_N / Matrix_N.U)
-    val K_IteratorMax = (ScaratchpadWorkingTensor_K)
+    val M_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_M.U)
+    val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_N.U)
+    val K_IteratorMax = (MatrixRegWorkingTensor_K)
 
     val Max_Caculate_Iter = M_IteratorMax * N_IteratorMax * K_IteratorMax
     val addr_IteratorMax = M_IteratorMax * N_IteratorMax
 
-    val Max_Store_Iter   = (ScaratchpadWorkingTensor_M * ScaratchpadWorkingTensor_N * D_Datatype) / (ResultWidthByte*Matrix_M*Matrix_N).U
+    val Max_Store_Iter   = (MatrixRegWorkingTensor_M * MatrixRegWorkingTensor_N * D_Datatype) / (ResultWidthByte*Matrix_M*Matrix_N).U
 
     val CVectorCount = RegInit(0.U(32.W))
     val DVectorCount = RegInit(0.U(32.W))
-    //对Scaratchpad的数据请求
+    //对MatrixReg的数据请求
     val ReadRequest = WireInit(false.B)
     val WriteRequset = WireInit(false.B)
 
-    val ReadScarchPadDataHoldReg = RegInit(0.U((ResultWidth*Matrix_M*Matrix_N).W)) //保存ScarchPad的数据，当发生MTE的NACK时，可以不需要重新从ScarchPad读数
-    val ReadScarchPadDataHoldValid = RegInit(false.B) //保存ScarchPad的数据，当发生MTE的NACK时，可以不需要重新从ScarchPad读数
+    val ReadMatrixRegDataHoldReg = RegInit(0.U((ResultWidth*Matrix_M*Matrix_N).W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
+    val ReadMatrixRegDataHoldValid = RegInit(false.B) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
 
     val After_ops_issue_iter = RegInit(0.U(32.W)) //后操作的迭代器，用来计算后操作的迭代次数
 
@@ -164,11 +164,11 @@ class CDataController(implicit p: Parameters) extends CuteModule{
             Store_N_Iterator := 0.U
             CVectorCount := 0.U
             DVectorCount := 0.U
-            ReadScarchPadDataHoldReg := 0.U
+            ReadMatrixRegDataHoldReg := 0.U
             After_ops_issue_iter := 0.U
-            ReadScarchPadDataHoldValid := false.B
+            ReadMatrixRegDataHoldValid := false.B
 
-            assert(ScaratchpadWorkingTensor_N === Tensor_N.U, "ScaratchpadWorkingTensor_N = %d is not Full!", ScaratchpadWorkingTensor_N)
+            assert(MatrixRegWorkingTensor_N === Tensor_N.U, "MatrixRegWorkingTensor_N = %d is not Full!", MatrixRegWorkingTensor_N)
             //阶段1，计算初始化完成，开始工作
             calculate_state := s_cal_working
 
@@ -180,17 +180,17 @@ class CDataController(implicit p: Parameters) extends CuteModule{
             }
 
         }.elsewhen(calculate_state === s_cal_working){
-            //阶段2，计算开始，计算对Scarchpad的取数地址
+            //阶段2，计算开始，计算对MatrixReg的取数地址
 
             //循环的最外层是M，然后是N
-            io.FromScarchPadIO.ReadBankAddr := 0.U.asTypeOf(io.FromScarchPadIO.ReadBankAddr)
+            io.FromMatrixRegIO.ReadBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.ReadBankAddr)
             val load_addr =  M_Iterator * N_IteratorMax + N_Iterator
 
             when(io.ComputeGo && CVectorCount < Max_Caculate_Iter){
                 //计算取数地址
                 ReadRequest := true.B
-                io.FromScarchPadIO.ReadBankAddr.map(_.valid := true.B)
-                io.FromScarchPadIO.ReadBankAddr.map(_.bits := load_addr)
+                io.FromMatrixRegIO.ReadBankAddr.map(_.valid := true.B)
+                io.FromMatrixRegIO.ReadBankAddr.map(_.bits := load_addr)
                 N_Iterator := N_Iterator + 1.U
                 when(N_Iterator === N_IteratorMax - 1.U){
                     N_Iterator := 0.U
@@ -202,17 +202,17 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                     }
                 }
             }.otherwise{
-                io.FromScarchPadIO.ReadBankAddr := 0.U.asTypeOf(io.FromScarchPadIO.ReadBankAddr)
+                io.FromMatrixRegIO.ReadBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.ReadBankAddr)
             }
 
-            val Response_valid = ScarchPadReadResponseData.map(_.valid).reduce(_&&_)
-            val Response_data = Wire(Vec(CScratchpadNBanks, (UInt(CScratchpadEntryBitSize.W))))
-            for (i <- 0 until CScratchpadNBanks){
-                Response_data(i) := ScarchPadReadResponseData(i).bits
+            val Response_valid = MatrixRegReadResponseData.map(_.valid).reduce(_&&_)
+            val Response_data = Wire(Vec(CMatrixRegNBanks, (UInt(CMatrixRegEntryBitSize.W))))
+            for (i <- 0 until CMatrixRegNBanks){
+                Response_data(i) := MatrixRegReadResponseData(i).bits
             }
-            when(Response_valid|| ReadScarchPadDataHoldValid){
+            when(Response_valid|| ReadMatrixRegDataHoldValid){
                 io.Matrix_C.valid := true.B
-                io.Matrix_C.bits := Mux(ReadScarchPadDataHoldValid,ReadScarchPadDataHoldReg,Response_data.asUInt) 
+                io.Matrix_C.bits := Mux(ReadMatrixRegDataHoldValid,ReadMatrixRegDataHoldReg,Response_data.asUInt) 
             }
 
 
@@ -220,7 +220,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
             {
                 //只有当数据被消耗的时候，才会增加AVectorCount
                 CVectorCount := CVectorCount + 1.U
-                ReadScarchPadDataHoldValid := false.B   //只要数据被消耗，肯定优先消耗holdreg的数据
+                ReadMatrixRegDataHoldValid := false.B   //只要数据被消耗，肯定优先消耗holdreg的数据
                 when(CVectorCount === Max_Caculate_Iter - 1.U){//如果数据全部被消耗，那么我们就输出调试的读数完成的信息
                     if (YJPCDCDebugEnable)
                     {
@@ -233,48 +233,48 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                     printf("[CDataController<%d>]CDataController: CVectorCount is %d,CMatrix is %x\n",io.DebugInfo.DebugTimeStampe, CVectorCount,io.Matrix_C.bits)
                 }
             }.elsewhen(io.Matrix_C.valid && !io.Matrix_C.ready && !io.ComputeGo && Response_valid){
-                //如果数据没有被消耗，那么我们就要保存ScarchPad的数据
-                //但我们得看看ScarchPad的数据是不是有效的
-                ReadScarchPadDataHoldReg := Response_data.asUInt
-                ReadScarchPadDataHoldValid := true.B
-            }.elsewhen(io.Matrix_C.valid && !io.Matrix_C.ready && !io.ComputeGo && ReadScarchPadDataHoldValid)
+                //如果数据没有被消耗，那么我们就要保存MatrixReg的数据
+                //但我们得看看MatrixReg的数据是不是有效的
+                ReadMatrixRegDataHoldReg := Response_data.asUInt
+                ReadMatrixRegDataHoldValid := true.B
+            }.elsewhen(io.Matrix_C.valid && !io.Matrix_C.ready && !io.ComputeGo && ReadMatrixRegDataHoldValid)
             {
                 //如果数据没有被消耗，且我们HlodReg中有数据，我们就继续Hlod这份数据
-                ReadScarchPadDataHoldReg := ReadScarchPadDataHoldReg
-                ReadScarchPadDataHoldValid := true.B
+                ReadMatrixRegDataHoldReg := ReadMatrixRegDataHoldReg
+                ReadMatrixRegDataHoldValid := true.B
             }
 
             when(io.ResultMatrix_D.valid)
             {
                 
-                io.FromScarchPadIO.WriteBankAddr.map(_.valid := true.B)
-                io.FromScarchPadIO.WriteRequestData.map(_.valid := true.B)
-                val SCP_Wrie_data = Wire((Vec(CScratchpadNBanks, (UInt(CScratchpadEntryBitSize.W)))))
-                SCP_Wrie_data := io.ResultMatrix_D.bits.asTypeOf(SCP_Wrie_data)
-                val transpose_data = Wire((Vec(CScratchpadNBanks, Vec(CScratchpadNBanks, (UInt(ResultWidth.W))))))
-                for (i <- 0 until CScratchpadNBanks){
-                    for (j <- 0 until CScratchpadNBanks){
-                        transpose_data(i)(j) := SCP_Wrie_data(j)((i+1)*ResultWidth - 1 , i*ResultWidth)
+                io.FromMatrixRegIO.WriteBankAddr.map(_.valid := true.B)
+                io.FromMatrixRegIO.WriteRequestData.map(_.valid := true.B)
+                val MReg_Wrie_data = Wire((Vec(CMatrixRegNBanks, (UInt(CMatrixRegEntryBitSize.W)))))
+                MReg_Wrie_data := io.ResultMatrix_D.bits.asTypeOf(MReg_Wrie_data)
+                val transpose_data = Wire((Vec(CMatrixRegNBanks, Vec(CMatrixRegNBanks, (UInt(ResultWidth.W))))))
+                for (i <- 0 until CMatrixRegNBanks){
+                    for (j <- 0 until CMatrixRegNBanks){
+                        transpose_data(i)(j) := MReg_Wrie_data(j)((i+1)*ResultWidth - 1 , i*ResultWidth)
                     }
                 }
                 
-                for (i <- 0 until CScratchpadNBanks){
+                for (i <- 0 until CMatrixRegNBanks){
                     when(Is_Transpose && Is_AfterOps_Tile && result_K_Iterator === K_IteratorMax - 1.U)
                     {
                         //如果需要转置，那么我们就转置数据
-                        io.FromScarchPadIO.WriteRequestData(i).bits := transpose_data(i).asUInt
+                        io.FromMatrixRegIO.WriteRequestData(i).bits := transpose_data(i).asUInt
                     }.otherwise{
                         //否则，我们就直接写入数据
-                        io.FromScarchPadIO.WriteRequestData(i).bits := SCP_Wrie_data(i)
+                        io.FromMatrixRegIO.WriteRequestData(i).bits := MReg_Wrie_data(i)
                     }
                 }
                 
                 
-                WriteRequset := true.B//此时只要数据有效，就喜欢进行写SCP
+                WriteRequset := true.B//此时只要数据有效，就喜欢进行写MReg
                 io.ResultMatrix_D.ready := true.B
                 
                 val store_addr = WireInit(addr_Iterator)
-                io.FromScarchPadIO.WriteBankAddr.map(_.bits := store_addr)//写地址就是DVector的计数
+                io.FromMatrixRegIO.WriteBankAddr.map(_.bits := store_addr)//写地址就是DVector的计数
                 when(io.ResultMatrix_D.fire){
                     addr_Iterator := addr_Iterator + 1.U
                     when(addr_Iterator === addr_IteratorMax - 1.U){
@@ -316,15 +316,15 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
     }
     
-    //像Scrartchpad请求数据的汇总
+    //像MatrixReg请求数据的汇总
     //使用各自的值进行拼接，最低位代表Read，次低位代表Write，最高位代表Memory的Write
-    //叫给Scarchpad来进行仲裁
+    //叫给MatrixReg来进行仲裁
     //TODO:这里最好是拼一个正常的
-    val request = Wire(new ScaratchpadTask)
+    val request = Wire(new MatrixRegTask)
     request.ReadFromMemoryLoader := false.B
     request.WriteFromMemoryLoader := false.B
     request.WriteFromDataController := WriteRequset
     request.ReadFromDataController := ReadRequest
-    io.FromScarchPadIO.ReadWriteRequest := request.asUInt
+    io.FromMatrixRegIO.ReadWriteRequest := request.asUInt
     
 }

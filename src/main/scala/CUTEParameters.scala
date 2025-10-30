@@ -287,7 +287,7 @@ case class CuteParams(
     val MemorysourceMaxNum :Int = 64, //Memory总线上的source最大数量 --> 这个参数和Memory的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必顶大于Memory的访存延迟
 
 
-    //Scaratchpad中保存的张量形状
+    //MatrixReg中保存的张量形状
     val Tensor_M :Int = 128,   //这里指要存的张量的M的大小
     val Tensor_N :Int = 128,   //这里指要存的张量的N的大小
     val Tensor_K :Int = 64,    //这里指要存的张量的K(8bit/elment)的大小
@@ -302,8 +302,8 @@ case class CuteParams(
 
     val AMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //用于暂存AML的数据到CCSP的FIFO
     val BMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //用于暂存BML的数据到CCSP的FIFO
-    val CMemoryLoaderReadFromScratchpadFIFODepth :Int = 4, //用于暂存CCSP的数据到CML的FIFO
-    val CMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //用于暂存CML的数据到CSCP的FIFO
+    val CMemoryLoaderReadFromMatrixRegFIFODepth :Int = 4, //用于暂存CCSP的数据到CML的FIFO
+    val CMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //用于暂存CML的数据到CMReg的FIFO
 
     val VecTaskInstBufferDepth :Int = 32, //VecTask的指令缓冲深度
     val VecTaskInstBufferSize :Int = 8, //VecTask的指令缓冲的数量
@@ -342,7 +342,7 @@ case class CuteParams(
     require((ResultFIFODepth & (ResultFIFODepth - 1)) == 0, "ResultFIFODepth must be power of 2")
     require((AMemoryLoaderReadFromMemoryFIFODepth & (AMemoryLoaderReadFromMemoryFIFODepth - 1)) == 0, "AMemoryLoaderReadFromMemoryFIFODepth must be power of 2")
     require((BMemoryLoaderReadFromMemoryFIFODepth & (BMemoryLoaderReadFromMemoryFIFODepth - 1)) == 0, "BMemoryLoaderReadFromMemoryFIFODepth must be power of 2")
-    require((CMemoryLoaderReadFromScratchpadFIFODepth & (CMemoryLoaderReadFromScratchpadFIFODepth - 1)) == 0, "CMemoryLoaderReadFromScratchpadFIFODepth must be power of 2")
+    require((CMemoryLoaderReadFromMatrixRegFIFODepth & (CMemoryLoaderReadFromMatrixRegFIFODepth - 1)) == 0, "CMemoryLoaderReadFromMatrixRegFIFODepth must be power of 2")
     require((CMemoryLoaderReadFromMemoryFIFODepth & (CMemoryLoaderReadFromMemoryFIFODepth - 1)) == 0, "CMemoryLoaderReadFromMemoryFIFODepth must be power of 2")
     require((VecTaskInstBufferDepth & (VecTaskInstBufferDepth - 1)) == 0, "VecTaskInstBufferDepth must be power of 2")
     require((VecTaskInstBufferSize & (VecTaskInstBufferSize - 1)) == 0, "VecTaskInstBufferSize must be power of 2")
@@ -350,7 +350,7 @@ case class CuteParams(
 
     def outsideDataWidthByte = outsideDataWidth / 8
     def ReduceWidth = ReduceWidthByte * 8
-    def ABMLNeedSCPFillTable = ReduceWidthByte < outsideDataWidthByte //内存返回的数据一周期写不完时ABML需要写回缓冲
+    def ABMLNeedMRegFillTable = ReduceWidthByte < outsideDataWidthByte //内存返回的数据一周期写不完时ABML需要写回缓冲
     def ResultWidth = ResultWidthByte * 8
     def ApplicationMaxTensorSizeBitSize = log2Ceil(ApplicationMaxTensorSize) + 1
     def MMUDataWidth = outsideDataWidth //MMU的数据线宽度
@@ -362,39 +362,39 @@ case class CuteParams(
     def SoureceMaxNumBitSize = log2Ceil(SoureceMaxNum) + 1
 
     def ReduceGroupSize  = Tensor_K/ReduceWidthByte    //这里指要存的张量的K的ReduceVector的数量！不是张量的K的大小
-    def ScaratchpadMaxTensorDim = Math.max(Tensor_M, Math.max(Tensor_N, ReduceGroupSize))
-    def ScaratchpadMaxTensorDimBitSize = log2Ceil(ScaratchpadMaxTensorDim) + 1
-    //AScaratchpad中保存的张量形状为M*K
-    //AScaratchpad的大小为Tenser_M * ReduceGroupSize * ReduceWidthByte
+    def MatrixRegMaxTensorDim = Math.max(Tensor_M, Math.max(Tensor_N, ReduceGroupSize))
+    def MatrixRegMaxTensorDimBitSize = log2Ceil(MatrixRegMaxTensorDim) + 1
+    //A MatrixReg中保存的张量形状为M*K
+    //A MatrixReg的大小为Tenser_M * ReduceGroupSize * ReduceWidthByte
     //128*(4*256/8)，单次读的张量为128*128的张量
     //单次计算需要的时间为(128/4)*(128/4)*4 = 4096拍，单次读需要128×4=512拍。
-    //需要考虑Scaratchpad的顺序读，需要考虑为Scaratchpad分bank
-    def AScratchpadSize = Tensor_M * ReduceGroupSize * ReduceWidthByte //reduce
-    def BScratchpadSize = Tensor_N * ReduceGroupSize * ReduceWidthByte //reduce
-    def CScratchpadSize = Tensor_M * Tensor_N * ResultWidthByte //result
+    //需要考虑MatrixReg的顺序读，需要考虑为MatrixReg分bank
+    def AMatrixRegSize = Tensor_M * ReduceGroupSize * ReduceWidthByte //reduce
+    def BMatrixRegSize = Tensor_N * ReduceGroupSize * ReduceWidthByte //reduce
+    def CMatrixRegSize = Tensor_M * Tensor_N * ResultWidthByte //result
 
-    //目前的Scratchpad设计，分Tensor_T个bank，每次取Tensor_T个数据，根据取数逻辑，在不同的bank里取不同的数据，然后拼接
-    def AScratchpadEntryByteSize = ReduceWidthByte //适合向TE供数的带宽
-    def BScratchpadEntryByteSize = ReduceWidthByte 
-    def CScratchpadEntryByteSize = Matrix_M*ResultWidthByte //这个取数和存数的带宽
-    def AScratchpadEntryBitSize = ReduceWidthByte * 8 //适合向TE供数的带宽
-    def BScratchpadEntryBitSize = ReduceWidthByte * 8
-    def CScratchpadEntryBitSize = Matrix_M*ResultWidthByte * 8//这个取数和存数的带宽
-    def AScratchpadNBanks = Matrix_M //注意这里与Matrix_M有强相关性，一般是Matrix_M的整数倍
-    def BScratchpadNBanks = Matrix_N //这里与Matrix_N强相关
-    def CScratchpadNBanks = Matrix_N //方便进行reorder
-    def AScratchpad_Total_Bandwidth = AScratchpadNBanks * AScratchpadEntryByteSize  //ACSP的总带宽
-    def BScratchpad_Total_Bandwidth = BScratchpadNBanks * BScratchpadEntryByteSize  //BCSP的总带宽
-    def CScratchpad_Total_Bandwidth = CScratchpadNBanks * CScratchpadEntryByteSize  //CCSP的总带宽
-    def AScratchpad_Total_Bandwidth_Bit = AScratchpadNBanks * AScratchpadEntryByteSize * 8  //ACSP的总带宽
-    def BScratchpad_Total_Bandwidth_Bit = BScratchpadNBanks * BScratchpadEntryByteSize * 8  //BCSP的总带宽
-    def CScratchpad_Total_Bandwidth_Bit = CScratchpadNBanks * CScratchpadEntryByteSize * 8  //CCSP的总带宽
-    def AScratchpadBankSize = AScratchpadSize / AScratchpadNBanks
-    def BScratchpadBankSize = BScratchpadSize / BScratchpadNBanks
-    def CScratchpadBankSize = CScratchpadSize / CScratchpadNBanks
-    def AScratchpadBankNEntrys = AScratchpadBankSize / AScratchpadEntryByteSize
-    def BScratchpadBankNEntrys = BScratchpadBankSize / BScratchpadEntryByteSize
-    def CScratchpadBankNEntrys = CScratchpadBankSize / CScratchpadEntryByteSize
+    //目前的MatrixReg设计，分Tensor_T个bank，每次取Tensor_T个数据，根据取数逻辑，在不同的bank里取不同的数据，然后拼接
+    def AMatrixRegEntryByteSize = ReduceWidthByte //适合向TE供数的带宽
+    def BMatrixRegEntryByteSize = ReduceWidthByte 
+    def CMatrixRegEntryByteSize = Matrix_M*ResultWidthByte //这个取数和存数的带宽
+    def AMatrixRegEntryBitSize = ReduceWidthByte * 8 //适合向TE供数的带宽
+    def BMatrixRegEntryBitSize = ReduceWidthByte * 8
+    def CMatrixRegEntryBitSize = Matrix_M*ResultWidthByte * 8//这个取数和存数的带宽
+    def AMatrixRegNBanks = Matrix_M //注意这里与Matrix_M有强相关性，一般是Matrix_M的整数倍
+    def BMatrixRegNBanks = Matrix_N //这里与Matrix_N强相关
+    def CMatrixRegNBanks = Matrix_N //方便进行reorder
+    def AMatrixReg_Total_Bandwidth = AMatrixRegNBanks * AMatrixRegEntryByteSize  //ACSP的总带宽
+    def BMatrixReg_Total_Bandwidth = BMatrixRegNBanks * BMatrixRegEntryByteSize  //BCSP的总带宽
+    def CMatrixReg_Total_Bandwidth = CMatrixRegNBanks * CMatrixRegEntryByteSize  //CCSP的总带宽
+    def AMatrixReg_Total_Bandwidth_Bit = AMatrixRegNBanks * AMatrixRegEntryByteSize * 8  //ACSP的总带宽
+    def BMatrixReg_Total_Bandwidth_Bit = BMatrixRegNBanks * BMatrixRegEntryByteSize * 8  //BCSP的总带宽
+    def CMatrixReg_Total_Bandwidth_Bit = CMatrixRegNBanks * CMatrixRegEntryByteSize * 8  //CCSP的总带宽
+    def AMatrixRegBankSize = AMatrixRegSize / AMatrixRegNBanks
+    def BMatrixRegBankSize = BMatrixRegSize / BMatrixRegNBanks
+    def CMatrixRegBankSize = CMatrixRegSize / CMatrixRegNBanks
+    def AMatrixRegBankNEntrys = AMatrixRegBankSize / AMatrixRegEntryByteSize
+    def BMatrixRegBankNEntrys = BMatrixRegBankSize / BMatrixRegEntryByteSize
+    def CMatrixRegBankNEntrys = CMatrixRegBankSize / CMatrixRegEntryByteSize
 
     require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
     require(outsideDataWidthByte <= Tensor_K, "outsideDataWidthByte must be less than or equal to Tensor_K, or a load will exceed the subtensor in micro load")
@@ -444,7 +444,7 @@ trait CUTEImplParameters{
     val MemoryDataWidth = cuteParams.MemoryDataWidth
     val ReduceWidthByte = cuteParams.ReduceWidthByte
     val ReduceWidth = cuteParams.ReduceWidth
-    val ABMLNeedSCPFillTable = cuteParams.ABMLNeedSCPFillTable
+    val ABMLNeedMRegFillTable = cuteParams.ABMLNeedMRegFillTable
     val ResultWidthByte = cuteParams.ResultWidthByte
     val ResultWidth = cuteParams.ResultWidth
     val VectorWidth = cuteParams.VectorWidth
@@ -463,38 +463,38 @@ trait CUTEImplParameters{
     val Tensor_M = cuteParams.Tensor_M
     val Tensor_N = cuteParams.Tensor_N
     val Tensor_K = cuteParams.Tensor_K
-    val ScaratchpadMaxTensorDim = cuteParams.ScaratchpadMaxTensorDim
-    val ScaratchpadMaxTensorDimBitSize = cuteParams.ScaratchpadMaxTensorDimBitSize
-    val AScratchpadSize = cuteParams.AScratchpadSize
-    val BScratchpadSize = cuteParams.BScratchpadSize
-    val CScratchpadSize = cuteParams.CScratchpadSize
+    val MatrixRegMaxTensorDim = cuteParams.MatrixRegMaxTensorDim
+    val MatrixRegMaxTensorDimBitSize = cuteParams.MatrixRegMaxTensorDimBitSize
+    val AMatrixRegSize = cuteParams.AMatrixRegSize
+    val BMatrixRegSize = cuteParams.BMatrixRegSize
+    val CMatrixRegSize = cuteParams.CMatrixRegSize
     val Matrix_M = cuteParams.Matrix_M
     val Matrix_N = cuteParams.Matrix_N
-    val AScratchpadEntryByteSize = cuteParams.AScratchpadEntryByteSize
-    val BScratchpadEntryByteSize = cuteParams.BScratchpadEntryByteSize
-    val CScratchpadEntryByteSize = cuteParams.CScratchpadEntryByteSize
-    val AScratchpadEntryBitSize = cuteParams.AScratchpadEntryBitSize
-    val BScratchpadEntryBitSize = cuteParams.BScratchpadEntryBitSize
-    val CScratchpadEntryBitSize = cuteParams.CScratchpadEntryBitSize
-    val AScratchpadNBanks = cuteParams.AScratchpadNBanks
-    val BScratchpadNBanks = cuteParams.BScratchpadNBanks
-    val CScratchpadNBanks = cuteParams.CScratchpadNBanks
-    val AScratchpad_Total_Bandwidth = cuteParams.AScratchpad_Total_Bandwidth
-    val BScratchpad_Total_Bandwidth = cuteParams.BScratchpad_Total_Bandwidth
-    val CScratchpad_Total_Bandwidth = cuteParams.CScratchpad_Total_Bandwidth
-    val AScratchpad_Total_Bandwidth_Bit = cuteParams.AScratchpad_Total_Bandwidth_Bit
-    val BScratchpad_Total_Bandwidth_Bit = cuteParams.BScratchpad_Total_Bandwidth_Bit
-    val CScratchpad_Total_Bandwidth_Bit = cuteParams.CScratchpad_Total_Bandwidth_Bit
-    val AScratchpadBankSize = cuteParams.AScratchpadBankSize
-    val BScratchpadBankSize = cuteParams.BScratchpadBankSize
-    val CScratchpadBankSize = cuteParams.CScratchpadBankSize
-    val AScratchpadBankNEntrys = cuteParams.AScratchpadBankNEntrys
-    val BScratchpadBankNEntrys = cuteParams.BScratchpadBankNEntrys
-    val CScratchpadBankNEntrys = cuteParams.CScratchpadBankNEntrys
+    val AMatrixRegEntryByteSize = cuteParams.AMatrixRegEntryByteSize
+    val BMatrixRegEntryByteSize = cuteParams.BMatrixRegEntryByteSize
+    val CMatrixRegEntryByteSize = cuteParams.CMatrixRegEntryByteSize
+    val AMatrixRegEntryBitSize = cuteParams.AMatrixRegEntryBitSize
+    val BMatrixRegEntryBitSize = cuteParams.BMatrixRegEntryBitSize
+    val CMatrixRegEntryBitSize = cuteParams.CMatrixRegEntryBitSize
+    val AMatrixRegNBanks = cuteParams.AMatrixRegNBanks
+    val BMatrixRegNBanks = cuteParams.BMatrixRegNBanks
+    val CMatrixRegNBanks = cuteParams.CMatrixRegNBanks
+    val AMatrixReg_Total_Bandwidth = cuteParams.AMatrixReg_Total_Bandwidth
+    val BMatrixReg_Total_Bandwidth = cuteParams.BMatrixReg_Total_Bandwidth
+    val CMatrixReg_Total_Bandwidth = cuteParams.CMatrixReg_Total_Bandwidth
+    val AMatrixReg_Total_Bandwidth_Bit = cuteParams.AMatrixReg_Total_Bandwidth_Bit
+    val BMatrixReg_Total_Bandwidth_Bit = cuteParams.BMatrixReg_Total_Bandwidth_Bit
+    val CMatrixReg_Total_Bandwidth_Bit = cuteParams.CMatrixReg_Total_Bandwidth_Bit
+    val AMatrixRegBankSize = cuteParams.AMatrixRegBankSize
+    val BMatrixRegBankSize = cuteParams.BMatrixRegBankSize
+    val CMatrixRegBankSize = cuteParams.CMatrixRegBankSize
+    val AMatrixRegBankNEntrys = cuteParams.AMatrixRegBankNEntrys
+    val BMatrixRegBankNEntrys = cuteParams.BMatrixRegBankNEntrys
+    val CMatrixRegBankNEntrys = cuteParams.CMatrixRegBankNEntrys
     val ResultFIFODepth = cuteParams.ResultFIFODepth
     val AMemoryLoaderReadFromMemoryFIFODepth = cuteParams.AMemoryLoaderReadFromMemoryFIFODepth
     val BMemoryLoaderReadFromMemoryFIFODepth = cuteParams.BMemoryLoaderReadFromMemoryFIFODepth
-    val CMemoryLoaderReadFromScratchpadFIFODepth = cuteParams.CMemoryLoaderReadFromScratchpadFIFODepth
+    val CMemoryLoaderReadFromMatrixRegFIFODepth = cuteParams.CMemoryLoaderReadFromMatrixRegFIFODepth
     val CMemoryLoaderReadFromMemoryFIFODepth = cuteParams.CMemoryLoaderReadFromMemoryFIFODepth
     val VecTaskInstBufferDepth = cuteParams.VecTaskInstBufferDepth
     val VecTaskInstBufferSize = cuteParams.VecTaskInstBufferSize
@@ -508,7 +508,6 @@ trait CUTEImplParameters{
 
 class CuteModule(implicit val p: Parameters) extends Module with CUTEImplParameters
 class CuteBundle(implicit val p: Parameters) extends Bundle with CUTEImplParameters
-
 //需要配置的信息：oc -- 控制器发来的oc编号, 
 //                ic, oh, ow, kh, kw, ohb -- 外层循环次数,
 //                icb -- 矩阵乘计算中的中间长度
@@ -549,7 +548,7 @@ class TaskCtrlInfo()(implicit p: Parameters) extends CuteBundle{
         val LoadEnd = Flipped(DecoupledIO(Bool()))
     })
 
-    val ScaratchpadChosen = (new Bundle {
+    val MatrixRegChosen = (new Bundle {
         val ADataControllerChosenIndex = UInt(1.W)
         val BDataControllerChosenIndex = UInt(1.W)
         val CDataControllerChosenIndex = UInt(1.W)
@@ -627,9 +626,9 @@ class LoadMicroInst()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_C = new ApplicationTensor_C_Info//大多时候是0，所以存在一个大寄存器里可能会亏？
     val CLoadTaskInfo = new LoadTask_Info
 
-    val ScaratchpadTensor_M                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_N                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_K                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
 
     //知道卷积核的位置和当前的OHOW，确认是否需要padding进行0填充
     val Convolution_Current_OH_Index        = (UInt(log2Ceil(ConvolutionDIM_Max).W))
@@ -645,9 +644,9 @@ class LoadMicroInst()(implicit p: Parameters) extends CuteBundle{
     val Is_B_Work                          = (Bool())      //是否需要工作
     val Is_C_Work                          = (Bool())      //是否需要工作
 
-    val A_SCPID                            = UInt(2.W)//代表Load的结果存在哪个SCP上，这个值保存在Resoure_Info里
-    val B_SCPID                            = UInt(2.W)//代表Load的结果存在哪个SCP上，这个值保存在Resoure_Info里
-    val C_SCPID                            = UInt(2.W)//代表Load的结果存在哪个SCP上，这个值保存在Resoure_Info里
+    val A_MRegID                            = UInt(2.W)//代表Load的结果存在哪个MReg上，这个值保存在Resoure_Info里
+    val B_MRegID                            = UInt(2.W)//代表Load的结果存在哪个MReg上，这个值保存在Resoure_Info里
+    val C_MRegID                            = UInt(2.W)//代表Load的结果存在哪个MReg上，这个值保存在Resoure_Info里
 
     val IsTranspose                         = (Bool())      //是否需要转置
     
@@ -659,9 +658,9 @@ class LoadMicroInst()(implicit p: Parameters) extends CuteBundle{
 //用于描述微指令间依赖关系和资源依赖关系的信息，用于下一阶段的微指令(Compute)能否发射的信息
 class LoadMicroInst_Resource_Info()(implicit p: Parameters) extends CuteBundle{
     // Application_M,Application_N,Application_K代表这条宏指令要执行的MNK的长度
-    val A_SCPID = UInt(4.W)//代表Load的结果存在哪个SCP上
-    val B_SCPID = UInt(4.W)//代表Load的结果存在哪个SCP上
-    val C_SCPID = UInt(4.W)//代表Load的结果存在哪个SCP上
+    val A_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
+    val B_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
+    val C_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
     
 }
 
@@ -679,9 +678,9 @@ class ComputeMicroInst()(implicit p: Parameters) extends CuteBundle{
     val Is_EasyScale_Only_Ops = Bool()       //是否是EasyScale的Tile
     val Is_VecFIFO_Ops = Bool()              //是否是VecOps的Tile
 
-    val ScaratchpadTensor_M                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_N                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_K                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val Have_Store_Micro_Inst               = (Bool())      //是否有依赖于这条计算指令的Store的指令
 
     val Is_Fp = Bool() //是否是浮点数的计算
@@ -689,9 +688,9 @@ class ComputeMicroInst()(implicit p: Parameters) extends CuteBundle{
 
 //用于描述微指令间依赖关系和资源依赖关系的信息，用于下一阶段的微指令(Store)能否发射的信息
 class ComputeMicroInst_Resource_Info()(implicit p: Parameters) extends CuteBundle{
-    val A_SCPID = UInt(4.W)//代表Load的结果存在哪个SCP上
-    val B_SCPID = UInt(4.W)//代表Load的结果存在哪个SCP上
-    val C_SCPID = UInt(4.W)//代表Load的结果存在哪个SCP上
+    val A_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
+    val B_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
+    val C_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
     val Load_Micro_Inst_FIFO_Index = UInt(4.W)//代表Load的指令在队列中的位置
 }
 //CUTE能接受的，Store模块能处理的微指令形式
@@ -699,24 +698,24 @@ class StoreMicroInst()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_D = new ApplicationTensor_D_Info
     val Conherent                           = (Bool())      //是否需要coherent
     val Is_Transpose                        = (Bool())      //是否需要转置
-    val ScaratchpadTensor_M                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_N                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val Is_Last_Store                       = (Bool())      //是否是最后一次store
 }
 
 //用于描述微指令间依赖关系和资源依赖关系的信息，用于下一阶段的微指令(Vec或者唤醒CPU)能否发射的信息
 class StoreMicroInst_Resource_Info()(implicit p: Parameters) extends CuteBundle{
-    val C_SCPID = UInt(4.W)//代表Load的结果存在哪个SCP上
+    val C_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
     val Compute_Micro_Inst_FIFO_Index = UInt(4.W)//代表Compute的指令在队列中的位置
     val Marco_Inst_FIFO_Index = UInt(4.W)//代表Marco的指令在队列中的位置
 }
 
 class AfterOpsInterface()(implicit p: Parameters) extends CuteBundle{
 
-    //每拍可接受一个来自CDC的与SCP和TE等宽的数据，并在自己模块内完成数据的拆分、重排、缩放、转置以及其他复杂向量任务
+    //每拍可接受一个来自CDC的与MReg和TE等宽的数据，并在自己模块内完成数据的拆分、重排、缩放、转置以及其他复杂向量任务
     val CDCDataToInterface     = DecoupledIO(UInt((ResultWidth*Matrix_M*Matrix_N).W))
     val InterfaceToCDCData     = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_M*Matrix_N).W)))
-    // val CDCStoreAddr                        = Input(UInt(log2Ceil(CScratchpadBankNEntrys).W))
+    // val CDCStoreAddr                        = Input(UInt(log2Ceil(CMatrixRegBankNEntrys).W))
 
     val VecInstQueueID = UInt(1.W)
 }
@@ -784,9 +783,9 @@ class AfterOpsMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
         val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
     })
 
-    val ScaratchpadTensor_M                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_K                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_N                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
 
     //接受后操作的任务，有可能是重排序，有可能是缩放，有可能是转置，有可能是其他复杂后操作任务
     val Is_Transpose                        = (Bool())      //是否需要转置
@@ -809,9 +808,9 @@ class ADCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
         val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
     })
 
-    val ScaratchpadTensor_M                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_K                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_N                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
 
     val Is_Transpose                        = (Bool())      //是否需要转置
 
@@ -828,9 +827,9 @@ class BDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
         val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
     })
 
-    val ScaratchpadTensor_M                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_K                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_N                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
 
     val Is_Transpose                        = (Bool())      //是否需要转置
 
@@ -853,9 +852,9 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
         val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
     })
 
-    val ScaratchpadTensor_M                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_K                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_N                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
 
     val Is_Transpose                        = (Bool())      //是否需要转置
     val Is_AfterOps_Tile                    = (Bool())      //是否是需要执行后操作的Tile，包括转置等
@@ -891,8 +890,8 @@ class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val ApplicationTensor_A = new ApplicationTensor_A_Info
 
-    val ScaratchpadTensor_M                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_K                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
 
     //知道卷积核的位置和当前的OHOW，确认是否需要padding进行0填充
     val Convolution_Current_OH_Index        = (UInt(log2Ceil(ConvolutionDIM_Max).W))
@@ -922,8 +921,8 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val ApplicationTensor_B = (new ApplicationTensor_B_Info)
 
-    val ScaratchpadTensor_N                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_K                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
 
     //知道卷积核的位置，确认kernel的具体BlockTensor_B_BaseVaddr，那这个不需要传进来，TaskCtrl算完送进来就行了。
     // val Convolution_Current_KH_Index        = (UInt(ConvolutionApplicationConfigDataWidth.W))
@@ -971,8 +970,8 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val Conherent                           = (Bool())      //是否需要coherent
     val Is_Transpose                        = (Bool())      //是否需要转置
-    val ScaratchpadTensor_M                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
-    val ScaratchpadTensor_N                 = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
 
     val IsLoadMicroTask                     = (Bool())      //是否是Load任务
     val IsStoreMicroTask                    = (Bool())      //是否是Store任务
@@ -987,13 +986,13 @@ class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val dataType                            = Output(UInt(ElementDataType.DataTypeBitWidth.W))
 }
 
-class SCPControlInfo()(implicit p: Parameters) extends CuteBundle{
-    val ADC_SCP_ID = UInt(1.W)
-    val BDC_SCP_ID = UInt(1.W)
-    val CDC_SCP_ID = UInt(1.W)
-    val AML_SCP_ID = UInt(1.W)
-    val BML_SCP_ID = UInt(1.W)
-    val CML_SCP_ID = UInt(1.W)
+class MRegControlInfo()(implicit p: Parameters) extends CuteBundle{
+    val ADC_MReg_ID = UInt(1.W)
+    val BDC_MReg_ID = UInt(1.W)
+    val CDC_MReg_ID = UInt(1.W)
+    val AML_MReg_ID = UInt(1.W)
+    val BML_MReg_ID = UInt(1.W)
+    val CML_MReg_ID = UInt(1.W)
 }
 
 
@@ -1032,16 +1031,16 @@ class ConfigInfoIO()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_N = (UInt(ApplicationMaxTensorSizeBitSize.W))
     val ApplicationTensor_K = (UInt(ApplicationMaxTensorSizeBitSize.W))
 
-    val ScaratchpadTensor_M = (UInt(ScaratchpadMaxTensorDimBitSize.W)) //Scaratchpad当前处理的矩阵乘的M
-    val ScaratchpadTensor_N = (UInt(ScaratchpadMaxTensorDimBitSize.W)) //Scaratchpad当前处理的矩阵乘的N
-    val ScaratchpadTensor_K = (UInt(ScaratchpadMaxTensorDimBitSize.W)) //Scaratchpad当前处理的矩阵乘的K
+    val MatrixRegTensor_M = (UInt(MatrixRegMaxTensorDimBitSize.W)) //MatrixReg当前处理的矩阵乘的M
+    val MatrixRegTensor_N = (UInt(MatrixRegMaxTensorDimBitSize.W)) //MatrixReg当前处理的矩阵乘的N
+    val MatrixRegTensor_K = (UInt(MatrixRegMaxTensorDimBitSize.W)) //MatrixReg当前处理的矩阵乘的K
 
     val ComputeGo = (Bool())
 
 
     val dataType = (UInt(ElementDataType.DataTypeBitWidth.W)) //0-矩阵乘，1-卷积
     val taskType = (UInt(CUTETaskType.CUTETaskBitWidth.W)) //1-32位，2-16位， 4-32位
-    // val ExternalReduceSize = (UInt(ScaratchpadMaxTensorDimBitSize.W))
+    // val ExternalReduceSize = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val CMemoryLoaderConfig = (new Bundle{
         val MemoryOrder = (UInt(MemoryOrderType.MemoryOrderTypeBitWidth.W))
         val TaskType = (UInt(CMemoryLoaderTaskType.TypeBitWidth.W))
@@ -1049,79 +1048,79 @@ class ConfigInfoIO()(implicit p: Parameters) extends CuteBundle{
 
 }
 
-//从Scaratchpad中取数，要明确是从哪个bank里，取第几行的数据，然后完成数据拼接返回
+//从MatrixReg中取数，要明确是从哪个bank里，取第几行的数据，然后完成数据拼接返回
 //从哪个bank里取数据，取第几行的数据，是由datacontrol模块算出来的
 //怎么在bank里编排数据，是由MemoryLoader模块填进去的
 //MemoryLoader模块和datacontrol模块都有窗口期，可以完成数据额外的一些编排如量化、反稀疏、反量化、量化重排等等
-//将MemoryLoader模块和datacontrol模块分开，是为了使用窗口期，让单读写口的ScarchPad可以独立运行
+//将MemoryLoader模块和datacontrol模块分开，是为了使用窗口期，让单读写口的MatrixReg可以独立运行
 //有没有能同时读写的SRAM啊？我能保证不写同一块数据,还是先doublebuffer吧....
-//我们考虑到回数的延迟，所以DataControl与Scarachpad之间也是有fifo的。考虑到后续的SRAM是一个简单模块，fifo要加在DataControl里，让Scarachpad尽可能简单。
-class ADataControlScaratchpadIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AScratchpadBankNLines)，是输入的需要握手的数据
-    val BankAddr = Flipped(DecoupledIO(Vec(AScratchpadNBanks, (UInt(log2Ceil(AScratchpadBankNEntrys).W)))))
+//我们考虑到回数的延迟，所以DataControl与MatrixReg之间也是有fifo的。考虑到后续的SRAM是一个简单模块，fifo要加在DataControl里，让MatrixReg尽可能简单。
+class ADataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AMatrixRegBankNLines)，是输入的需要握手的数据
+    val BankAddr = Flipped(DecoupledIO(Vec(AMatrixRegNBanks, (UInt(log2Ceil(AMatrixRegBankNEntrys).W)))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
-    val Data = Valid(Vec(AScratchpadNBanks, UInt(AScratchpadEntryBitSize.W)))
-    //chosen是选择该ScarchPad的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
+    val Data = Valid(Vec(AMatrixRegNBanks, UInt(AMatrixRegEntryBitSize.W)))
+    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
     // val Chosen = Input(Bool())
 }
 
-class AMemoryLoaderScaratchpadIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AScratchpadBankNLines)，是输入的需要握手的数据
-    val BankId = Flipped(Valid(UInt(log2Ceil(AScratchpadNBanks).W)))
-    val BankAddr = Flipped(Vec(AScratchpadNBanks, Valid(UInt(log2Ceil(AScratchpadBankNEntrys).W))))
+class AMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AMatrixRegBankNLines)，是输入的需要握手的数据
+    val BankId = Flipped(Valid(UInt(log2Ceil(AMatrixRegNBanks).W)))
+    val BankAddr = Flipped(Vec(AMatrixRegNBanks, Valid(UInt(log2Ceil(AMatrixRegBankNEntrys).W))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
-    val Data = Flipped(Vec(AScratchpadNBanks, Valid(UInt(AScratchpadEntryBitSize.W))))
+    val Data = Flipped(Vec(AMatrixRegNBanks, Valid(UInt(AMatrixRegEntryBitSize.W))))
     //zerofill用于指示是否填零
-    val ZeroFill = Input(Vec(AScratchpadNBanks, Valid(UInt(log2Ceil(AScratchpadBankNEntrys).W))))
-    //chosen是选择该ScarchPad的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
+    val ZeroFill = Input(Vec(AMatrixRegNBanks, Valid(UInt(log2Ceil(AMatrixRegBankNEntrys).W))))
+    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
     // val Chosen = Input(Bool())
 }
 
-class BDataControlScaratchpadIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AScratchpadBankNLines)，是输入的需要握手的数据
-    val BankAddr = Flipped(DecoupledIO(Vec(BScratchpadNBanks, (UInt(log2Ceil(BScratchpadBankNEntrys).W)))))
+class BDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(BMatrixRegBankNLines)，是输入的需要握手的数据
+    val BankAddr = Flipped(DecoupledIO(Vec(BMatrixRegNBanks, (UInt(log2Ceil(BMatrixRegBankNEntrys).W)))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
-    val Data = Valid(Vec(BScratchpadNBanks, UInt(BScratchpadEntryBitSize.W)))
-    //chosen是选择该ScarchPad的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
+    val Data = Valid(Vec(BMatrixRegNBanks, UInt(BMatrixRegEntryBitSize.W)))
+    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
     // val Chosen = Input(Bool())
 }
 
-class BMemoryLoaderScaratchpadIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AScratchpadBankNLines)，是输入的需要握手的数据
-    val BankId = Flipped(Valid(UInt(log2Ceil(BScratchpadNBanks).W)))
-    val BankAddr = Flipped(Vec(BScratchpadNBanks, Valid(UInt(log2Ceil(BScratchpadBankNEntrys).W))))
+class BMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(BMatrixRegBankNLines)，是输入的需要握手的数据
+    val BankId = Flipped(Valid(UInt(log2Ceil(BMatrixRegNBanks).W)))
+    val BankAddr = Flipped(Vec(BMatrixRegNBanks, Valid(UInt(log2Ceil(BMatrixRegBankNEntrys).W))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
-    val Data = Flipped(Vec(BScratchpadNBanks, Valid(UInt(BScratchpadEntryBitSize.W))))
-    //chosen是选择该ScarchPad的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
+    val Data = Flipped(Vec(BMatrixRegNBanks, Valid(UInt(BMatrixRegEntryBitSize.W))))
+    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
     // val Chosen = Input(Bool())
 }
 
 
-class CDataControlScaratchpadIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AScratchpadBankNLines)，是输入的需要握手的数据
-    val ReadBankAddr = Flipped((Vec(CScratchpadNBanks, Valid(UInt(log2Ceil(CScratchpadBankNEntrys).W)))))
-    val WriteBankAddr = Flipped((Vec(CScratchpadNBanks, Valid(UInt(log2Ceil(CScratchpadBankNEntrys).W)))))
+class CDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(CMatrixRegBankNLines)，是输入的需要握手的数据
+    val ReadBankAddr = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntrys).W)))))
+    val WriteBankAddr = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntrys).W)))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt
-    val ReadResponseData = (Vec(CScratchpadNBanks, Valid(UInt(CScratchpadEntryBitSize.W))))
-    val WriteRequestData = Flipped((Vec(CScratchpadNBanks, Valid(UInt(CScratchpadEntryBitSize.W)))))
-    //chosen是选择该ScarchPad的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
-    val ReadWriteRequest = Input(UInt((ScaratchpadTaskType.TaskTypeBitWidth).W))
-    val ReadWriteResponse = Output(UInt((ScaratchpadTaskType.TaskTypeBitWidth).W))
+    val ReadResponseData = (Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W))))
+    val WriteRequestData = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W)))))
+    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
+    val ReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val ReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     // val Chosen = Input(Bool())
 }
 
-class CMemoryLoaderScaratchpadIO(implicit p: Parameters) extends CuteBundle{
-    val ReadRequestToScarchPad = (new Bundle{
-        val BankAddr = Flipped(Vec(CScratchpadNBanks, Valid(UInt(log2Ceil(CScratchpadBankNEntrys).W))))
-        val ReadResponseData = ((Vec(CScratchpadNBanks, Valid(UInt(CScratchpadEntryBitSize.W)))))
+class CMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    val ReadRequestToMatrixReg = (new Bundle{
+        val BankAddr = Flipped(Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntrys).W))))
+        val ReadResponseData = ((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W)))))
     })
-    val WriteRequestToScarchPad = (new Bundle{
-        val BankAddr = Flipped(Vec(CScratchpadNBanks, (Valid(UInt(log2Ceil(CScratchpadBankNEntrys).W)))))
-        val Data = Flipped(Vec(CScratchpadNBanks, (Valid(UInt(CScratchpadEntryBitSize.W)))))
+    val WriteRequestToMatrixReg = (new Bundle{
+        val BankAddr = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(log2Ceil(CMatrixRegBankNEntrys).W)))))
+        val Data = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(CMatrixRegEntryBitSize.W)))))
     })
 
-    val ReadWriteRequest = Input(UInt((ScaratchpadTaskType.TaskTypeBitWidth).W))
-    val ReadWriteResponse = Output(UInt((ScaratchpadTaskType.TaskTypeBitWidth).W))
+    val ReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val ReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     // val Chosen = Input(Bool())
 }
 
@@ -1295,22 +1294,22 @@ case object  MemoryOrderType extends Field[UInt]{
 }
 
 
-class ScaratchpadTaskDecode(ScaratchpadTask: UInt) extends Field[UInt]{
+class MatrixRegTaskDecode(MatrixRegTask: UInt) extends Field[UInt]{
 
-    def IsRead : Bool = ScaratchpadTask(ScaratchpadTaskType.EnableReadFromDataController) || ScaratchpadTask(ScaratchpadTaskType.EnableReadFromMemoryLoader)
-    def IsWrite : Bool = ScaratchpadTask(ScaratchpadTaskType.EnableWriteFromDataController) || ScaratchpadTask(ScaratchpadTaskType.EnableWriteFromMemoryLoader)
+    def IsRead : Bool = MatrixRegTask(MatrixRegTaskType.EnableReadFromDataController) || MatrixRegTask(MatrixRegTaskType.EnableReadFromMemoryLoader)
+    def IsWrite : Bool = MatrixRegTask(MatrixRegTaskType.EnableWriteFromDataController) || MatrixRegTask(MatrixRegTaskType.EnableWriteFromMemoryLoader)
 
-    def IsReadFromDataController: Bool = ScaratchpadTask(ScaratchpadTaskType.ReadFromDataControllerIndex)
-    def IsWriteFromDataController: Bool = ScaratchpadTask(ScaratchpadTaskType.WriteFromDataControllerIndex)
-    def IsWriteFromMemoryLoader: Bool = ScaratchpadTask(ScaratchpadTaskType.WriteFromMemoryLoaderIndex)
-    def IsReadFromMemoryLoader  : Bool = ScaratchpadTask(ScaratchpadTaskType.ReadFromMemoryLoaderIndex)
+    def IsReadFromDataController: Bool = MatrixRegTask(MatrixRegTaskType.ReadFromDataControllerIndex)
+    def IsWriteFromDataController: Bool = MatrixRegTask(MatrixRegTaskType.WriteFromDataControllerIndex)
+    def IsWriteFromMemoryLoader: Bool = MatrixRegTask(MatrixRegTaskType.WriteFromMemoryLoaderIndex)
+    def IsReadFromMemoryLoader  : Bool = MatrixRegTask(MatrixRegTaskType.ReadFromMemoryLoaderIndex)
 
-    // def ReadSrc: UInt = ScaratchpadTask
+    // def ReadSrc: UInt = MatrixRegTask
 }
 
-case object ScaratchpadTaskType extends Field[UInt]{
-    val TaskTypeBitWidth = 4    //对于单个Scaratchpad，其并发的数据来源一共用3个，所以用3bit来表示。1.DataController对PE的输入数据的对ScarchPad读请求 2.DataController将PE的输出结果送入ScaratchPad写请求 3。MemoryLoader对ScarchPad的写请求
-    //我们不知道Scaratchpad的读写端口数量，所以用使能信号表示接受的数据来源
+case object MatrixRegTaskType extends Field[UInt]{
+    val TaskTypeBitWidth = 4    //对于单个MatrixReg，其并发的数据来源一共用3个，所以用3bit来表示。1.DataController对PE的输入数据的对MatrixReg读请求 2.DataController将PE的输出结果送入MatrixReg写请求 3。MemoryLoader对MatrixReg的写请求
+    //我们不知道MatrixReg的读写端口数量，所以用使能信号表示接受的数据来源
     val EnableReadFromDataController = 1.U(TaskTypeBitWidth.W)
     val EnableWriteFromDataController = 2.U(TaskTypeBitWidth.W)
     val EnableWriteFromMemoryLoader = 4.U(TaskTypeBitWidth.W)
@@ -1321,7 +1320,7 @@ case object ScaratchpadTaskType extends Field[UInt]{
     val ReadFromMemoryLoaderIndex = 3
 }
 
-class ScaratchpadTask(implicit p: Parameters) extends CuteBundle{
+class MatrixRegTask(implicit p: Parameters) extends CuteBundle{
     val ReadFromMemoryLoader = Bool()
     val WriteFromMemoryLoader = Bool()
     val WriteFromDataController = Bool()

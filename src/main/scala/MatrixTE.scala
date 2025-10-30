@@ -7,7 +7,7 @@ import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
 
 //MatrixTE
-//该模块的设计目标是，外积模块，组织多个ReducePE，来复用矩阵乘的数据，MatrixTE接受ABScarchPad的数据，交给broadcaster，生成数据馈送至至ReducePE，将Reduce的输出数据准备馈送至ScarchPadC。
+//该模块的设计目标是，外积模块，组织多个ReducePE，来复用矩阵乘的数据，MatrixTE接受ABMatrixReg的数据，交给broadcaster，生成数据馈送至至ReducePE，将Reduce的输出数据准备馈送至MatrixRegC。
 //计算上来看，它的输入是两个向量，将两个向量广播成两个相同大小的矩阵后，将元素送入ReducuPE。向量的大小也很明显其一是Matrix_M，其二是Matrix_N，向量内的元素宽度是Reduce_Width
 class MatrixTE(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
@@ -100,7 +100,7 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     io.ComputeGo := ReducePEInputAllReady
 
     //越浅的fifo，越少的能量消耗～
-    //直接送到CscratchPad的数据，是最香的
+    //直接送到CMatrixReg的数据，是最香的
     //只要MatrixD的是ready的，就可以送数据
     for (i <- 0 until Matrix_M){
         for (j <- 0 until Matrix_N){
@@ -108,8 +108,8 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
         }
     }
 
-    //ReducePE和MatrixTE需要一个对于externalReduce的处理，以提高热效率，提供主频，减少对CScratchPad的访问
-    //ExternalReduce是指，我们的Scarchpad内的Tensor的K维大于1时，可以减少从CScratchPad的访问数据，让ReducePE使用自己暂存的累加结果后，再存至CScratchPad
+    //ReducePE和MatrixTE需要一个对于externalReduce的处理，以提高热效率，提供主频，减少对CMatrixReg的访问
+    //ExternalReduce是指，我们的MatrixReg内的Tensor的K维大于1时，可以减少从CMatrixReg的访问数据，让ReducePE使用自己暂存的累加结果后，再存至CMatrixReg
     //Trick：再来，这里的K越大，我们的CSratchPad的平均访问次数就越少，就可以使用更慢更大的SRAM
     //256/8 = 32，在K大小为256时，我们的ExternalK可以是256/32 = 8,如果K=128，那么ExternalK=4。此时对CSratchPad进行一次读写的时间就只有4个周期，虽然好像也没有问题。
     //对于一个读+一个写端口的SRAM，我们确实可以在同一个周期内完成一次读一次写。但需要doublebuffer来阻挡从Memory到SRAM的数据。也就是K=32的情况，K=32的情况，用向量做Reduce就行了？
@@ -118,8 +118,8 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     //向量算力和矩阵算力的配比，就是在roofline图上，找的那个说得通的点，证明我们的设计是合理的～
 
     //算的时候，reducePE可以对256的数据进行n种不同的计算，256/8 = 32。
-    //这个(32,32)元素，送到PE里，可以得到(1,1)，(2,2)，(4,4)等的结果，影响ResultWidth的宽度，这会导致CScratchPad的访存带宽相应的提升
-    //ResultWidth比较宽，导致CScratchpad宽度过宽，比如(4,4)的就需要(4*4)(4*4)*32bit,4096bit的读写，但是C有个好处就是不需要每周期都读写4096，可以花4个周期读，再画4个周期写。这样就是要求ExternalK必须大于4+4(单读写口的话)，也就是对于张量来说最小是(4+4)(8)。张量是16*16*64的张量。
+    //这个(32,32)元素，送到PE里，可以得到(1,1)，(2,2)，(4,4)等的结果，影响ResultWidth的宽度，这会导致CMatrixReg的访存带宽相应的提升
+    //ResultWidth比较宽，导致CMatrixReg宽度过宽，比如(4,4)的就需要(4*4)(4*4)*32bit,4096bit的读写，但是C有个好处就是不需要每周期都读写4096，可以花4个周期读，再画4个周期写。这样就是要求ExternalK必须大于4+4(单读写口的话)，也就是对于张量来说最小是(4+4)(8)。张量是16*16*64的张量。
 
 
 

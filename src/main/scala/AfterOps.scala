@@ -67,8 +67,8 @@ class VectorStreamInterface(implicit p: Parameters) extends CuteModule{
 
 
     //译码Stream码流，递送uop。
-    //stream码流就是TC的SCP中的数据流形式。
-    //stream码流有固定的阶段，配置阶段(初始化TC驻留VPU的VREG和设置VEC Config)、计算阶段(根据数据流配置，递送数据；同时接受返回的数据)、结束阶段(接受驻留统计VREG的结果，并完成CSCP的同步)。
+    //stream码流就是TC的MReg中的数据流形式。
+    //stream码流有固定的阶段，配置阶段(初始化TC驻留VPU的VREG和设置VEC Config)、计算阶段(根据数据流配置，递送数据；同时接受返回的数据)、结束阶段(接受驻留统计VREG的结果，并完成CMReg的同步)。
                                       
 
     //dequeue
@@ -81,8 +81,8 @@ class VectorStreamInterface(implicit p: Parameters) extends CuteModule{
 //该模块的核心是4个FIFO
 //1.用于暂存从CDC来的数据流                                         = Ready_to_Get_toVector->Reorder_ToVector
 //2.用于暂存的从(1.)数据流转换而来的VPU可用的数据流,并递送给VPU          = Reorder_ToVector->Ready_to_Send
-//3.用于暂存从VPU来的数据流                                         = Reorder_ToSCP_Reg_Ready_Get->Reorder_ToSCP
-//4.用于暂存从(3.)数据流转换而来的CDC可用的数据流,并递送给CDC           = Reorder_ToSCP->Ready_to_Return
+//3.用于暂存从VPU来的数据流                                         = Reorder_ToMReg_Reg_Ready_Get->Reorder_ToMReg
+//4.用于暂存从(3.)数据流转换而来的CDC可用的数据流,并递送给CDC           = Reorder_ToMReg->Ready_to_Return
 
 //核心的逻辑是：
 //1.如何接受CDC的数据流
@@ -169,7 +169,7 @@ class VectorStreamInterface(implicit p: Parameters) extends CuteModule{
 class AfterOpsModule(implicit p: Parameters) extends CuteModule{
 
     val io = IO(new Bundle{
-        //先整一个ScarchPad的接口的总体设计
+        //先整一个MatrixReg的接口的总体设计
         val ConfigInfo = Flipped(new AfterOpsMicroTaskConfigIO)
         val AfterOpsInterface = Flipped(new AfterOpsInterface)//与CDC的数据交互接口
         val VectorInterface = (new VectorInterfaceIO)//与VPU的数据交互接口
@@ -208,9 +208,9 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     // //计算状态机，用来配合流水线刷新
     // val s_cal_idle :: s_cal_init :: s_cal_working :: s_cal_end :: Nil = Enum(4)
     // val calculate_state = RegInit(s_cal_idle)
-    // val ScaratchpadWorkingTensor_M = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    // val ScaratchpadWorkingTensor_N = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    // val ScaratchpadWorkingTensor_K = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    // val MatrixRegWorkingTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    // val MatrixRegWorkingTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    // val MatrixRegWorkingTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
     // val D_Datatype = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
 
@@ -236,8 +236,8 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //         Is_EasyScale_Only_Ops := io.ConfigInfo.Is_EasyScale_Only_Ops
     //         Is_VecFIFO_Ops := io.ConfigInfo.Is_VecFIFO_Ops
 
-    //         ScaratchpadWorkingTensor_M := io.ConfigInfo.ScaratchpadTensor_M
-    //         ScaratchpadWorkingTensor_N := io.ConfigInfo.ScaratchpadTensor_N
+    //         MatrixRegWorkingTensor_M := io.ConfigInfo.MatrixRegTensor_M
+    //         MatrixRegWorkingTensor_N := io.ConfigInfo.MatrixRegTensor_N
 
     //         D_Datatype := io.ConfigInfo.ApplicationTensor_D.dataType
 
@@ -245,19 +245,19 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //         if(YJPAfterOpsDebugEnable)
     //         {
     //             printf("[AfterOps<%d>]AfterOps: Is_Transpose is %d, Is_Reorder_Only_Ops is %d, Is_EasyScale_Only_Ops is %d, Is_VecFIFO_Ops is %d\n",io.DebugInfo.DebugTimeStampe, io.ConfigInfo.Is_Transpose, io.ConfigInfo.Is_Reorder_Only_Ops, io.ConfigInfo.Is_EasyScale_Only_Ops, io.ConfigInfo.Is_VecFIFO_Ops)
-    //             printf("[AfterOps<%d>]AfterOps: ScaratchpadWorkingTensor_M is %d, ScaratchpadWorkingTensor_N is %d\n",io.DebugInfo.DebugTimeStampe, io.ConfigInfo.ScaratchpadTensor_M, io.ConfigInfo.ScaratchpadTensor_N)
+    //             printf("[AfterOps<%d>]AfterOps: MatrixRegWorkingTensor_M is %d, MatrixRegWorkingTensor_N is %d\n",io.DebugInfo.DebugTimeStampe, io.ConfigInfo.MatrixRegTensor_M, io.ConfigInfo.MatrixRegTensor_N)
     //         }
 
-    //         assert(Mux(Is_Transpose,io.ConfigInfo.ScaratchpadTensor_M===Tensor_M.U,io.ConfigInfo.ScaratchpadTensor_N===Tensor_N.U), "ScaratchpadWorkingTensor_N or ScaratchpadWorkingTensor_M is not Full!")
+    //         assert(Mux(Is_Transpose,io.ConfigInfo.MatrixRegTensor_M===Tensor_M.U,io.ConfigInfo.MatrixRegTensor_N===Tensor_N.U), "MatrixRegWorkingTensor_N or MatrixRegWorkingTensor_M is not Full!")
     //     }
     // }
 
 
-    // val Get_M_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    // val Get_N_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    // val Get_M_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    // val Get_N_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
-    // val M_Get_IteratorMax = (ScaratchpadWorkingTensor_M / Matrix_M.U) + ((ScaratchpadWorkingTensor_M % Matrix_M.U) =/= 0.U)
-    // val N_Get_IteratorMax = (ScaratchpadWorkingTensor_N / Matrix_N.U)
+    // val M_Get_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_M.U) + ((MatrixRegWorkingTensor_M % Matrix_M.U) =/= 0.U)
+    // val N_Get_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_N.U)
 
     // val Max_Caculate_Iter = M_Get_IteratorMax * N_Get_IteratorMax
 
@@ -265,7 +265,7 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
 
 
     // //一组reoder的寄存器，来存储重排的数据
-    // //存一个Matrix_M*Matrix_N*T的数据矩阵寄存器，用于存储重排的数据，T = CSCP的总带宽/Matrix_N*ResultWidth
+    // //存一个Matrix_M*Matrix_N*T的数据矩阵寄存器，用于存储重排的数据，T = CMReg的总带宽/Matrix_N*ResultWidth
     // val Per_GetMatrix_NDim_Width = Matrix_N*ResultWidth //每次Get的N连续的数据的宽度
     // val Reorder_ToVector_GroupSize = VectorWidth / (Per_GetMatrix_NDim_Width)//填满一个VectorWidth需要这么多次
     // val Reorder_ToVector_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Reorder_ToVector_GroupSize)(0.U((Per_GetMatrix_NDim_Width).W))))))))
@@ -281,19 +281,19 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     // val Send_Vector_Max_Iter = Matrix_M
 
 
-    // val Return_M_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    // val Return_N_Iterator = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
+    // val Return_M_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    // val Return_N_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     // val ReturnCount = RegInit(0.U(32.W))
 
     // //VPU回到interface，需要填充到CDC同宽度的数据
-    // val Per_Return_Vector_GroupSize = CScratchpad_Total_Bandwidth_Bit / VectorWidth //每次Return会接受多少个VectorWidth的数据
-    // val Reorder_ToSCP_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Per_Return_Vector_GroupSize)((0.U(VectorWidth.W)))))))))
-    // val Reorder_ToSCP_Reg_Valid = RegInit(VecInit(Seq.fill(2)(false.B)))
-    // val Reorder_ToSCP_Reg_Get_Index  = RegInit(0.U(log2Ceil(2).W))//双缓冲
-    // val Reorder_ToSCP_Reg_Return_Index = RegInit(0.U(log2Ceil(2).W))//双缓冲
+    // val Per_Return_Vector_GroupSize = CMatrixReg_Total_Bandwidth_Bit / VectorWidth //每次Return会接受多少个VectorWidth的数据
+    // val Reorder_ToMReg_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Per_Return_Vector_GroupSize)((0.U(VectorWidth.W)))))))))
+    // val Reorder_ToMReg_Reg_Valid = RegInit(VecInit(Seq.fill(2)(false.B)))
+    // val Reorder_ToMReg_Reg_Get_Index  = RegInit(0.U(log2Ceil(2).W))//双缓冲
+    // val Reorder_ToMReg_Reg_Return_Index = RegInit(0.U(log2Ceil(2).W))//双缓冲
 
-    // val Fill_SCP_Iter = RegInit(0.U(log2Ceil(Per_Return_Vector_GroupSize).W))
-    // val Fill_SCP_Max_Iter = Per_Return_Vector_GroupSize
+    // val Fill_MReg_Iter = RegInit(0.U(log2Ceil(Per_Return_Vector_GroupSize).W))
+    // val Fill_MReg_Max_Iter = Per_Return_Vector_GroupSize
 
     // val Fill_Return_M_Iter = RegInit(0.U(log2Ceil(Matrix_M).W))
     // val Fill_Return_M_Iter_Max = Matrix_M
@@ -302,9 +302,9 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     // val Send_Return_Sub_Major_Iter_Max = Matrix_M
     
     
-    // val Reduce_Dim_Fill_Iter = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    // val Major_Dim_Fill_Iter = RegInit(0.U(ScaratchpadMaxTensorDimBitSize.W))
-    // val Reduce_Dim_Iterator_Max = Tensor_N.U * D_Datatype * 8.U / CScratchpad_Total_Bandwidth_Bit.U //Reduce_Dim需要连续填几次
+    // val Reduce_Dim_Fill_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    // val Major_Dim_Fill_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    // val Reduce_Dim_Iterator_Max = Tensor_N.U * D_Datatype * 8.U / CMatrixReg_Total_Bandwidth_Bit.U //Reduce_Dim需要连续填几次
     // val Major_Dim_Iterator_Max = Mux(!Is_Transpose,M_Get_IteratorMax,N_Get_IteratorMax) //Major_Dim需要连续填几次
     // val Next_Major_Dim_Addr_Inc = Reduce_Dim_Iterator_Max
 
@@ -322,12 +322,12 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //         Reorder_ToVector_Reg_Get_Index := 0.U
     //         Reorder_ToVector_Reg := 0.U.asTypeOf(Reorder_ToVector_Reg)
 
-    //         Reorder_ToSCP_Reg_Valid := 0.U.asTypeOf(Reorder_ToSCP_Reg_Valid)
-    //         Reorder_ToSCP_Reg_Get_Index := 0.U
-    //         Reorder_ToSCP_Reg := 0.U.asTypeOf(Reorder_ToSCP_Reg)
+    //         Reorder_ToMReg_Reg_Valid := 0.U.asTypeOf(Reorder_ToMReg_Reg_Valid)
+    //         Reorder_ToMReg_Reg_Get_Index := 0.U
+    //         Reorder_ToMReg_Reg := 0.U.asTypeOf(Reorder_ToMReg_Reg)
     //         Fill_Vector_Iter := 0.U
 
-    //         Fill_SCP_Iter := 0.U
+    //         Fill_MReg_Iter := 0.U
     //         Fill_Return_M_Iter := 0.U
     //         Reduce_Dim_Fill_Iter := 0.U
     //         Major_Dim_Fill_Iter := 0.U
@@ -385,7 +385,7 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //             }
     //         }
     //         val Reorder_ToVector_Reg_Ready_Send= Reorder_ToVector_Reg_Valid.reduce(_||_)//只要有一个是Valid就是ture，表示可以发往后操作执行
-    //         //完成后操作后，数据可能会变短，需要继续填满Matrix_M个向量至CSCP的读写带宽，然后数据返回
+    //         //完成后操作后，数据可能会变短，需要继续填满Matrix_M个向量至CMReg的读写带宽，然后数据返回
     //         when(Reorder_ToVector_Reg_Ready_Send)
     //         {
     //             //将数据发送到向量模块
@@ -407,36 +407,36 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //             }
     //         }
 
-    //         val Reorder_ToSCP_Reg_Ready_Get = !Reorder_ToSCP_Reg_Valid(Reorder_ToSCP_Reg_Get_Index)
-    //         when(Reorder_ToSCP_Reg_Ready_Get){
+    //         val Reorder_ToMReg_Reg_Ready_Get = !Reorder_ToMReg_Reg_Valid(Reorder_ToMReg_Reg_Get_Index)
+    //         when(Reorder_ToMReg_Reg_Ready_Get){
     //             io.VectorInterface.VectorDataOut.ready := true.B
     //             when(io.VectorInterface.VectorDataOut.fire)
     //             {
-    //                 Reorder_ToSCP_Reg(Reorder_ToSCP_Reg_Get_Index)(Fill_Return_M_Iter)(Fill_SCP_Iter) := io.VectorInterface.VectorDataOut.bits //M不会变，M个向量回来，向量的有效宽度可能发生变化了
+    //                 Reorder_ToMReg_Reg(Reorder_ToMReg_Reg_Get_Index)(Fill_Return_M_Iter)(Fill_MReg_Iter) := io.VectorInterface.VectorDataOut.bits //M不会变，M个向量回来，向量的有效宽度可能发生变化了
     //                 Fill_Return_M_Iter := WrapInc(Fill_Return_M_Iter, Fill_Return_M_Iter_Max)
     //                 when(Fill_Return_M_Iter === (Fill_Return_M_Iter_Max - 1).U){
     //                     Fill_Return_M_Iter := 0.U
-    //                     Fill_SCP_Iter := WrapInc(Fill_SCP_Iter, Fill_SCP_Max_Iter)//这里M个向量一直填，填到能填满C_SCP的写回带宽为止，所以这里填2次
-    //                     when(Fill_SCP_Iter === (Fill_SCP_Max_Iter - 1).U){
-    //                         Fill_SCP_Iter := 0.U
-    //                         Reorder_ToSCP_Reg_Valid(Reorder_ToSCP_Reg_Get_Index) := true.B
-    //                         Reorder_ToSCP_Reg_Get_Index := WrapInc(Reorder_ToSCP_Reg_Get_Index, 2)
-    //                         //输出，成功填满一个C_SCP的回填数据组
+    //                     Fill_MReg_Iter := WrapInc(Fill_MReg_Iter, Fill_MReg_Max_Iter)//这里M个向量一直填，填到能填满C_MReg的写回带宽为止，所以这里填2次
+    //                     when(Fill_MReg_Iter === (Fill_MReg_Max_Iter - 1).U){
+    //                         Fill_MReg_Iter := 0.U
+    //                         Reorder_ToMReg_Reg_Valid(Reorder_ToMReg_Reg_Get_Index) := true.B
+    //                         Reorder_ToMReg_Reg_Get_Index := WrapInc(Reorder_ToMReg_Reg_Get_Index, 2)
+    //                         //输出，成功填满一个C_MReg的回填数据组
     //                         if (YJPAfterOpsDebugEnable)
     //                         {
-    //                             val debug_Reorder_ToSCP_Reg = WireInit(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Per_Return_Vector_GroupSize)((0.U(VectorWidth.W)))))))
-    //                             debug_Reorder_ToSCP_Reg := Reorder_ToSCP_Reg(Reorder_ToSCP_Reg_Get_Index)
-    //                             debug_Reorder_ToSCP_Reg(Fill_Return_M_Iter)(Fill_SCP_Iter) := io.VectorInterface.VectorDataOut.bits
-    //                             // printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToSCP_Reg one Groupg down, Fill_Return_M_Iter is %d, Fill_SCP_Iter is %d,Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, Fill_Return_M_Iter, Fill_SCP_Iter,debug_Reorder_ToSCP_Reg.asUInt)
-    //                             //输出Reorder_ToSCP_Reg_Valid和Reorder_ToSCP_Reg_Get_Index
-    //                             printf("[AfterOps<%d>{Reorder_ToSCP_Reg_Valid}]AfterOps: Reorder_ToSCP_Reg_Valid is %x, Reorder_ToSCP_Reg_Get_Index is %d\n",io.DebugInfo.DebugTimeStampe, Reorder_ToSCP_Reg_Valid.asUInt, Reorder_ToSCP_Reg_Get_Index)
+    //                             val debug_Reorder_ToMReg_Reg = WireInit(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Per_Return_Vector_GroupSize)((0.U(VectorWidth.W)))))))
+    //                             debug_Reorder_ToMReg_Reg := Reorder_ToMReg_Reg(Reorder_ToMReg_Reg_Get_Index)
+    //                             debug_Reorder_ToMReg_Reg(Fill_Return_M_Iter)(Fill_MReg_Iter) := io.VectorInterface.VectorDataOut.bits
+    //                             // printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToMReg_Reg one Groupg down, Fill_Return_M_Iter is %d, Fill_MReg_Iter is %d,Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, Fill_Return_M_Iter, Fill_MReg_Iter,debug_Reorder_ToMReg_Reg.asUInt)
+    //                             //输出Reorder_ToMReg_Reg_Valid和Reorder_ToMReg_Reg_Get_Index
+    //                             printf("[AfterOps<%d>{Reorder_ToMReg_Reg_Valid}]AfterOps: Reorder_ToMReg_Reg_Valid is %x, Reorder_ToMReg_Reg_Get_Index is %d\n",io.DebugInfo.DebugTimeStampe, Reorder_ToMReg_Reg_Valid.asUInt, Reorder_ToMReg_Reg_Get_Index)
     //                         }
     //                     }
     //                 }
     //                 if (YJPAfterOpsDebugEnable)
     //                 {
     //                     //输出各个迭代器
-    //                     printf("[AfterOps<%d>]AfterOps: Fill data to SCP, Fill_Return_M_Iter is %d, Fill_SCP_Iter is %d\n",io.DebugInfo.DebugTimeStampe, Fill_Return_M_Iter, Fill_SCP_Iter)
+    //                     printf("[AfterOps<%d>]AfterOps: Fill data to MReg, Fill_Return_M_Iter is %d, Fill_MReg_Iter is %d\n",io.DebugInfo.DebugTimeStampe, Fill_Return_M_Iter, Fill_MReg_Iter)
     //                 }
     //             }
     //         }
@@ -444,21 +444,21 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //         //CDCStoreAddr，根据是否Transpose，Dataout的element的宽度，DataIn的stream，DataOut的Stream有关
     //         //首先回来的stream一定是DIM_N first或者DIM_M first，Vector内部肯定有洗牌指令，不需要我们来重排，现在只需要关心，来的数据的顺序即可
     //         //通常是M/4,4(M),N/VectorWidth,VectorWidth(N)。(如果是Transpose，那么就是N/4,4(N),M/VectorWidth,VectorWidth(M))
-    //         //对应的写回到SCP的地址，需要重新排成M,N/SCPWidth,SCPWidth(N)。
-    //         //VectorWidth不变，所以那些改变数据位宽的操作，需要连续的完成操作，然后再写回到SCP。
-    //         //我们通过Reorder_ToSCP_Reg将N/VectorWidth,VectorWidth(N)，重排成了SCPWidth(N)。
+    //         //对应的写回到MReg的地址，需要重新排成M,N/MRegWidth,MRegWidth(N)。
+    //         //VectorWidth不变，所以那些改变数据位宽的操作，需要连续的完成操作，然后再写回到MReg。
+    //         //我们通过Reorder_ToMReg_Reg将N/VectorWidth,VectorWidth(N)，重排成了MRegWidth(N)。
     //         //不同的VPUInStream和VPUOutStream，需要不同的重排方式，故我们需要分类并计算正确的写回地址
 
     //         //Transpose的计算方式得思考思考
     //         //在ACSP、BCSP里的数据永远是DIM_K First的，Transpose时，要让DIM_M作为连续的数据，故计算时，迭代的地址会发生变化
 
-    //         // val CDC_Store_addr = WireInit(0.U(log2Ceil(CScratchpadBankNEntrys).W))
-    //         val Reorder_ToSCP_Reg_Ready_Return = Reorder_ToSCP_Reg_Valid(Reorder_ToSCP_Reg_Return_Index)
-    //         when(Reorder_ToSCP_Reg_Ready_Return)
+    //         // val CDC_Store_addr = WireInit(0.U(log2Ceil(CMatrixRegBankNEntrys).W))
+    //         val Reorder_ToMReg_Reg_Ready_Return = Reorder_ToMReg_Reg_Valid(Reorder_ToMReg_Reg_Return_Index)
+    //         when(Reorder_ToMReg_Reg_Ready_Return)
     //         {
     //             io.AfterOpsInterface.InterfaceToCDCData.valid := true.B
-    //             io.AfterOpsInterface.InterfaceToCDCData.bits := Reorder_ToSCP_Reg(Reorder_ToSCP_Reg_Return_Index)(Send_Return_Sub_Major_Iter).asTypeOf(io.AfterOpsInterface.InterfaceToCDCData.bits)
-    //             // io.AfterOpsInterface.CDCStoreAddr := (Send_Return_Sub_Major_Iter + Major_Dim_Fill_Iter*Matrix_M.U) * Reduce_Dim_Iterator_Max + Reduce_Dim_Fill_Iter// 写回CSCP的地址
+    //             io.AfterOpsInterface.InterfaceToCDCData.bits := Reorder_ToMReg_Reg(Reorder_ToMReg_Reg_Return_Index)(Send_Return_Sub_Major_Iter).asTypeOf(io.AfterOpsInterface.InterfaceToCDCData.bits)
+    //             // io.AfterOpsInterface.CDCStoreAddr := (Send_Return_Sub_Major_Iter + Major_Dim_Fill_Iter*Matrix_M.U) * Reduce_Dim_Iterator_Max + Reduce_Dim_Fill_Iter// 写回CMReg的地址
     //             //输出io.AfterOpsInterface.InterfaceToCDCData.ready
     //             // if (YJPAfterOpsDebugEnable)
     //             // {
@@ -469,13 +469,13 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //                 Send_Return_Sub_Major_Iter := WrapInc(Send_Return_Sub_Major_Iter, Send_Return_Sub_Major_Iter_Max)
     //                 when(Send_Return_Sub_Major_Iter === (Send_Return_Sub_Major_Iter_Max - 1).U){
     //                     Send_Return_Sub_Major_Iter := 0.U
-    //                     Reorder_ToSCP_Reg_Valid(Reorder_ToSCP_Reg_Return_Index) := false.B
-    //                     Reorder_ToSCP_Reg_Return_Index := WrapInc(Reorder_ToSCP_Reg_Return_Index, 2)
-    //                     //输出Reorder_ToSCP_Reg_Valid
+    //                     Reorder_ToMReg_Reg_Valid(Reorder_ToMReg_Reg_Return_Index) := false.B
+    //                     Reorder_ToMReg_Reg_Return_Index := WrapInc(Reorder_ToMReg_Reg_Return_Index, 2)
+    //                     //输出Reorder_ToMReg_Reg_Valid
     //                     if (YJPAfterOpsDebugEnable)
     //                     {
-    //                         //输出Reorder_ToSCP_Reg_Valid和Reorder_ToSCP_Reg_Get_Index
-    //                         printf("[AfterOps<%d>{Reorder_ToSCP_Reg_Valid}]AfterOps: Reorder_ToSCP_Reg_Valid is %x, Reorder_ToSCP_Reg_Return_Index is %d\n",io.DebugInfo.DebugTimeStampe, Reorder_ToSCP_Reg_Valid.asUInt, Reorder_ToSCP_Reg_Return_Index)
+    //                         //输出Reorder_ToMReg_Reg_Valid和Reorder_ToMReg_Reg_Get_Index
+    //                         printf("[AfterOps<%d>{Reorder_ToMReg_Reg_Valid}]AfterOps: Reorder_ToMReg_Reg_Valid is %x, Reorder_ToMReg_Reg_Return_Index is %d\n",io.DebugInfo.DebugTimeStampe, Reorder_ToMReg_Reg_Valid.asUInt, Reorder_ToMReg_Reg_Return_Index)
     //                     }
 
     //                     Reduce_Dim_Fill_Iter := Reduce_Dim_Fill_Iter + 1.U
@@ -492,7 +492,7 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //                 if (YJPAfterOpsDebugEnable)
     //                 {
     //                     //输出所有iter
-    //                     printf("[AfterOps<%d>]AfterOps: Send data to SCP, Send_Return_Sub_Major_Iter is %d, Reduce_Dim_Fill_Iter is %d, Major_Dim_Fill_Iter is %d\n",io.DebugInfo.DebugTimeStampe, Send_Return_Sub_Major_Iter, Reduce_Dim_Fill_Iter, Major_Dim_Fill_Iter)
+    //                     printf("[AfterOps<%d>]AfterOps: Send data to MReg, Send_Return_Sub_Major_Iter is %d, Reduce_Dim_Fill_Iter is %d, Major_Dim_Fill_Iter is %d\n",io.DebugInfo.DebugTimeStampe, Send_Return_Sub_Major_Iter, Reduce_Dim_Fill_Iter, Major_Dim_Fill_Iter)
     //                 }
     //             }
     //         }

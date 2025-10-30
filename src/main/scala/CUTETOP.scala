@@ -27,15 +27,15 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     //     cutecounter.InstQueueEmpty, cutecounter.getConfigured, cutecounter.AOPBusy, cutecounter.computeBusy, cutecounter.computeInstQueueEmpty, cutecounter.computeInstCanIssue, cutecounter.InstCanDecode,
     //     cutecounter.mmu_req_valid, cutecounter.mmu_req_ready)
     
-    val ASpad = Seq.tabulate(2)(i => Module(new AScratchpad(i))).toVector//双缓冲
+    val AMatrixRegs = Seq.tabulate(2)(i => Module(new AMatrixReg(i))).toVector//双缓冲（MatrixReg）
     val ADC = Module(new ADataController)
     val AML = Module(new AMemoryLoader)
 
-    val BSpad = Seq.tabulate(2)(i => Module(new BScratchpad)).toVector//双缓冲
+    val BMatrixRegs = Seq.tabulate(2)(i => Module(new BMatrixReg(i))).toVector//双缓冲（MatrixReg）
     val BDC = Module(new BDataController)
     val BML = Module(new BMemoryLoader)
 
-    val CSpad = Seq.tabulate(2)(i => Module(new CScratchpad)).toVector//双缓冲
+    val CMatrixRegs = Seq.tabulate(2)(i => Module(new CMatrixReg(i))).toVector//双缓冲（MatrixReg）
     val CDC = Module(new CDataController)
     val CML = Module(new CMemoryLoader)
 
@@ -67,9 +67,9 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     TaskCtrl.io.DebugTimeStampe := DebugTimeStampe
     //ADC的默认输入
-    ADC.io.FromScarchPadIO.Data.valid := false.B
-    ADC.io.FromScarchPadIO.Data.bits := 0.U.asTypeOf(ADC.io.FromScarchPadIO.Data.bits)
-    ADC.io.FromScarchPadIO.BankAddr.ready := false.B
+    ADC.io.FromMatrixRegIO.Data.valid := false.B
+    ADC.io.FromMatrixRegIO.Data.bits := 0.U.asTypeOf(ADC.io.FromMatrixRegIO.Data.bits)
+    ADC.io.FromMatrixRegIO.BankAddr.ready := false.B
     ADC.io.ConfigInfo <> TaskCtrl.io.ADC_MicroTask_Config
     ADC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
 
@@ -79,9 +79,9 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     AML.io.LocalMMUIO <> MMU.io.ALocalMMUIO
 
     //BDC的默认输入
-    BDC.io.FromScarchPadIO.Data.valid := false.B
-    BDC.io.FromScarchPadIO.Data.bits := 0.U.asTypeOf(BDC.io.FromScarchPadIO.Data.bits)
-    BDC.io.FromScarchPadIO.BankAddr.ready := false.B
+    BDC.io.FromMatrixRegIO.Data.valid := false.B
+    BDC.io.FromMatrixRegIO.Data.bits := 0.U.asTypeOf(BDC.io.FromMatrixRegIO.Data.bits)
+    BDC.io.FromMatrixRegIO.BankAddr.ready := false.B
     BDC.io.ConfigInfo <> TaskCtrl.io.BDC_MicroTask_Config
     BDC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
 
@@ -91,8 +91,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     BML.io.LocalMMUIO <> MMU.io.BLocalMMUIO
 
     //CDC的默认输入
-    CDC.io.FromScarchPadIO.ReadResponseData := 0.U.asTypeOf(CDC.io.FromScarchPadIO.ReadResponseData)
-    CDC.io.FromScarchPadIO.ReadWriteResponse := 0.U.asTypeOf(CDC.io.FromScarchPadIO.ReadWriteResponse)
+    CDC.io.FromMatrixRegIO.ReadResponseData := 0.U.asTypeOf(CDC.io.FromMatrixRegIO.ReadResponseData)
+    CDC.io.FromMatrixRegIO.ReadWriteResponse := 0.U.asTypeOf(CDC.io.FromMatrixRegIO.ReadWriteResponse)
     CDC.io.ConfigInfo <> TaskCtrl.io.CDC_MicroTask_Config
     CDC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     CDC.io.AfterOpsInterface<>AOp.io.AfterOpsInterface
@@ -101,8 +101,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     CML.io.ConfigInfo <> TaskCtrl.io.CML_MicroTask_Config
     CML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     CML.io.LocalMMUIO <> MMU.io.CLocalMMUIO
-    CML.io.ToScarchPadIO.ReadWriteResponse := 0.U
-    CML.io.ToScarchPadIO.ReadRequestToScarchPad.ReadResponseData := 0.U.asTypeOf(CML.io.ToScarchPadIO.ReadRequestToScarchPad.ReadResponseData)
+    CML.io.ToMatrixRegIO.ReadWriteResponse := 0.U
+    CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData := 0.U.asTypeOf(CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData)
 
     //AOP的默认输入
     //AOp的要连接到vpu,目前先空接
@@ -153,83 +153,83 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     io.instfifo_tail_id := TaskCtrl.io.instfifo_head_id//原先代码里head/tail写反了
     io.instfifo_release := TaskCtrl.io.instfifo_release
 
-    //给每个SCP的输入进行defuat的赋值
+    //给每个 MatrixReg 页的输入进行默认赋值
     for (i <- 0 until 2){
-        //ASpad
+        //A MatrixReg
         //ADC的请求
-        ASpad(i).io.ScarchPadIO.FromDataController.BankAddr.valid := false.B
-        ASpad(i).io.ScarchPadIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(ASpad(i).io.ScarchPadIO.FromDataController.BankAddr.bits)
-        // ASpad(i).io.ScarchPadIO.FromDataController.Data.valid := false.B
-        // ASpad(i).io.ScarchPadIO.FromDataController.Data.bits := 0.U.asTypeOf(ASpad(i).io.ScarchPadIO.FromDataController.Data.bits)
+        AMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
+        AMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(AMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
+        // ASpad(i).io.MatrixRegIO.FromDataController.Data.valid := false.B
+        // ASpad(i).io.MatrixRegIO.FromDataController.Data.bits := 0.U.asTypeOf(ASpad(i).io.MatrixRegIO.FromDataController.Data.bits)
         //AML的请求
-        ASpad(i).io.ScarchPadIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(ASpad(i).io.ScarchPadIO.FromMemoryLoader.BankAddr)
-        ASpad(i).io.ScarchPadIO.FromMemoryLoader.BankId.valid := false.B
-        ASpad(i).io.ScarchPadIO.FromMemoryLoader.BankId.bits := 0.U.asTypeOf(ASpad(i).io.ScarchPadIO.FromMemoryLoader.BankId.bits)
-        ASpad(i).io.ScarchPadIO.FromMemoryLoader.Data := 0.U.asTypeOf(ASpad(i).io.ScarchPadIO.FromMemoryLoader.Data)
-        ASpad(i).io.ScarchPadIO.FromMemoryLoader.ZeroFill := 0.U.asTypeOf(ASpad(i).io.ScarchPadIO.FromMemoryLoader.ZeroFill)
+        AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
+        AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.valid := false.B
+        AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits := 0.U.asTypeOf(AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits)
+        AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
+        AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill := 0.U.asTypeOf(AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill)
 
-        //BSpad
+        //B MatrixReg
         //BDC的请求
-        BSpad(i).io.ScarchPadIO.FromDataController.BankAddr.valid := false.B
-        BSpad(i).io.ScarchPadIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(BSpad(i).io.ScarchPadIO.FromDataController.BankAddr.bits)
-        // BSpad(i).io.ScarchPadIO.FromDataController.Data.valid := false.B
-        // BSpad(i).io.ScarchPadIO.FromDataController.Data.bits := 0.U.asTypeOf(BSpad(i).io.ScarchPadIO.FromDataController.Data.bits)
+        BMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
+        BMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(BMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
+        // BSpad(i).io.MatrixRegIO.FromDataController.Data.valid := false.B
+        // BSpad(i).io.MatrixRegIO.FromDataController.Data.bits := 0.U.asTypeOf(BSpad(i).io.MatrixRegIO.FromDataController.Data.bits)
         //BML的请求
-        BSpad(i).io.ScarchPadIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(BSpad(i).io.ScarchPadIO.FromMemoryLoader.BankAddr)
-        BSpad(i).io.ScarchPadIO.FromMemoryLoader.BankId.valid := false.B
-        BSpad(i).io.ScarchPadIO.FromMemoryLoader.BankId.bits := 0.U.asTypeOf(BSpad(i).io.ScarchPadIO.FromMemoryLoader.BankId.bits)
-        BSpad(i).io.ScarchPadIO.FromMemoryLoader.Data := 0.U.asTypeOf(BSpad(i).io.ScarchPadIO.FromMemoryLoader.Data)
+        BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
+        BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.valid := false.B
+        BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits := 0.U.asTypeOf(BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits)
+        BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
 
-        //CSpad
+        //C MatrixReg
         //CDC的请求
-        CSpad(i).io.ScarchPadIO.FromDataController.ReadBankAddr := 0.U.asTypeOf(CSpad(i).io.ScarchPadIO.FromDataController.ReadBankAddr)
-        CSpad(i).io.ScarchPadIO.FromDataController.WriteBankAddr := 0.U.asTypeOf(CSpad(i).io.ScarchPadIO.FromDataController.WriteBankAddr)
-        CSpad(i).io.ScarchPadIO.FromDataController.WriteRequestData := 0.U.asTypeOf(CSpad(i).io.ScarchPadIO.FromDataController.WriteRequestData)
+        CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadBankAddr := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadBankAddr)
+        CMatrixRegs(i).io.MatrixRegIO.FromDataController.WriteBankAddr := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromDataController.WriteBankAddr)
+        CMatrixRegs(i).io.MatrixRegIO.FromDataController.WriteRequestData := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromDataController.WriteRequestData)
         //CML的请求
-        CSpad(i).io.ScarchPadIO.FromMemoryLoader.ReadRequestToScarchPad.BankAddr := 0.U.asTypeOf(CSpad(i).io.ScarchPadIO.FromMemoryLoader.ReadRequestToScarchPad.BankAddr)
-        CSpad(i).io.ScarchPadIO.FromMemoryLoader.WriteRequestToScarchPad.BankAddr := 0.U.asTypeOf(CSpad(i).io.ScarchPadIO.FromMemoryLoader.WriteRequestToScarchPad.BankAddr)
-        CSpad(i).io.ScarchPadIO.FromMemoryLoader.WriteRequestToScarchPad.Data := 0.U.asTypeOf(CSpad(i).io.ScarchPadIO.FromMemoryLoader.WriteRequestToScarchPad.Data)
+        CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr)
+        CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.BankAddr := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.BankAddr)
+        CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.Data := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.Data)
         //多个请求的仲裁器输入
-        CSpad(i).io.ScarchPadIO.FromDataController.ReadWriteRequest := 0.U
-        CSpad(i).io.ScarchPadIO.FromMemoryLoader.ReadWriteRequest := 0.U
+        CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteRequest := 0.U
+        CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadWriteRequest := 0.U
     }
     
-    //根据SCP_CtrlInfo的值，选择对应的SCP
+    //根据MReg_CtrlInfo的值，选择对应的MReg
 
-    when (TaskCtrl.io.SCP_CtrlInfo.ADC_SCP_ID === 0.U){
-        ADC.io.FromScarchPadIO <> ASpad(0).io.ScarchPadIO.FromDataController
+    when (TaskCtrl.io.MReg_CtrlInfo.ADC_MReg_ID === 0.U){
+        ADC.io.FromMatrixRegIO <> AMatrixRegs(0).io.MatrixRegIO.FromDataController
     }.otherwise{
-        ADC.io.FromScarchPadIO <> ASpad(1).io.ScarchPadIO.FromDataController
+        ADC.io.FromMatrixRegIO <> AMatrixRegs(1).io.MatrixRegIO.FromDataController
     }
 
-    when (TaskCtrl.io.SCP_CtrlInfo.BDC_SCP_ID === 0.U){
-        BDC.io.FromScarchPadIO <> BSpad(0).io.ScarchPadIO.FromDataController
+    when (TaskCtrl.io.MReg_CtrlInfo.BDC_MReg_ID === 0.U){
+        BDC.io.FromMatrixRegIO <> BMatrixRegs(0).io.MatrixRegIO.FromDataController
     }.otherwise{
-        BDC.io.FromScarchPadIO <> BSpad(1).io.ScarchPadIO.FromDataController
+        BDC.io.FromMatrixRegIO <> BMatrixRegs(1).io.MatrixRegIO.FromDataController
     }
 
-    when (TaskCtrl.io.SCP_CtrlInfo.CDC_SCP_ID === 0.U){
-        CDC.io.FromScarchPadIO <> CSpad(0).io.ScarchPadIO.FromDataController
+    when (TaskCtrl.io.MReg_CtrlInfo.CDC_MReg_ID === 0.U){
+        CDC.io.FromMatrixRegIO <> CMatrixRegs(0).io.MatrixRegIO.FromDataController
     }.otherwise{
-        CDC.io.FromScarchPadIO <> CSpad(1).io.ScarchPadIO.FromDataController
+        CDC.io.FromMatrixRegIO <> CMatrixRegs(1).io.MatrixRegIO.FromDataController
     }
 
-    when (TaskCtrl.io.SCP_CtrlInfo.AML_SCP_ID === 0.U){
-        AML.io.ToScarchPadIO <> ASpad(0).io.ScarchPadIO.FromMemoryLoader
+    when (TaskCtrl.io.MReg_CtrlInfo.AML_MReg_ID === 0.U){
+        AML.io.ToMatrixRegIO <> AMatrixRegs(0).io.MatrixRegIO.FromMemoryLoader
     }.otherwise{
-        AML.io.ToScarchPadIO <> ASpad(1).io.ScarchPadIO.FromMemoryLoader
+        AML.io.ToMatrixRegIO <> AMatrixRegs(1).io.MatrixRegIO.FromMemoryLoader
     }
 
-    when (TaskCtrl.io.SCP_CtrlInfo.BML_SCP_ID === 0.U){
-        BML.io.ToScarchPadIO <> BSpad(0).io.ScarchPadIO.FromMemoryLoader
+    when (TaskCtrl.io.MReg_CtrlInfo.BML_MReg_ID === 0.U){
+        BML.io.ToMatrixRegIO <> BMatrixRegs(0).io.MatrixRegIO.FromMemoryLoader
     }.otherwise{
-        BML.io.ToScarchPadIO <> BSpad(1).io.ScarchPadIO.FromMemoryLoader
+        BML.io.ToMatrixRegIO <> BMatrixRegs(1).io.MatrixRegIO.FromMemoryLoader
     }
 
-    when (TaskCtrl.io.SCP_CtrlInfo.CML_SCP_ID === 0.U){
-        CML.io.ToScarchPadIO <> CSpad(0).io.ScarchPadIO.FromMemoryLoader
+    when (TaskCtrl.io.MReg_CtrlInfo.CML_MReg_ID === 0.U){
+        CML.io.ToMatrixRegIO <> CMatrixRegs(0).io.MatrixRegIO.FromMemoryLoader
     }.otherwise{
-        CML.io.ToScarchPadIO <> CSpad(1).io.ScarchPadIO.FromMemoryLoader
+        CML.io.ToMatrixRegIO <> CMatrixRegs(1).io.MatrixRegIO.FromMemoryLoader
     }
 
     TaskCtrl.io.ygjkctrl.mrelease <> io.mrelease
