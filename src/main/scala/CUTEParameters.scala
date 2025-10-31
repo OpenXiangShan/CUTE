@@ -69,11 +69,9 @@ object CuteParams {
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
-        Tensor_M = 512,
-        Tensor_N = 512,
+        Tensor_MN = 512,
         Tensor_K = 64,
-        Matrix_M = 8,
-        Matrix_N = 8,
+        Matrix_MN = 8,
         ReduceWidthByte = 32,
         // Debug = CuteDebugParams.AMLDebugEnable
     )
@@ -82,11 +80,9 @@ object CuteParams {
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
-        Tensor_M = 128,
-        Tensor_N = 128,
+        Tensor_MN = 128,
         Tensor_K = 64,
-        Matrix_M = 8,
-        Matrix_N = 8,
+        Matrix_MN = 8,
         ReduceWidthByte = 32,
         // Debug = CuteDebugParams.AMLDebugEnable
     )
@@ -95,11 +91,9 @@ object CuteParams {
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
-        Tensor_M = 256,
-        Tensor_N = 256,
+        Tensor_MN = 256,
         Tensor_K = 64,
-        Matrix_M = 16,
-        Matrix_N = 16,
+        Matrix_MN = 16,
         ReduceWidthByte = 32,
         Debug = CuteDebugParams.AllDebugOn,
     )
@@ -108,11 +102,9 @@ object CuteParams {
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
-        Tensor_M = 64,
-        Tensor_N = 64,
+        Tensor_MN = 64,
         Tensor_K = 64,
-        Matrix_M = 4,
-        Matrix_N = 4,
+        Matrix_MN = 4,
         ReduceWidthByte = 32,
     )
 
@@ -120,11 +112,9 @@ object CuteParams {
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
-        Tensor_M = 64,
-        Tensor_N = 64,
+        Tensor_MN = 64,
         Tensor_K = 64,
-        Matrix_M = 4,
-        Matrix_N = 4,
+        Matrix_MN = 4,
         ReduceWidthByte = 32,
         Debug = CuteDebugParams.AllDebugOn,
     )
@@ -151,11 +141,9 @@ object Cutev3Params {
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
-        Tensor_M = 512,
-        Tensor_N = 512,
+        Tensor_MN = 512,
         Tensor_K = 64,
-        Matrix_M = 8,
-        Matrix_N = 8,
+        Matrix_MN = 8,
         ReduceWidthByte = 32,
         Debug = CuteDebugParams.AMLDebugEnable
     )
@@ -164,11 +152,9 @@ object Cutev3Params {
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
-        Tensor_M = 128,
-        Tensor_N = 128,
+        Tensor_MN = 128,
         Tensor_K = 64,
-        Matrix_M = 8,
-        Matrix_N = 8,
+        Matrix_MN = 8,
         ReduceWidthByte = 32,
         // Debug = CuteDebugParams.AMLDebugEnable
     )
@@ -288,13 +274,11 @@ case class CuteParams(
 
 
     //MatrixReg中保存的张量形状
-    val Tensor_M :Int = 128,   //这里指要存的张量的M的大小
-    val Tensor_N :Int = 128,   //这里指要存的张量的N的大小
+    val Tensor_MN :Int = 128,   //这里指要存的张量的M与N的大小
     val Tensor_K :Int = 64,    //这里指要存的张量的K(8bit/elment)的大小
 
     //矩阵乘计算单元MTE的形状
-    val Matrix_M :Int = 4,     //Matrix_M，代表TE执行的矩阵乘法的M的大小
-    val Matrix_N :Int = 4,     //Matrix_N，代表TE执行的矩阵乘法的N的大小
+    val Matrix_MN :Int = 4,     //Matrix_MN，代表TE执行的矩阵乘法的M与N的大小
     val ReduceWidthByte :Int = 32,   //ReduceWidthByte 代表ReducePE进行内积时的数据宽度，单位是字节
     val ResultWidthByte :Int = 4,    //ResultWidthByte 代表ReducePE的结果宽度，单位是字节
 
@@ -332,11 +316,9 @@ case class CuteParams(
     require((MMUAddrWidth & (MMUAddrWidth - 1)) == 0, "MMUAddrWidth must be power of 2" )
     require((LLCSourceMaxNum & (LLCSourceMaxNum - 1)) == 0, "LLCSourceMaxNum must be power of 2")
     require((MemorysourceMaxNum & (MemorysourceMaxNum - 1)) == 0, "MemorysourceMaxNum must be power of 2")
-    require((Tensor_M & (Tensor_M - 1)) == 0, "Tensor_M must be power of 2")
-    require((Tensor_N & (Tensor_N - 1)) == 0, "Tensor_N must be power of 2")
+    require((Tensor_MN & (Tensor_MN - 1)) == 0, "Tensor_MN must be power of 2")
     require((Tensor_K & (Tensor_K - 1)) == 0, "Tensor_K must be power of 2")
-    require((Matrix_M & (Matrix_M - 1)) == 0, "Matrix_M must be power of 2")
-    require((Matrix_N & (Matrix_N - 1)) == 0, "Matrix_N must be power of 2")
+    require((Matrix_MN & (Matrix_MN - 1)) == 0, "Matrix_MN must be power of 2")
     require((ReduceWidthByte & (ReduceWidthByte - 1)) == 0, "ReduceWidthByte must be power of 2")
     require((ResultWidthByte & (ResultWidthByte - 1)) == 0, "ResultWidthByte must be power of 2")
     require((ResultFIFODepth & (ResultFIFODepth - 1)) == 0, "ResultFIFODepth must be power of 2")
@@ -362,38 +344,30 @@ case class CuteParams(
     def SoureceMaxNumBitSize = log2Ceil(SoureceMaxNum) + 1
 
     def ReduceGroupSize  = Tensor_K/ReduceWidthByte    //这里指要存的张量的K的ReduceVector的数量！不是张量的K的大小
-    def MatrixRegMaxTensorDim = Math.max(Tensor_M, Math.max(Tensor_N, ReduceGroupSize))
+    def MatrixRegMaxTensorDim = Math.max(Tensor_MN, Math.max(Tensor_MN, ReduceGroupSize))
     def MatrixRegMaxTensorDimBitSize = log2Ceil(MatrixRegMaxTensorDim) + 1
     //A MatrixReg中保存的张量形状为M*K
     //A MatrixReg的大小为Tenser_M * ReduceGroupSize * ReduceWidthByte
     //128*(4*256/8)，单次读的张量为128*128的张量
     //单次计算需要的时间为(128/4)*(128/4)*4 = 4096拍，单次读需要128×4=512拍。
     //需要考虑MatrixReg的顺序读，需要考虑为MatrixReg分bank
-    def AMatrixRegSize = Tensor_M * ReduceGroupSize * ReduceWidthByte //reduce
-    def BMatrixRegSize = Tensor_N * ReduceGroupSize * ReduceWidthByte //reduce
-    def CMatrixRegSize = Tensor_M * Tensor_N * ResultWidthByte //result
+    def ABMatrixRegSize = Tensor_MN * ReduceGroupSize * ReduceWidthByte //reduce
+    def CMatrixRegSize = Tensor_MN * Tensor_MN * ResultWidthByte //result
 
     //目前的MatrixReg设计，分Tensor_T个bank，每次取Tensor_T个数据，根据取数逻辑，在不同的bank里取不同的数据，然后拼接
-    def AMatrixRegEntryByteSize = ReduceWidthByte //适合向TE供数的带宽
-    def BMatrixRegEntryByteSize = ReduceWidthByte 
-    def CMatrixRegEntryByteSize = Matrix_M*ResultWidthByte //这个取数和存数的带宽
-    def AMatrixRegEntryBitSize = ReduceWidthByte * 8 //适合向TE供数的带宽
-    def BMatrixRegEntryBitSize = ReduceWidthByte * 8
-    def CMatrixRegEntryBitSize = Matrix_M*ResultWidthByte * 8//这个取数和存数的带宽
-    def AMatrixRegNBanks = Matrix_M //注意这里与Matrix_M有强相关性，一般是Matrix_M的整数倍
-    def BMatrixRegNBanks = Matrix_N //这里与Matrix_N强相关
-    def CMatrixRegNBanks = Matrix_N //方便进行reorder
-    def AMatrixReg_Total_Bandwidth = AMatrixRegNBanks * AMatrixRegEntryByteSize  //ACSP的总带宽
-    def BMatrixReg_Total_Bandwidth = BMatrixRegNBanks * BMatrixRegEntryByteSize  //BCSP的总带宽
-    def CMatrixReg_Total_Bandwidth = CMatrixRegNBanks * CMatrixRegEntryByteSize  //CCSP的总带宽
-    def AMatrixReg_Total_Bandwidth_Bit = AMatrixRegNBanks * AMatrixRegEntryByteSize * 8  //ACSP的总带宽
-    def BMatrixReg_Total_Bandwidth_Bit = BMatrixRegNBanks * BMatrixRegEntryByteSize * 8  //BCSP的总带宽
-    def CMatrixReg_Total_Bandwidth_Bit = CMatrixRegNBanks * CMatrixRegEntryByteSize * 8  //CCSP的总带宽
-    def AMatrixRegBankSize = AMatrixRegSize / AMatrixRegNBanks
-    def BMatrixRegBankSize = BMatrixRegSize / BMatrixRegNBanks
+    def ABMatrixRegEntryByteSize = ReduceWidthByte //适合向TE供数的带宽
+    def CMatrixRegEntryByteSize = Matrix_MN*ResultWidthByte //这个取数和存数的带宽
+    def ABMatrixRegEntryBitSize = ReduceWidthByte * 8 //适合向TE供数的带宽
+    def CMatrixRegEntryBitSize = Matrix_MN*ResultWidthByte * 8//这个取数和存数的带宽
+    def ABMatrixRegNBanks = Matrix_MN //注意这里与Matrix_MN有强相关性，一般是Matrix_MN的整数倍
+    def CMatrixRegNBanks = Matrix_MN //方便进行reorder
+    def ABMatrixReg_Total_Bandwidth = ABMatrixRegNBanks * ABMatrixRegEntryByteSize  //ABMatrixReg的总带宽
+    def CMatrixReg_Total_Bandwidth = CMatrixRegNBanks * CMatrixRegEntryByteSize  //CMatrixReg的总带宽
+    def ABMatrixReg_Total_Bandwidth_Bit = ABMatrixRegNBanks * ABMatrixRegEntryByteSize * 8  //ABMatrixReg的总带宽
+    def CMatrixReg_Total_Bandwidth_Bit = CMatrixRegNBanks * CMatrixRegEntryByteSize * 8  //CMatrixReg的总带宽
+    def ABMatrixRegBankSize = ABMatrixRegSize / ABMatrixRegNBanks
     def CMatrixRegBankSize = CMatrixRegSize / CMatrixRegNBanks
-    def AMatrixRegBankNEntrys = AMatrixRegBankSize / AMatrixRegEntryByteSize
-    def BMatrixRegBankNEntrys = BMatrixRegBankSize / BMatrixRegEntryByteSize
+    def ABMatrixRegBankNEntrys = ABMatrixRegBankSize / ABMatrixRegEntryByteSize
     def CMatrixRegBankNEntrys = CMatrixRegBankSize / CMatrixRegEntryByteSize
 
     require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
@@ -460,36 +434,26 @@ trait CUTEImplParameters{
     val MemorysourceMaxNumBitSize = cuteParams.MemorysourceMaxNumBitSize
     val SoureceMaxNum = cuteParams.SoureceMaxNum
     val SoureceMaxNumBitSize = cuteParams.SoureceMaxNumBitSize
-    val Tensor_M = cuteParams.Tensor_M
-    val Tensor_N = cuteParams.Tensor_N
+    val Tensor_MN = cuteParams.Tensor_MN
     val Tensor_K = cuteParams.Tensor_K
     val MatrixRegMaxTensorDim = cuteParams.MatrixRegMaxTensorDim
     val MatrixRegMaxTensorDimBitSize = cuteParams.MatrixRegMaxTensorDimBitSize
-    val AMatrixRegSize = cuteParams.AMatrixRegSize
-    val BMatrixRegSize = cuteParams.BMatrixRegSize
+    val ABMatrixRegSize = cuteParams.ABMatrixRegSize
     val CMatrixRegSize = cuteParams.CMatrixRegSize
-    val Matrix_M = cuteParams.Matrix_M
-    val Matrix_N = cuteParams.Matrix_N
-    val AMatrixRegEntryByteSize = cuteParams.AMatrixRegEntryByteSize
-    val BMatrixRegEntryByteSize = cuteParams.BMatrixRegEntryByteSize
+    val Matrix_MN = cuteParams.Matrix_MN
+    val ABMatrixRegEntryByteSize = cuteParams.ABMatrixRegEntryByteSize
     val CMatrixRegEntryByteSize = cuteParams.CMatrixRegEntryByteSize
-    val AMatrixRegEntryBitSize = cuteParams.AMatrixRegEntryBitSize
-    val BMatrixRegEntryBitSize = cuteParams.BMatrixRegEntryBitSize
+    val ABMatrixRegEntryBitSize = cuteParams.ABMatrixRegEntryBitSize
     val CMatrixRegEntryBitSize = cuteParams.CMatrixRegEntryBitSize
-    val AMatrixRegNBanks = cuteParams.AMatrixRegNBanks
-    val BMatrixRegNBanks = cuteParams.BMatrixRegNBanks
+    val ABMatrixRegNBanks = cuteParams.ABMatrixRegNBanks
     val CMatrixRegNBanks = cuteParams.CMatrixRegNBanks
-    val AMatrixReg_Total_Bandwidth = cuteParams.AMatrixReg_Total_Bandwidth
-    val BMatrixReg_Total_Bandwidth = cuteParams.BMatrixReg_Total_Bandwidth
+    val ABMatrixReg_Total_Bandwidth = cuteParams.ABMatrixReg_Total_Bandwidth
     val CMatrixReg_Total_Bandwidth = cuteParams.CMatrixReg_Total_Bandwidth
-    val AMatrixReg_Total_Bandwidth_Bit = cuteParams.AMatrixReg_Total_Bandwidth_Bit
-    val BMatrixReg_Total_Bandwidth_Bit = cuteParams.BMatrixReg_Total_Bandwidth_Bit
+    val ABMatrixReg_Total_Bandwidth_Bit = cuteParams.ABMatrixReg_Total_Bandwidth_Bit
     val CMatrixReg_Total_Bandwidth_Bit = cuteParams.CMatrixReg_Total_Bandwidth_Bit
-    val AMatrixRegBankSize = cuteParams.AMatrixRegBankSize
-    val BMatrixRegBankSize = cuteParams.BMatrixRegBankSize
+    val ABMatrixRegBankSize = cuteParams.ABMatrixRegBankSize
     val CMatrixRegBankSize = cuteParams.CMatrixRegBankSize
-    val AMatrixRegBankNEntrys = cuteParams.AMatrixRegBankNEntrys
-    val BMatrixRegBankNEntrys = cuteParams.BMatrixRegBankNEntrys
+    val ABMatrixRegBankNEntrys = cuteParams.ABMatrixRegBankNEntrys
     val CMatrixRegBankNEntrys = cuteParams.CMatrixRegBankNEntrys
     val ResultFIFODepth = cuteParams.ResultFIFODepth
     val AMemoryLoaderReadFromMemoryFIFODepth = cuteParams.AMemoryLoaderReadFromMemoryFIFODepth
@@ -713,8 +677,8 @@ class StoreMicroInst_Resource_Info()(implicit p: Parameters) extends CuteBundle{
 class AfterOpsInterface()(implicit p: Parameters) extends CuteBundle{
 
     //每拍可接受一个来自CDC的与MReg和TE等宽的数据，并在自己模块内完成数据的拆分、重排、缩放、转置以及其他复杂向量任务
-    val CDCDataToInterface     = DecoupledIO(UInt((ResultWidth*Matrix_M*Matrix_N).W))
-    val InterfaceToCDCData     = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_M*Matrix_N).W)))
+    val CDCDataToInterface     = DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W))
+    val InterfaceToCDCData     = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
     // val CDCStoreAddr                        = Input(UInt(log2Ceil(CMatrixRegBankNEntrys).W))
 
     val VecInstQueueID = UInt(1.W)
@@ -727,11 +691,11 @@ class VPUInterface_Input()(implicit p: Parameters) extends CuteBundle{
     val inst_src0_type = Output(UInt(2.W))//从寄存器还是来自输入
     val inst_src1_type = Output(UInt(2.W))//从寄存器还是来自输入
     val inst_dest_type = Output(UInt(2.W))//写回寄存器还是写回输出
-    val stream_id = Output(UInt(log2Ceil(Matrix_M*Matrix_N+10).W))//stream data的id
+    val stream_id = Output(UInt(log2Ceil(Matrix_MN*Matrix_MN+10).W))//stream data的id
 }
 
 class VPUInterface_Output()(implicit p: Parameters) extends CuteBundle{
-    val stream_id = Output(UInt(log2Ceil(Matrix_M*Matrix_N+10).W))//stream data的id
+    val stream_id = Output(UInt(log2Ceil(Matrix_MN*Matrix_MN+10).W))//stream data的id
     val stream_data = Output(UInt(VectorWidth.W))//stream data还能存一些额外的信息，这些信息也会返回，后续可以用于配置VPU的部分隐式寄存器，或者留存在VPU的的隐式寄存器中，这些寄存器是uop可见的，如下一次的scale，下一次的bias等。
 }
 
@@ -1055,46 +1019,27 @@ class ConfigInfoIO()(implicit p: Parameters) extends CuteBundle{
 //将MemoryLoader模块和datacontrol模块分开，是为了使用窗口期，让单读写口的MatrixReg可以独立运行
 //有没有能同时读写的SRAM啊？我能保证不写同一块数据,还是先doublebuffer吧....
 //我们考虑到回数的延迟，所以DataControl与MatrixReg之间也是有fifo的。考虑到后续的SRAM是一个简单模块，fifo要加在DataControl里，让MatrixReg尽可能简单。
-class ADataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+class ABDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AMatrixRegBankNLines)，是输入的需要握手的数据
-    val BankAddr = Flipped(DecoupledIO(Vec(AMatrixRegNBanks, (UInt(log2Ceil(AMatrixRegBankNEntrys).W)))))
+    val BankAddr = Flipped(DecoupledIO(Vec(ABMatrixRegNBanks, (UInt(log2Ceil(ABMatrixRegBankNEntrys).W)))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
-    val Data = Valid(Vec(AMatrixRegNBanks, UInt(AMatrixRegEntryBitSize.W)))
+    val Data = Valid(Vec(ABMatrixRegNBanks, UInt(ABMatrixRegEntryBitSize.W)))
     //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
     // val Chosen = Input(Bool())
 }
 
-class AMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AMatrixRegBankNLines)，是输入的需要握手的数据
-    val BankId = Flipped(Valid(UInt(log2Ceil(AMatrixRegNBanks).W)))
-    val BankAddr = Flipped(Vec(AMatrixRegNBanks, Valid(UInt(log2Ceil(AMatrixRegBankNEntrys).W))))
+// 统一的AB MemoryLoader接口，支持ZeroFill功能
+class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(ABMatrixRegBankNLines)，是输入的需要握手的数据
+    val BankId = Flipped(Valid(UInt(log2Ceil(ABMatrixRegNBanks).W)))
+    val BankAddr = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntrys).W))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
-    val Data = Flipped(Vec(AMatrixRegNBanks, Valid(UInt(AMatrixRegEntryBitSize.W))))
-    //zerofill用于指示是否填零
-    val ZeroFill = Input(Vec(AMatrixRegNBanks, Valid(UInt(log2Ceil(AMatrixRegBankNEntrys).W))))
+    val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))
+    //zerofill用于指示是否填零（统一支持，B矩阵可以不使用）
+    val ZeroFill = Input(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntrys).W))))
     //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
     // val Chosen = Input(Bool())
 }
-
-class BDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(BMatrixRegBankNLines)，是输入的需要握手的数据
-    val BankAddr = Flipped(DecoupledIO(Vec(BMatrixRegNBanks, (UInt(log2Ceil(BMatrixRegBankNEntrys).W)))))
-    //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
-    val Data = Valid(Vec(BMatrixRegNBanks, UInt(BMatrixRegEntryBitSize.W)))
-    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
-    // val Chosen = Input(Bool())
-}
-
-class BMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(BMatrixRegBankNLines)，是输入的需要握手的数据
-    val BankId = Flipped(Valid(UInt(log2Ceil(BMatrixRegNBanks).W)))
-    val BankAddr = Flipped(Vec(BMatrixRegNBanks, Valid(UInt(log2Ceil(BMatrixRegBankNEntrys).W))))
-    //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
-    val Data = Flipped(Vec(BMatrixRegNBanks, Valid(UInt(BMatrixRegEntryBitSize.W))))
-    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
-    // val Chosen = Input(Bool())
-}
-
 
 class CDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(CMatrixRegBankNLines)，是输入的需要握手的数据

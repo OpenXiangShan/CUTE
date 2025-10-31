@@ -483,8 +483,8 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     //  v    v   v    v
     //Load->Compute->Store，A->B，B阶段的微指令只由A阶段的微指令的完成情况和B阶段的资源情况决定
 
-    val A_MReg_Free = RegInit(VecInit(Seq.fill(2)(true.B)))
-    val B_MReg_Free = RegInit(VecInit(Seq.fill(2)(true.B)))
+    // 合并A和B的寄存器堆状态：AB_MReg_Free[0-1]对应A矩阵，AB_MReg_Free[2-3]对应B矩阵
+    val AB_MReg_Free = RegInit(VecInit(Seq.fill(4)(true.B)))
     val C_MReg_Free = RegInit(VecInit(Seq.fill(2)(true.B)))
 
     //微指令队列
@@ -564,7 +564,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     val Decode_Tensor_K_iter_Add = RegInit(0.U(ApplicationMaxTensorSizeBitSize.W))//一次K迭代的增量
     
     val Decode_A_MReg_ID = RegInit(0.U(2.W))
-    val Decode_B_MReg_ID = RegInit(0.U(2.W))
+    val Decode_B_MReg_ID = RegInit(2.U(2.W))
     val Decode_C_MReg_ID = RegInit(0.U(2.W))
 
     //解码宏指令,宏指令在被解码时，不响应微指令的发射和新的宏指令
@@ -606,8 +606,8 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             val Have_Load_Micro_Inst    = WireInit(true.B)//由宏指令拆解出的微指令，每次拆解都有一个Load指令
             val Have_Compute_Micro_Inst = WireInit(true.B)//由宏指令拆解出来的微指令，每次拆解都有一个Compute指令
             val Have_Store_Micro_Inst   = WireInit(false.B)//由宏指令拆解出来的微指令，只在暂存器切换时才发射Store指令
-            val Current_MatrixRegTensor_M = WireInit(Tensor_M.U)
-            val Current_MatrixRegTensor_N = WireInit(Tensor_N.U)
+            val Current_MatrixRegTensor_M = WireInit(Tensor_MN.U)
+            val Current_MatrixRegTensor_N = WireInit(Tensor_MN.U)
             val Current_MatrixRegTensor_K = WireInit(ReduceGroupSize.U)
 
             val Can_Issue_Load_Micro_Inst = !Load_MicroInst_FIFO_Full
@@ -662,16 +662,16 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 //     reset = reset
                 // )
                 //Current_MatrixRegTensor_M必须4的倍数
-                Current_MatrixRegTensor_M := Mux(Current_Tile_M_Iter + Tensor_M.U >= Decoding_MacroInst.Application_M, (Decoding_MacroInst.Application_M - Current_Tile_M_Iter), Tensor_M.U)
-                Current_MatrixRegTensor_N := Mux(Current_Tile_N_Iter + Tensor_N.U >= Decoding_MacroInst.Application_N, Decoding_MacroInst.Application_N - Current_Tile_N_Iter, Tensor_N.U)
+                Current_MatrixRegTensor_M := Mux(Current_Tile_M_Iter + Tensor_MN.U >= Decoding_MacroInst.Application_M, (Decoding_MacroInst.Application_M - Current_Tile_M_Iter), Tensor_MN.U)
+                Current_MatrixRegTensor_N := Mux(Current_Tile_N_Iter + Tensor_MN.U >= Decoding_MacroInst.Application_N, Decoding_MacroInst.Application_N - Current_Tile_N_Iter, Tensor_MN.U)
                 Current_MatrixRegTensor_K := ReduceGroupSize.U
-                assert(Current_MatrixRegTensor_N === Tensor_N.U, "Current_MatrixRegTensor_N is not equal to Tensor_N")
+                assert(Current_MatrixRegTensor_N === Tensor_MN.U, "Current_MatrixRegTensor_N is not equal to Tensor_MN")
                 assert(Decoding_MacroInst.Application_K % 64.U === 0.U, "Decoding_MacroInst.Application_K is not 64 align")
 
                 LoadMicroInst_Have_C_work := Current_Tile_K_Iter === 0.U && Current_Tile_KW_Index === 0.U && Current_Tile_KH_Index === 0.U
 
                 Decode_A_MReg_ID := Mux(Decode_A_MReg_ID === 0.U, 1.U, 0.U)
-                Decode_B_MReg_ID := Mux(Decode_B_MReg_ID === 0.U, 1.U, 0.U)
+                Decode_B_MReg_ID := Mux(Decode_B_MReg_ID === 2.U, 3.U, 2.U)
                 //迭代生成微指令
                 Current_Tile_K_Iter := Current_Tile_K_Iter + Decode_Tensor_K_iter_Add
                 Current_Tile_Tensor_K_Iter := Current_Tile_Tensor_K_Iter + 1.U
@@ -699,8 +699,8 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                             Current_Tile_KH_Index := 0.U
                             Have_Store_Micro_Inst := true.B
                             Decode_C_MReg_ID := Mux(Decode_C_MReg_ID === 0.U, 1.U, 0.U)
-                            Current_Tile_N_Iter := Current_Tile_N_Iter + Tensor_N.U
-                            when(Current_Tile_N_Iter + Tensor_N.U >= Decoding_MacroInst.Application_N)
+                            Current_Tile_N_Iter := Current_Tile_N_Iter + Tensor_MN.U
+                            when(Current_Tile_N_Iter + Tensor_MN.U >= Decoding_MacroInst.Application_N)
                             {
                                 //                                                                vv
                                 //如果最后一次N的迭代，不是满的N，那么就要调整N的大小，大概率不会发生,[ohow][oc][ic]
@@ -709,7 +709,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
                                 //output-stationary，此时需要发射Store的微指令
                                 Current_Tile_N_Iter := 0.U
-                                Current_Tile_M_Iter := Current_Tile_M_Iter + Tensor_M.U
+                                Current_Tile_M_Iter := Current_Tile_M_Iter + Tensor_MN.U
                                 Current_Tile_OW_Index := Current_Tile_OW_Index + Decoding_MacroInst.conv_ow_per_add
                                 Current_Tile_OH_Index := Current_Tile_OH_Index + Decoding_MacroInst.conv_oh_per_add
                                 when(Current_Tile_OW_Index + Decoding_MacroInst.conv_ow_per_add >= Decoding_MacroInst.conv_ow_max)
@@ -717,7 +717,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                                     Current_Tile_OW_Index := Current_Tile_OW_Index + Decoding_MacroInst.conv_ow_per_add - Decoding_MacroInst.conv_ow_max
                                     Current_Tile_OH_Index := Current_Tile_OH_Index + Decoding_MacroInst.conv_oh_per_add + 1.U
                                 }
-                                when(Current_Tile_M_Iter + Tensor_M.U >= Decoding_MacroInst.Application_M)
+                                when(Current_Tile_M_Iter + Tensor_MN.U >= Decoding_MacroInst.Application_M)
                                 {
                                     Current_Tile_M_Iter := 0.U
                                     Decoding_MarcoInst_Going := false.B
@@ -937,9 +937,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         val Load_MicroInst = Load_MicroInst_FIFO(Load_MicroInst_FINISH_Head) //取出的Load指令
 
         //发射这条指令，填AML、BML、CML的config输入
-        val Can_Issue_AML_Micro_Inst = io.AML_MicroTask_Config.MicroTaskReady && A_MReg_Free(Load_MicroInst.A_MRegID) //缺少AMReg的空闲状态,保证同时任务被发射
-        val Can_Issue_BML_Micro_Inst = io.BML_MicroTask_Config.MicroTaskReady && B_MReg_Free(Load_MicroInst.B_MRegID) //缺少BMReg的空闲状态,保证同时任务被发射
-        val Can_Issue_CML_Micro_Inst = io.CML_MicroTask_Config.MicroTaskReady && C_MReg_Free(Load_MicroInst.C_MRegID) //缺少CMReg的空闲状态,保证同时任务被发射
+        val Can_Issue_AML_Micro_Inst = io.AML_MicroTask_Config.MicroTaskReady && AB_MReg_Free(Load_MicroInst.A_MRegID) //A矩阵使用AB_MReg_Free[0-1]
+        val Can_Issue_BML_Micro_Inst = io.BML_MicroTask_Config.MicroTaskReady && AB_MReg_Free(Load_MicroInst.B_MRegID) //B矩阵使用AB_MReg_Free[2-3]
+        val Can_Issue_CML_Micro_Inst = io.CML_MicroTask_Config.MicroTaskReady && C_MReg_Free(Load_MicroInst.C_MRegID) //C矩阵使用C_MReg_Free[0-1]
 
         val Need_Issue_AML_Micro_Inst = Load_MicroInst.Is_A_Work
         val Need_Issue_BML_Micro_Inst = Load_MicroInst.Is_B_Work
@@ -977,9 +977,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             io.CML_MicroTask_Config.LoadTaskInfo := Load_MicroInst.CLoadTaskInfo
             io.CML_MicroTask_Config.Is_Transpose := Load_MicroInst.IsTranspose
 
-            A_MReg_Free(Load_MicroInst.A_MRegID)  := false.B
+            AB_MReg_Free(Load_MicroInst.A_MRegID)  := false.B  // A矩阵占用AB[0-1]
             Current_AML_MReg_ID := Load_MicroInst.A_MRegID
-            B_MReg_Free(Load_MicroInst.B_MRegID)  := false.B
+            AB_MReg_Free(Load_MicroInst.B_MRegID)  := false.B  // B矩阵占用AB[2-3]
             Current_BML_MReg_ID := Load_MicroInst.B_MRegID
             when(Will_Issuse_CML_Load)
             {
@@ -1161,7 +1161,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 comp_afinish.entry.Compute_MicroInst := Compute_MicroInst
                 comp_afinish.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
                 comp_afinish.en := true.B
-                A_MReg_Free(Current_ADC_MReg_ID) := true.B
+                AB_MReg_Free(Current_ADC_MReg_ID) := true.B  // A矩阵释放AB[0-1]
             }
             when(Compute_Micro_Inst_Wait_B_Finish && io.BDC_MicroTask_Config.MicroTaskEndValid)
             {
@@ -1170,7 +1170,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 comp_bfinish.entry.Compute_MicroInst := Compute_MicroInst
                 comp_bfinish.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
                 comp_bfinish.en := true.B
-                B_MReg_Free(Current_BDC_MReg_ID) := true.B
+                AB_MReg_Free(Current_BDC_MReg_ID + 2.U) := true.B  // B矩阵释放AB[2-3]
             }
             when(Compute_Micro_Inst_Wait_C_Finish && io.CDC_MicroTask_Config.MicroTaskEndValid)
             {

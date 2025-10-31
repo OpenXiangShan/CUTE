@@ -17,8 +17,8 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         //先整一个 MatrixReg 的接口的总体设计
         val FromMatrixRegIO = Flipped(new CDataControlMatrixRegIO)
         val ConfigInfo = Flipped(new CDCMicroTaskConfigIO)
-        val Matrix_C = DecoupledIO(UInt((ResultWidth*Matrix_M*Matrix_N).W))
-        val ResultMatrix_D = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_M*Matrix_N).W)))
+        val Matrix_C = DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W))
+        val ResultMatrix_D = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
         val AfterOpsInterface = (new AfterOpsInterface)
         val ComputeGo = Input(Bool())//由TE发出的计算同步锁步信号，指可以接收新的数据了
         val DebugInfo = Input(new DebugInfoIO)
@@ -82,7 +82,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                 printf("[CDataController<%d>]CDataController: Is_Transpose = %d,Is_AfterOps_Tile = %d,Is_Reorder_Only_Ops = %d,Is_EasyScale_Only_Ops = %d,Is_VecFIFO_Ops = %d,D_Datatype = %d\n",io.DebugInfo.DebugTimeStampe, ConfigInfo.Is_Transpose, ConfigInfo.Is_AfterOps_Tile, ConfigInfo.Is_Reorder_Only_Ops, ConfigInfo.Is_EasyScale_Only_Ops, ConfigInfo.Is_VecFIFO_Ops, ConfigInfo.ApplicationTensor_D.dataType)
             }
             state := s_mm_task  //切换到矩阵乘状态
-            MatrixRegWorkingTensor_M := ConfigInfo.MatrixRegTensor_M / Matrix_M.U * Matrix_M.U + (ConfigInfo.MatrixRegTensor_M % Matrix_M.U =/= 0.U) * Matrix_M.U    //当前执行的矩阵乘任务的M, 取4的整数
+            MatrixRegWorkingTensor_M := ConfigInfo.MatrixRegTensor_M / Matrix_MN.U * Matrix_MN.U + (ConfigInfo.MatrixRegTensor_M % Matrix_MN.U =/= 0.U) * Matrix_MN.U    //当前执行的矩阵乘任务的M, 取4的整数
 
             MatrixRegWorkingTensor_N := ConfigInfo.MatrixRegTensor_N    //当前执行的矩阵乘任务的N
             MatrixRegWorkingTensor_K := ConfigInfo.MatrixRegTensor_K    //当前执行的矩阵乘任务的K的ReduceVector的数量
@@ -130,14 +130,14 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val Store_M_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Store_N_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
-    val M_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_M.U)
-    val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_N.U)
+    val M_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_MN.U)
+    val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_MN.U)
     val K_IteratorMax = (MatrixRegWorkingTensor_K)
 
     val Max_Caculate_Iter = M_IteratorMax * N_IteratorMax * K_IteratorMax
     val addr_IteratorMax = M_IteratorMax * N_IteratorMax
 
-    val Max_Store_Iter   = (MatrixRegWorkingTensor_M * MatrixRegWorkingTensor_N * D_Datatype) / (ResultWidthByte*Matrix_M*Matrix_N).U
+    val Max_Store_Iter   = (MatrixRegWorkingTensor_M * MatrixRegWorkingTensor_N * D_Datatype) / (ResultWidthByte*Matrix_MN*Matrix_MN).U
 
     val CVectorCount = RegInit(0.U(32.W))
     val DVectorCount = RegInit(0.U(32.W))
@@ -145,7 +145,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val ReadRequest = WireInit(false.B)
     val WriteRequset = WireInit(false.B)
 
-    val ReadMatrixRegDataHoldReg = RegInit(0.U((ResultWidth*Matrix_M*Matrix_N).W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
+    val ReadMatrixRegDataHoldReg = RegInit(0.U((ResultWidth*Matrix_MN*Matrix_MN).W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
     val ReadMatrixRegDataHoldValid = RegInit(false.B) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
 
     val After_ops_issue_iter = RegInit(0.U(32.W)) //后操作的迭代器，用来计算后操作的迭代次数
@@ -168,7 +168,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
             After_ops_issue_iter := 0.U
             ReadMatrixRegDataHoldValid := false.B
 
-            assert(MatrixRegWorkingTensor_N === Tensor_N.U, "MatrixRegWorkingTensor_N = %d is not Full!", MatrixRegWorkingTensor_N)
+            assert(MatrixRegWorkingTensor_N === Tensor_MN.U, "MatrixRegWorkingTensor_N = %d is not Full!", MatrixRegWorkingTensor_N)
             //阶段1，计算初始化完成，开始工作
             calculate_state := s_cal_working
 

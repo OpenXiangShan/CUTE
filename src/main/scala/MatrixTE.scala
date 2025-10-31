@@ -11,28 +11,28 @@ import org.chipsalliance.cde.config._
 //计算上来看，它的输入是两个向量，将两个向量广播成两个相同大小的矩阵后，将元素送入ReducuPE。向量的大小也很明显其一是Matrix_M，其二是Matrix_N，向量内的元素宽度是Reduce_Width
 class MatrixTE(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
-        val VectorA = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_M).W)))
-        val VectorB = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_N).W)))
-        val MatirxC = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_M*Matrix_N).W)))
-        val MatrixD = DecoupledIO(UInt((ResultWidth*Matrix_M*Matrix_N).W))
+        val VectorA = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_MN).W)))
+        val VectorB = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_MN).W)))
+        val MatirxC = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
+        val MatrixD = DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W))
         val ConfigInfo = Flipped((new MTEMicroTaskConfigIO))
         val ComputeGo            = Output(Bool())
         val DebugInfo     = Input(new DebugInfoIO)
     })
 
     //实例化ReducePE
-    val Matrix = VecInit.tabulate(Matrix_M, Matrix_N){(x,y) => Module(new FReducePE()).io}
+    val Matrix = VecInit.tabulate(Matrix_MN, Matrix_MN){(x,y) => Module(new FReducePE()).io}
 
     //直接驱动ReducePE的输入
     //接下来给每个ReducePE的输入进行赋值
     //broadcaster的逻辑
-    for (i <- 0 until Matrix_M){
-        for (j <- 0 until Matrix_N){
+    for (i <- 0 until Matrix_MN){
+        for (j <- 0 until Matrix_MN){
             Matrix(i)(j).AVector.bits       := io.VectorA.bits((i+1)*ReduceWidth-1,(i)*ReduceWidth)
             Matrix(i)(j).AVector.valid      := io.VectorA.valid
             Matrix(i)(j).BVector.bits       := io.VectorB.bits((j+1)*ReduceWidth-1,(j)*ReduceWidth)
             Matrix(i)(j).BVector.valid      := io.VectorB.valid
-            Matrix(i)(j).CAdd.bits          := io.MatirxC.bits((i*Matrix_N+j+1)*ResultWidth-1,(i*Matrix_N+j)*ResultWidth)
+            Matrix(i)(j).CAdd.bits          := io.MatirxC.bits((i*Matrix_MN+j+1)*ResultWidth-1,(i*Matrix_MN+j)*ResultWidth)
             Matrix(i)(j).CAdd.valid         := io.MatirxC.valid
             Matrix(i)(j).opcode             := io.ConfigInfo.dataType
             when(io.VectorA.valid && io.VectorB.valid && io.MatirxC.valid){
@@ -42,10 +42,10 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     }
 
     //将每个ReducePE的输出拼接成一个矩阵，然后送入MatrixD
-    val CurrentMatrixD = Wire(Vec(Matrix_M*Matrix_N, UInt(ResultWidth.W)))
-    for (i <- 0 until Matrix_M){
-        for (j <- 0 until Matrix_N){
-            CurrentMatrixD(i*Matrix_N+j) := Matrix(i)(j).DResult.bits
+    val CurrentMatrixD = Wire(Vec(Matrix_MN*Matrix_MN, UInt(ResultWidth.W)))
+    for (i <- 0 until Matrix_MN){
+        for (j <- 0 until Matrix_MN){
+            CurrentMatrixD(i*Matrix_MN+j) := Matrix(i)(j).DResult.bits
         }
     }
     //这里asUInt可以将Vec(UInt)转换成UInt
@@ -102,8 +102,8 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     //越浅的fifo，越少的能量消耗～
     //直接送到CMatrixReg的数据，是最香的
     //只要MatrixD的是ready的，就可以送数据
-    for (i <- 0 until Matrix_M){
-        for (j <- 0 until Matrix_N){
+    for (i <- 0 until Matrix_MN){
+        for (j <- 0 until Matrix_MN){
             Matrix(i)(j).DResult.ready := io.MatrixD.ready
         }
     }

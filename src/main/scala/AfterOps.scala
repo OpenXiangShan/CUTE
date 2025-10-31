@@ -248,7 +248,7 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //             printf("[AfterOps<%d>]AfterOps: MatrixRegWorkingTensor_M is %d, MatrixRegWorkingTensor_N is %d\n",io.DebugInfo.DebugTimeStampe, io.ConfigInfo.MatrixRegTensor_M, io.ConfigInfo.MatrixRegTensor_N)
     //         }
 
-    //         assert(Mux(Is_Transpose,io.ConfigInfo.MatrixRegTensor_M===Tensor_M.U,io.ConfigInfo.MatrixRegTensor_N===Tensor_N.U), "MatrixRegWorkingTensor_N or MatrixRegWorkingTensor_M is not Full!")
+    //         assert(Mux(Is_Transpose,io.ConfigInfo.MatrixRegTensor_M===Tensor_MN.U,io.ConfigInfo.MatrixRegTensor_N===Tensor_MN.U), "MatrixRegWorkingTensor_N or MatrixRegWorkingTensor_M is not Full!")
     //     }
     // }
 
@@ -256,8 +256,8 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     // val Get_M_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     // val Get_N_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
-    // val M_Get_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_M.U) + ((MatrixRegWorkingTensor_M % Matrix_M.U) =/= 0.U)
-    // val N_Get_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_N.U)
+    // val M_Get_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_MN.U) + ((MatrixRegWorkingTensor_M % Matrix_MN.U) =/= 0.U)
+    // val N_Get_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_MN.U)
 
     // val Max_Caculate_Iter = M_Get_IteratorMax * N_Get_IteratorMax
 
@@ -265,10 +265,10 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
 
 
     // //一组reoder的寄存器，来存储重排的数据
-    // //存一个Matrix_M*Matrix_N*T的数据矩阵寄存器，用于存储重排的数据，T = CMReg的总带宽/Matrix_N*ResultWidth
-    // val Per_GetMatrix_NDim_Width = Matrix_N*ResultWidth //每次Get的N连续的数据的宽度
+    // //存一个Matrix_M*Matrix_MN*T的数据矩阵寄存器，用于存储重排的数据，T = CMReg的总带宽/Matrix_MN*ResultWidth
+    // val Per_GetMatrix_NDim_Width = Matrix_MN*ResultWidth //每次Get的N连续的数据的宽度
     // val Reorder_ToVector_GroupSize = VectorWidth / (Per_GetMatrix_NDim_Width)//填满一个VectorWidth需要这么多次
-    // val Reorder_ToVector_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Reorder_ToVector_GroupSize)(0.U((Per_GetMatrix_NDim_Width).W))))))))
+    // val Reorder_ToVector_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_MN)(VecInit(Seq.fill(Reorder_ToVector_GroupSize)(0.U((Per_GetMatrix_NDim_Width).W))))))))
     // val Reorder_ToVector_Reg_Valid = RegInit(VecInit(Seq.fill(2)(false.B)))
     // val Reorder_ToVector_Reg_Get_Index  = RegInit(0.U(log2Ceil(2).W))//双缓冲
     // val Reorder_ToVector_Reg_Send_Index = RegInit(0.U(log2Ceil(2).W))//双缓冲
@@ -277,8 +277,8 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     // val Fill_Vector_Iter = RegInit(0.U(log2Ceil(Reorder_ToVector_GroupSize).W))
     // val Fill_Vector_Max_Iter = Reorder_ToVector_GroupSize
 
-    // val Send_Vector_Iter = RegInit(0.U(log2Ceil(Matrix_M).W))
-    // val Send_Vector_Max_Iter = Matrix_M
+    // val Send_Vector_Iter = RegInit(0.U(log2Ceil(Matrix_MN).W))
+    // val Send_Vector_Max_Iter = Matrix_MN
 
 
     // val Return_M_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
@@ -287,7 +287,7 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
 
     // //VPU回到interface，需要填充到CDC同宽度的数据
     // val Per_Return_Vector_GroupSize = CMatrixReg_Total_Bandwidth_Bit / VectorWidth //每次Return会接受多少个VectorWidth的数据
-    // val Reorder_ToMReg_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Per_Return_Vector_GroupSize)((0.U(VectorWidth.W)))))))))
+    // val Reorder_ToMReg_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_MN)(VecInit(Seq.fill(Per_Return_Vector_GroupSize)((0.U(VectorWidth.W)))))))))
     // val Reorder_ToMReg_Reg_Valid = RegInit(VecInit(Seq.fill(2)(false.B)))
     // val Reorder_ToMReg_Reg_Get_Index  = RegInit(0.U(log2Ceil(2).W))//双缓冲
     // val Reorder_ToMReg_Reg_Return_Index = RegInit(0.U(log2Ceil(2).W))//双缓冲
@@ -295,16 +295,16 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     // val Fill_MReg_Iter = RegInit(0.U(log2Ceil(Per_Return_Vector_GroupSize).W))
     // val Fill_MReg_Max_Iter = Per_Return_Vector_GroupSize
 
-    // val Fill_Return_M_Iter = RegInit(0.U(log2Ceil(Matrix_M).W))
-    // val Fill_Return_M_Iter_Max = Matrix_M
+    // val Fill_Return_M_Iter = RegInit(0.U(log2Ceil(Matrix_MN).W))
+    // val Fill_Return_M_Iter_Max = Matrix_MN
 
-    // val Send_Return_Sub_Major_Iter = RegInit(0.U(log2Ceil(Matrix_M).W))
-    // val Send_Return_Sub_Major_Iter_Max = Matrix_M
+    // val Send_Return_Sub_Major_Iter = RegInit(0.U(log2Ceil(Matrix_MN).W))
+    // val Send_Return_Sub_Major_Iter_Max = Matrix_MN
     
     
     // val Reduce_Dim_Fill_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     // val Major_Dim_Fill_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    // val Reduce_Dim_Iterator_Max = Tensor_N.U * D_Datatype * 8.U / CMatrixReg_Total_Bandwidth_Bit.U //Reduce_Dim需要连续填几次
+    // val Reduce_Dim_Iterator_Max = Tensor_MN.U * D_Datatype * 8.U / CMatrixReg_Total_Bandwidth_Bit.U //Reduce_Dim需要连续填几次
     // val Major_Dim_Iterator_Max = Mux(!Is_Transpose,M_Get_IteratorMax,N_Get_IteratorMax) //Major_Dim需要连续填几次
     // val Next_Major_Dim_Addr_Inc = Reduce_Dim_Iterator_Max
 
@@ -357,11 +357,11 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //             io.AfterOpsInterface.CDCDataToInterface.ready := Reorder_ToVector_Reg_Ready_Get
     //             when(io.AfterOpsInterface.CDCDataToInterface.fire)//接收该数据
     //             {
-    //                 val GetData_To_Group = WireInit(VecInit(Seq.fill(Matrix_M)(0.U(Per_GetMatrix_NDim_Width.W))))
+    //                 val GetData_To_Group = WireInit(VecInit(Seq.fill(Matrix_MN)(0.U(Per_GetMatrix_NDim_Width.W))))
     //                 GetData_To_Group := io.AfterOpsInterface.CDCDataToInterface.bits.asTypeOf(GetData_To_Group)
 
     //                 //将数据填入Reorder_ToVector_Reg
-    //                 for (i <- 0 until Matrix_M){
+    //                 for (i <- 0 until Matrix_MN){
     //                     Reorder_ToVector_Reg(Reorder_ToVector_Reg_Get_Index)(i)(Fill_Vector_Iter) := GetData_To_Group(i)
     //                 }
     //                 //更新相关迭代器
@@ -373,7 +373,7 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //                     //完成一组数据，4*4数据的填充输出这一组数据
     //                     if (YJPAfterOpsDebugEnable)
     //                     {
-    //                         val Groups_Iter = GetCount / (Matrix_M.U)
+    //                         val Groups_Iter = GetCount / (Matrix_MN.U)
     //                         // printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToVector_Reg, GetCount is %d(Groups %d),Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, GetCount,Groups_Iter,Reorder_ToVector_Reg(Reorder_ToVector_Reg_Get_Index).asUInt)
     //                     }
     //                 }
@@ -424,7 +424,7 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //                         //输出，成功填满一个C_MReg的回填数据组
     //                         if (YJPAfterOpsDebugEnable)
     //                         {
-    //                             val debug_Reorder_ToMReg_Reg = WireInit(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Per_Return_Vector_GroupSize)((0.U(VectorWidth.W)))))))
+    //                             val debug_Reorder_ToMReg_Reg = WireInit(VecInit(Seq.fill(Matrix_MN)(VecInit(Seq.fill(Per_Return_Vector_GroupSize)((0.U(VectorWidth.W)))))))
     //                             debug_Reorder_ToMReg_Reg := Reorder_ToMReg_Reg(Reorder_ToMReg_Reg_Get_Index)
     //                             debug_Reorder_ToMReg_Reg(Fill_Return_M_Iter)(Fill_MReg_Iter) := io.VectorInterface.VectorDataOut.bits
     //                             // printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToMReg_Reg one Groupg down, Fill_Return_M_Iter is %d, Fill_MReg_Iter is %d,Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, Fill_Return_M_Iter, Fill_MReg_Iter,debug_Reorder_ToMReg_Reg.asUInt)
@@ -458,7 +458,7 @@ class AfterOpsModule(implicit p: Parameters) extends CuteModule{
     //         {
     //             io.AfterOpsInterface.InterfaceToCDCData.valid := true.B
     //             io.AfterOpsInterface.InterfaceToCDCData.bits := Reorder_ToMReg_Reg(Reorder_ToMReg_Reg_Return_Index)(Send_Return_Sub_Major_Iter).asTypeOf(io.AfterOpsInterface.InterfaceToCDCData.bits)
-    //             // io.AfterOpsInterface.CDCStoreAddr := (Send_Return_Sub_Major_Iter + Major_Dim_Fill_Iter*Matrix_M.U) * Reduce_Dim_Iterator_Max + Reduce_Dim_Fill_Iter// 写回CMReg的地址
+    //             // io.AfterOpsInterface.CDCStoreAddr := (Send_Return_Sub_Major_Iter + Major_Dim_Fill_Iter*Matrix_MN.U) * Reduce_Dim_Iterator_Max + Reduce_Dim_Fill_Iter// 写回CMReg的地址
     //             //输出io.AfterOpsInterface.InterfaceToCDCData.ready
     //             // if (YJPAfterOpsDebugEnable)
     //             // {

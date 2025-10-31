@@ -27,11 +27,11 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     //     cutecounter.InstQueueEmpty, cutecounter.getConfigured, cutecounter.AOPBusy, cutecounter.computeBusy, cutecounter.computeInstQueueEmpty, cutecounter.computeInstCanIssue, cutecounter.InstCanDecode,
     //     cutecounter.mmu_req_valid, cutecounter.mmu_req_ready)
     
-    val AMatrixRegs = Seq.tabulate(2)(i => Module(new AMatrixReg(i))).toVector//双缓冲（MatrixReg）
+    // 统一的AB矩阵寄存器堆：4个实例
+    // AB(0)=A(0), AB(1)=A(1), AB(2)=B(0), AB(3)=B(1)
+    val ABMatrixRegs = Seq.tabulate(4)(i => Module(new ABMatrixReg(i))).toVector
     val ADC = Module(new ADataController)
     val AML = Module(new AMemoryLoader)
-
-    val BMatrixRegs = Seq.tabulate(2)(i => Module(new BMatrixReg(i))).toVector//双缓冲（MatrixReg）
     val BDC = Module(new BDataController)
     val BML = Module(new BMemoryLoader)
 
@@ -153,33 +153,23 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     io.instfifo_tail_id := TaskCtrl.io.instfifo_head_id//原先代码里head/tail写反了
     io.instfifo_release := TaskCtrl.io.instfifo_release
 
-    //给每个 MatrixReg 页的输入进行默认赋值
+    //给每个 MatrixReg 的输入进行默认赋值
+    
+    // AB MatrixReg：4个实例的初始化
+    for (i <- 0 until 4){
+        //DataController的请求
+        ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
+        ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
+        //MemoryLoader的请求
+        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
+        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.valid := false.B
+        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits)
+        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
+        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill)
+    }
+
+    // C MatrixReg：2个实例的初始化
     for (i <- 0 until 2){
-        //A MatrixReg
-        //ADC的请求
-        AMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
-        AMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(AMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
-        // ASpad(i).io.MatrixRegIO.FromDataController.Data.valid := false.B
-        // ASpad(i).io.MatrixRegIO.FromDataController.Data.bits := 0.U.asTypeOf(ASpad(i).io.MatrixRegIO.FromDataController.Data.bits)
-        //AML的请求
-        AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
-        AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.valid := false.B
-        AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits := 0.U.asTypeOf(AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits)
-        AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
-        AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill := 0.U.asTypeOf(AMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill)
-
-        //B MatrixReg
-        //BDC的请求
-        BMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
-        BMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(BMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
-        // BSpad(i).io.MatrixRegIO.FromDataController.Data.valid := false.B
-        // BSpad(i).io.MatrixRegIO.FromDataController.Data.bits := 0.U.asTypeOf(BSpad(i).io.MatrixRegIO.FromDataController.Data.bits)
-        //BML的请求
-        BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
-        BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.valid := false.B
-        BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits := 0.U.asTypeOf(BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits)
-        BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(BMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
-
         //C MatrixReg
         //CDC的请求
         CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadBankAddr := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadBankAddr)
@@ -195,37 +185,44 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     }
     
     //根据MReg_CtrlInfo的值，选择对应的MReg
+    //映射关系：A(0)->AB(0), A(1)->AB(1), B(0)->AB(2), B(1)->AB(3)
 
+    // ADC连接到AB(0)或AB(1)
     when (TaskCtrl.io.MReg_CtrlInfo.ADC_MReg_ID === 0.U){
-        ADC.io.FromMatrixRegIO <> AMatrixRegs(0).io.MatrixRegIO.FromDataController
+        ADC.io.FromMatrixRegIO <> ABMatrixRegs(0).io.MatrixRegIO.FromDataController
     }.otherwise{
-        ADC.io.FromMatrixRegIO <> AMatrixRegs(1).io.MatrixRegIO.FromDataController
+        ADC.io.FromMatrixRegIO <> ABMatrixRegs(1).io.MatrixRegIO.FromDataController
     }
 
+    // BDC连接到AB(2)或AB(3)
     when (TaskCtrl.io.MReg_CtrlInfo.BDC_MReg_ID === 0.U){
-        BDC.io.FromMatrixRegIO <> BMatrixRegs(0).io.MatrixRegIO.FromDataController
+        BDC.io.FromMatrixRegIO <> ABMatrixRegs(2).io.MatrixRegIO.FromDataController
     }.otherwise{
-        BDC.io.FromMatrixRegIO <> BMatrixRegs(1).io.MatrixRegIO.FromDataController
+        BDC.io.FromMatrixRegIO <> ABMatrixRegs(3).io.MatrixRegIO.FromDataController
     }
 
+    // CDC连接到C(0)或C(1)
     when (TaskCtrl.io.MReg_CtrlInfo.CDC_MReg_ID === 0.U){
         CDC.io.FromMatrixRegIO <> CMatrixRegs(0).io.MatrixRegIO.FromDataController
     }.otherwise{
         CDC.io.FromMatrixRegIO <> CMatrixRegs(1).io.MatrixRegIO.FromDataController
     }
 
+    // AML连接到AB(0)或AB(1)
     when (TaskCtrl.io.MReg_CtrlInfo.AML_MReg_ID === 0.U){
-        AML.io.ToMatrixRegIO <> AMatrixRegs(0).io.MatrixRegIO.FromMemoryLoader
+        AML.io.ToMatrixRegIO <> ABMatrixRegs(0).io.MatrixRegIO.FromMemoryLoader
     }.otherwise{
-        AML.io.ToMatrixRegIO <> AMatrixRegs(1).io.MatrixRegIO.FromMemoryLoader
+        AML.io.ToMatrixRegIO <> ABMatrixRegs(1).io.MatrixRegIO.FromMemoryLoader
     }
 
+    // BML连接到AB(2)或AB(3)
     when (TaskCtrl.io.MReg_CtrlInfo.BML_MReg_ID === 0.U){
-        BML.io.ToMatrixRegIO <> BMatrixRegs(0).io.MatrixRegIO.FromMemoryLoader
+        BML.io.ToMatrixRegIO <> ABMatrixRegs(2).io.MatrixRegIO.FromMemoryLoader
     }.otherwise{
-        BML.io.ToMatrixRegIO <> BMatrixRegs(1).io.MatrixRegIO.FromMemoryLoader
+        BML.io.ToMatrixRegIO <> ABMatrixRegs(3).io.MatrixRegIO.FromMemoryLoader
     }
 
+    // CML连接到C(0)或C(1)
     when (TaskCtrl.io.MReg_CtrlInfo.CML_MReg_ID === 0.U){
         CML.io.ToMatrixRegIO <> CMatrixRegs(0).io.MatrixRegIO.FromMemoryLoader
     }.otherwise{

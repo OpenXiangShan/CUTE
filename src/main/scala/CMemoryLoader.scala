@@ -146,8 +146,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     //如果是memoryload_state === s_load_init，那么我们就要初始化各个寄存器
     //如果是memoryload_state === s_load_working，那么我们就要开始取数
     //如果是memoryload_state === s_load_end，那么我们就要结束取数
-    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总共要执行的MReg的写入的数据量
-    val TotalRequestSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总发出的Memory请求的数据量
+    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W)) //总共要执行的MReg的写入的数据量
+    val TotalRequestSize = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W)) //总发出的Memory请求的数据量
     val CurrentLoaded_BlockTensor_M_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val CurrentLoaded_BlockTensor_N_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     
@@ -157,7 +157,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     // val SoureceIdSearchTable = VecInit(Seq.fill(SoureceMaxNum){RegInit(new CSourceIdSearch)})
     val SoureceIdSearchTable = RegInit(VecInit(Seq.fill(SoureceMaxNum)(0.U((new CSourceIdSearch).getWidth.W))))
     
-    val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W))
+    val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
     
     //读数的FIFO
     //MReg_Fill_FIFO是用来记录数据的fifo，最多能暂存CMemoryLoaderReadFromMemoryFIFODepth个数据
@@ -185,7 +185,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val MAX_Fill_Times = outsideDataWidthByte/CMatrixRegEntryByteSize
 
     val Repeat_Fill_Is_Working = RegInit(false.B)//是否在回填数据
-    val Repeat_Fill_Times = RegInit(0.U(log2Ceil(Tensor_M).W))//记录这个数据需要回填的次数
+    val Repeat_Fill_Times = RegInit(0.U(log2Ceil(Tensor_MN).W))//记录这个数据需要回填的次数
     val Repeat_Fill_Group_Times = RegInit(0.U(log2Ceil(outsideDataWidthByte/CMatrixRegEntryByteSize).W))//记录这个数据需要回填的次数
     val Repeat_Fill_Table_Index = RegInit(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W))//记录这个数据在FIFO里的index
     val Repeat_Fill_Request_Infight = RegInit(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W))//记录这个有多少请求已经发出，由于我们一个发出的请求需要回填16拍，所以必须记录一下infight的数量，不能多发请求
@@ -203,8 +203,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         Bank_Fill_Search_FIFO_Empty(i) := Bank_Fill_Search_FIFO_Head(i) === Bank_Fill_Search_FIFO_Tail(i)//这个bank不需要写scp
     }
 
-    val Request_M_Iter_Time = RegInit(0.U(log2Ceil(Matrix_M).W))
-    // val Fill_N_Iter_Time = RegInit(0.U(log2Ceil(Tensor_N).W))
+    val Request_M_Iter_Time = RegInit(0.U(log2Ceil(Matrix_MN).W))
+    // val Fill_N_Iter_Time = RegInit(0.U(log2Ceil(Tensor_MN).W))
     //读数请求
     val ReadRequest = io.LocalMMUIO.Request
     ReadRequest.valid := false.B
@@ -267,7 +267,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         when(Is_FullLoad)
         {
             val RequestMatrixRegBankId = (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) % CMatrixRegNBanks.U //访存请求落在哪个MatrixRegBank上
-            val RequestMatrixRegAddr = (CurrentLoaded_BlockTensor_M_Iter / CMatrixRegNBanks.U * MatrixRegTensor_N / Matrix_M.U) + (CurrentLoaded_BlockTensor_N_Iter / Matrix_M.U) //该访存请求的第零号数据，落在哪个MatrixRegBank的哪个地址上
+            val RequestMatrixRegAddr = (CurrentLoaded_BlockTensor_M_Iter / CMatrixRegNBanks.U * MatrixRegTensor_N / Matrix_MN.U) + (CurrentLoaded_BlockTensor_N_Iter / Matrix_MN.U) //该访存请求的第零号数据，落在哪个MatrixRegBank的哪个地址上
             
             ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_C_Stride_M + CurrentLoaded_BlockTensor_N_Iter * C_DataType
             
@@ -290,12 +290,12 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
 
                 Request_M_Iter_Time := Request_M_Iter_Time + 1.U//连续的跨bank去访存
-                when(Request_M_Iter_Time === (Matrix_M - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === MatrixRegTensor_M - 1.U){
+                when(Request_M_Iter_Time === (Matrix_MN - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === MatrixRegTensor_M - 1.U){
                     Request_M_Iter_Time := 0.U
                     CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType
                     when(CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType === MatrixRegTensor_N){
                         CurrentLoaded_BlockTensor_N_Iter := 0.U
-                        CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_M.U
+                        CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_MN.U
                     }
                 }
                 //输出发出的访存请求
@@ -447,8 +447,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             //故，我们针对这样的情况，我们需要为每一个发出的访存请求预留一个FIFO的空位，这样就可以保证TL握手成功，从而不浪费访存带宽，这样可能会导致整体延迟增加(但不会低到阻碍吞吐)，但我们的访存带宽利用率一定不会低
             //获取整个Row的数据，然后重复填充，Row的总数据量为Tensor_N*C_DataType
             val sourceId = Mux(IsConherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
-            val Max_RepeatRowLoad_Memory_Load_Times = Tensor_N.U * C_DataType / outsideDataWidthByte.U //总共要发出的访存请求的次数
-            val Max_MReg_Write_Times = Tensor_M*Tensor_N*ResultWidthByte/CMatrixReg_Total_Bandwidth //总共要写入MReg的次数
+            val Max_RepeatRowLoad_Memory_Load_Times = Tensor_MN.U * C_DataType / outsideDataWidthByte.U //总共要发出的访存请求的次数
+            val Max_MReg_Write_Times = Tensor_MN*Tensor_MN*ResultWidthByte/CMatrixReg_Total_Bandwidth //总共要写入MReg的次数
             ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr +  CurrentLoaded_BlockTensor_N_Iter * C_DataType
             ReadRequest.bits.RequestConherent := IsConherent
             ReadRequest.bits.RequestSourceID := sourceId.bits
@@ -456,10 +456,10 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             ReadRequest.valid := (TotalRequestSize < Max_RepeatRowLoad_Memory_Load_Times) && (Repeat_Fill_Request_Infight < (CMemoryLoaderReadFromMemoryFIFODepth-1).U)
 
 
-            val Per_Load_Fill_MReg_Times = (Tensor_M/Matrix_M) * (outsideDataWidthByte/CMatrixRegEntryByteSize)
-            val Per_Data_Repeat_Times = (Tensor_M/Matrix_M) //每组数据要重复写MReg这么多次
+            val Per_Load_Fill_MReg_Times = (Tensor_MN/Matrix_MN) * (outsideDataWidthByte/CMatrixRegEntryByteSize)
+            val Per_Data_Repeat_Times = (Tensor_MN/Matrix_MN) //每组数据要重复写MReg这么多次
             val Per_Memory_Load_Have_Data_Write_Group = (outsideDataWidthByte/CMatrixRegEntryByteSize)//每次Memory的load，有几组数据要写回
-            val Per_Write_MReg_Addr_Add = (Tensor_N / Matrix_N).U //一组数据Per_Data_Repeat_Times迭代中，下一次写入的scp地址的增量
+            val Per_Write_MReg_Addr_Add = (Tensor_MN / Matrix_MN).U //一组数据Per_Data_Repeat_Times迭代中，下一次写入的scp地址的增量
 
             // val Load_Time = CurrentLoaded_BlockTensor_N_Iter / (outsideDataWidthByte.U/C_DataType)
 
@@ -607,25 +607,25 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     //Store时，MReg的数据肯定是Reduce_Dim主序的，顺序取数即可
     //写数请求
-    val TotalStoreSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总共存储的数据量，这个参数表示已经对MMU发出的存储请求次数
-    val TotalStoreRequestSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总共读取的请求数据量，这个参数表示已经对ScartchPad发出的读请求次数
-    val MaxIncStoreRequestSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) // 将Max_BlockTensor_Major_DIM向下取Matrix_M的倍数来计算正常增长的地址
-    val MaxIncStoreScpRequestSize = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) // 将Max_BlockTensor_Major_DIM向下取Matrix_M的倍数来计算正常增长的地址
+    val TotalStoreSize = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W)) //总共存储的数据量，这个参数表示已经对MMU发出的存储请求次数
+    val TotalStoreRequestSize = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W)) //总共读取的请求数据量，这个参数表示已经对ScartchPad发出的读请求次数
+    val MaxIncStoreRequestSize = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W)) // 将Max_BlockTensor_Major_DIM向下取Matrix_M的倍数来计算正常增长的地址
+    val MaxIncStoreScpRequestSize = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W)) // 将Max_BlockTensor_Major_DIM向下取Matrix_M的倍数来计算正常增长的地址
     val Max_Load_Scp_Tail_SubMajor_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Current_Load_Scp_Tail_subMajor_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val Current_Load_Scp_addr = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W))
-    val Current_Load_M_iter = RegInit(0.U((log2Ceil(Tensor_M)).W)) //当前的M迭代次数
-    val Current_Load_N_iter = RegInit(0.U((log2Ceil(Tensor_N)).W)) //当前的N迭代次数
-    val Max_Load_MReg_Time = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总共要发对SCAP的访存次数
-    val Max_Store_Memory_Time = RegInit(0.U((log2Ceil(Tensor_M*Tensor_N)).W)) //总共要发对LLC的访存次数
+    val Current_Load_Scp_addr = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
+    val Current_Load_M_iter = RegInit(0.U((log2Ceil(Tensor_MN)).W)) //当前的M迭代次数
+    val Current_Load_N_iter = RegInit(0.U((log2Ceil(Tensor_MN)).W)) //当前的N迭代次数
+    val Max_Load_MReg_Time = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W)) //总共要发对SCAP的访存次数
+    val Max_Store_Memory_Time = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W)) //总共要发对LLC的访存次数
     val CurrentStore_BlockTensor_Major_DIM_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val CurrentStore_BlockTensor_Reduce_DIM_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Max_BlockTensor_Request_Reduce_DIM = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Max_BlockTensor_Reduce_DIM = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Max_BlockTensor_Major_DIM = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val Per_LLC_Store_ReduceDim_Iter = RegInit(0.U((log2Ceil(Tensor_M)).W))
-    val Per_MReg_Load_ReduceDim_Iter = RegInit(0.U((log2Ceil(Tensor_M)).W))
-    val Max_SubReduce_DIM = RegInit(0.U((log2Ceil(Tensor_M)).W))
+    val Per_LLC_Store_ReduceDim_Iter = RegInit(0.U((log2Ceil(Tensor_MN)).W))
+    val Per_MReg_Load_ReduceDim_Iter = RegInit(0.U((log2Ceil(Tensor_MN)).W))
+    val Max_SubReduce_DIM = RegInit(0.U((log2Ceil(Tensor_MN)).W))
     val CurrentStore_BlockTensor_SubMajor_DIM_Iter= RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val CurrentStore_BlockTensor_SubReduce_DIM_Iter= RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Write_Mem_Wait_Table = RegInit(VecInit(Seq.fill(SoureceMaxNum)(false.B))) //存储每个访存请求的等待状态
@@ -649,9 +649,9 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         Write_Mem_Wait_Table(sourceId) := false.B
     }
 
-    val M_Get_IteratorMax = Mux(Is_Transpose, (MatrixRegTensor_M / (Matrix_M.U * 2.U) + (MatrixRegTensor_M % (Matrix_M.U * 2.U) =/= 0.U)) * 2.U, (MatrixRegTensor_M / Matrix_M.U) + ((MatrixRegTensor_M % Matrix_M.U) =/= 0.U))
+    val M_Get_IteratorMax = Mux(Is_Transpose, (MatrixRegTensor_M / (Matrix_MN.U * 2.U) + (MatrixRegTensor_M % (Matrix_MN.U * 2.U) =/= 0.U)) * 2.U, (MatrixRegTensor_M / Matrix_MN.U) + ((MatrixRegTensor_M % Matrix_MN.U) =/= 0.U))
     val N_Get_IteratorMax = WireInit(0.U(log2Ceil(CMatrixRegBankNEntrys).W))
-    N_Get_IteratorMax := (MatrixRegTensor_N / Matrix_N.U)
+    N_Get_IteratorMax := (MatrixRegTensor_N / Matrix_MN.U)
     val transpose_scp_addr = WireInit(0.U(log2Ceil(CMatrixRegBankNEntrys).W))
 
     // val Max_Caculate_Iter = M_Get_IteratorMax * N_Get_IteratorMax
@@ -659,10 +659,10 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     // val GetCount = RegInit(0.U(32.W))
 
     //一组reoder的寄存器，来存储重排的数据
-    //存一个Matrix_M*Matrix_N*T的数据矩阵寄存器，用于存储重排的数据，T = CMReg的总带宽/Matrix_N*ResultWidth
-    val Per_GetMatrix_NDim_Width = Matrix_N*ResultWidth //每次Get的N连续的数据的宽度
+    //存一个Matrix_M*Matrix_MN*T的数据矩阵寄存器，用于存储重排的数据，T = CMReg的总带宽/Matrix_MN*ResultWidth
+    val Per_GetMatrix_NDim_Width = Matrix_MN*ResultWidth //每次Get的N连续的数据的宽度
     val Reorder_ToLLC_GroupSize = outsideDataWidth / (Per_GetMatrix_NDim_Width)//填满一个LLCDataWidth需要这么多次
-    val Reorder_ToLLC_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_M)(VecInit(Seq.fill(Reorder_ToLLC_GroupSize)(0.U((Per_GetMatrix_NDim_Width).W))))))))
+    val Reorder_ToLLC_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_MN)(VecInit(Seq.fill(Reorder_ToLLC_GroupSize)(0.U((Per_GetMatrix_NDim_Width).W))))))))
     val Reorder_ToLLC_Reg_Valid = RegInit(VecInit(Seq.fill(2)(false.B)))
     val Reorder_ToLLC_Reg_Get_Index  = RegInit(0.U(log2Ceil(2).W))//双缓冲
     val Reorder_ToLLC_Reg_Send_Index = RegInit(0.U(log2Ceil(2).W))//双缓冲
@@ -670,8 +670,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Fill_LLC_Iter = RegInit(0.U(log2Ceil(Reorder_ToLLC_GroupSize).W))
     val Fill_LLC_Max_Iter = Reorder_ToLLC_GroupSize
 
-    val Send_LLC_Iter = RegInit(0.U(log2Ceil(Matrix_M).W))
-    val Send_LLC_Max_Iter = Matrix_M
+    val Send_LLC_Iter = RegInit(0.U(log2Ceil(Matrix_MN).W))
+    val Send_LLC_Max_Iter = Matrix_MN
 
     when(memorystore_state === s_store_init){
         memorystore_state := s_store_working
@@ -690,11 +690,11 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         FromMatrixRegReadFIFOHead := 0.U
         FromMatrixRegReadFIFOTail := 0.U
         Max_Load_MReg_Time := MatrixRegTensor_M * MatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U//总共要发对SCAP的访存次数
-        Max_Store_Memory_Time := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_M.U, MatrixRegTensor_M) * MatrixRegTensor_N * D_DataType / outsideDataWidthByte.U//总共要发对LLC的访存次数
-        // MaxIncStoreScpRequestSize := Mux(Is_Transpose, MatrixRegTensor_N, M_Get_IteratorMax * Matrix_M.U) * Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N) * D_DataType / CMatrixReg_Total_Bandwidth.U
-        MaxIncStoreScpRequestSize := M_Get_IteratorMax * Matrix_M.U * MatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U
-        MaxIncStoreRequestSize := (Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M) / Matrix_M.U * Matrix_M.U) * Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N) * D_DataType / CMatrixReg_Total_Bandwidth.U
-        Max_Load_Scp_Tail_SubMajor_Iter := Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M) % Matrix_M.U
+        Max_Store_Memory_Time := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_MN.U, MatrixRegTensor_M) * MatrixRegTensor_N * D_DataType / outsideDataWidthByte.U//总共要发对LLC的访存次数
+        // MaxIncStoreScpRequestSize := Mux(Is_Transpose, MatrixRegTensor_N, M_Get_IteratorMax * Matrix_MN.U) * Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N) * D_DataType / CMatrixReg_Total_Bandwidth.U
+        MaxIncStoreScpRequestSize := M_Get_IteratorMax * Matrix_MN.U * MatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U
+        MaxIncStoreRequestSize := (Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M) / Matrix_MN.U * Matrix_MN.U) * Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N) * D_DataType / CMatrixReg_Total_Bandwidth.U
+        Max_Load_Scp_Tail_SubMajor_Iter := Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M) % Matrix_MN.U
         Current_Load_Scp_Tail_subMajor_Iter := 0.U
         Current_Load_Scp_addr := 0.U
         Current_Load_M_iter := 0.U
@@ -710,7 +710,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                                 Mux(D_DataType === 4.U, CMatrixReg_Total_Bandwidth.U/4.U, CMatrixReg_Total_Bandwidth.U)))
         FireTimes := 0.U
         Max_BlockTensor_Reduce_DIM := Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N)
-        Max_BlockTensor_Request_Reduce_DIM := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_M.U, MatrixRegTensor_N)
+        Max_BlockTensor_Request_Reduce_DIM := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_MN.U, MatrixRegTensor_N)
         Max_BlockTensor_Major_DIM := Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M)
 
         if(YJPCMLDebugEnable)
@@ -766,9 +766,9 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         val WriteRequest = io.LocalMMUIO.Request
         WriteRequest.valid := false.B
         when(!FromMatrixRegReadFIFOEmpty && Reorder_ToLLC_Reg_Ready_Get){
-            val Read_Data_list = WireInit(VecInit(Seq.fill(Matrix_M)(0.U(Per_GetMatrix_NDim_Width.W))))
+            val Read_Data_list = WireInit(VecInit(Seq.fill(Matrix_MN)(0.U(Per_GetMatrix_NDim_Width.W))))
             Read_Data_list := FromMatrixRegReadFIFO(FromMatrixRegReadFIFOTail).asTypeOf(Read_Data_list)
-            for (i <- 0 until Matrix_M){
+            for (i <- 0 until Matrix_MN){
                 Reorder_ToLLC_Reg(Reorder_ToLLC_Reg_Get_Index)(i)(Fill_LLC_Iter) := Read_Data_list(i)
             }
             //更新相关迭代器
@@ -782,7 +782,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 //完成一组数据，4*4数据的填充输出这一组数据
                 // if (YJPAfterOpsDebugEnable)
                 // {
-                //     val Groups_Iter = GetCount / (Matrix_M.U)
+                //     val Groups_Iter = GetCount / (Matrix_MN.U)
                 //     printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToVector_Reg, GetCount is %d(Groups %d),Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, GetCount,Groups_Iter,Reorder_ToVector_Reg(Reorder_ToVector_Reg_Get_Index).asUInt)
                 // }
             }
@@ -841,13 +841,13 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
 
                 CurrentStore_BlockTensor_SubMajor_DIM_Iter := CurrentStore_BlockTensor_SubMajor_DIM_Iter + 1.U
                 // M % Matrix_M的剩余M
-                when(CurrentStore_BlockTensor_SubMajor_DIM_Iter === (Matrix_M-1).U || (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) === (Max_BlockTensor_Major_DIM - 1.U))
+                when(CurrentStore_BlockTensor_SubMajor_DIM_Iter === (Matrix_MN-1).U || (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) === (Max_BlockTensor_Major_DIM - 1.U))
                 {
                     CurrentStore_BlockTensor_SubMajor_DIM_Iter := 0.U
                     CurrentStore_BlockTensor_Reduce_DIM_Iter := CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter
                     when(CurrentStore_BlockTensor_Reduce_DIM_Iter === Max_BlockTensor_Request_Reduce_DIM - Per_LLC_Store_ReduceDim_Iter){
                         CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
-                        CurrentStore_BlockTensor_Major_DIM_Iter := CurrentStore_BlockTensor_Major_DIM_Iter + Matrix_M.U
+                        CurrentStore_BlockTensor_Major_DIM_Iter := CurrentStore_BlockTensor_Major_DIM_Iter + Matrix_MN.U
                     }
                 }
 

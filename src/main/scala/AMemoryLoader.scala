@@ -21,14 +21,14 @@ import freechips.rocketchip.util.SeqToAugmentedSeq
 //注意，数据的reorder是可以离线完成的！这也属于编译器的一环。
 
 class ASourceIdSearch(implicit p: Parameters) extends CuteBundle{
-    val MatrixRegBankId = UInt(log2Ceil(AMatrixRegNBanks).W)
-    val MatrixRegAddr = UInt(log2Ceil(AMatrixRegBankNEntrys).W)
+    val MatrixRegBankId = UInt(log2Ceil(ABMatrixRegNBanks).W)
+    val MatrixRegAddr = UInt(log2Ceil(ABMatrixRegBankNEntrys).W)
 }
 
 //本模块的核心任务是从外部接口加载数据到MatrixReg中
 //所有的访存任务会通过TL-Link接口发出，每次的读请求的宽度是ReduceWidthByte
 
-//总写回MReg的次数 = Tensor_M * ReduceGroupSize
+//总写回MReg的次数 = Tensor_MN * ReduceGroupSize
 //需要解决的核心问题为，计算出每次访存的地址，然后发出访存请求，然后接受访存的返回值，然后将返回值写入到MatrixReg中
 //1.计算访存地址，需要考虑当前的IH、IW、KH、KW、stride_H、stride_W，来计算出当前要load的地址
 ////a.每次Load的微任务，KH_Index、KW_Index不变，根据OH、OW、stride_H、stride_W即可得到当前Load任务的起始地址。
@@ -48,7 +48,7 @@ class ASourceIdSearch(implicit p: Parameters) extends CuteBundle{
 class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         //先整一个 MatrixReg 的接口的总体设计
-        val ToMatrixRegIO = Flipped(new AMemoryLoaderMatrixRegIO)
+        val ToMatrixRegIO = Flipped(new ABMemoryLoaderMatrixRegIO)
         val ConfigInfo = Flipped(new AMLMicroTaskConfigIO)
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
@@ -116,10 +116,10 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Convolution_IH_DIM_Length = Convolution_OH_DIM_Length * Convolution_Stride_H//可以提前算，存成Reg
 
     //允许每个bank最多1个nack，这样保证只要有bank空闲我们都能写入数据，同时保证了Load请求的译码不停顿。
-    val NACK_ZeroFill_Hloding_Reg = RegInit((VecInit(Seq.fill(AMatrixRegNBanks)(0.U((new ASourceIdSearch).getWidth.W)))))//每个bank的NACK值
-    val NACK_ZeroFill_Hloding_Valid = RegInit(VecInit(Seq.fill(AMatrixRegNBanks)(false.B)))//每个bank的NACK计数器是否有效
-    val Zero_Fill_TableItem = WireInit((VecInit(Seq.fill(AMatrixRegNBanks)(0.U((new ASourceIdSearch).getWidth.W)))))
-    val Zero_Fill_TableItem_Valid = WireInit(VecInit(Seq.fill(AMatrixRegNBanks)(false.B)))
+    val NACK_ZeroFill_Hloding_Reg = RegInit((VecInit(Seq.fill(ABMatrixRegNBanks)(0.U((new ASourceIdSearch).getWidth.W)))))//每个bank的NACK值
+    val NACK_ZeroFill_Hloding_Valid = RegInit(VecInit(Seq.fill(ABMatrixRegNBanks)(false.B)))//每个bank的NACK计数器是否有效
+    val Zero_Fill_TableItem = WireInit((VecInit(Seq.fill(ABMatrixRegNBanks)(0.U((new ASourceIdSearch).getWidth.W)))))
+    val Zero_Fill_TableItem_Valid = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(false.B)))
     
     //如果configinfo有效
     //状态机
@@ -169,7 +169,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     //如果是memoryload_state === s_load_init，那么我们就要初始化各个寄存器
     //如果是memoryload_state === s_load_working，那么我们就要开始取数
     //如果是memoryload_state === s_load_end，那么我们就要结束取数
-    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_M*ReduceGroupSize)+1).W)) //总共要加载的张量大小，总加载的数据量不会超过Tensor_M*ReduceGroupSize*ruduceWidthByte，这个是不会变的
+    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize)+1).W)) //总共要加载的张量大小，总加载的数据量不会超过Tensor_M*ReduceGroupSize*ruduceWidthByte，这个是不会变的
     val CurrentLoaded_BlockTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val CurrentLoaded_BlockTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     
@@ -177,33 +177,33 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     //用sourceid做索引，存储MatrixReg的地址和bank号，是一组寄存器
     
     val SoureceIdSearchTable = RegInit(VecInit(Seq.fill(SoureceMaxNum)(0.U((new ASourceIdSearch).getWidth.W))))
-    val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_M*ReduceGroupSize*ReduceWidthByte)).W))
+    val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)).W))
 
     val MReg_Fill_Table = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
-    val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(AMatrixRegBankNEntrys).W)))))//记录这个LLC回的数是在scp的哪个地址
-    val MReg_Fill_Table_Time = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/AMatrixRegEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
+    val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(ABMatrixRegBankNEntrys).W)))))//记录这个LLC回的数是在scp的哪个地址
+    val MReg_Fill_Table_Time = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/ABMatrixRegEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
     val MReg_Fill_Table_Free = MReg_Fill_Table_Time.map(_ === 0.U)//记录这个FIFO能否能填数据
     val MReg_Fill_Table_Insert_Index = PriorityEncoder(MReg_Fill_Table_Free)//返回第一个空位的index
     val MReg_Fill_Table_Not_Full = MReg_Fill_Table_Free.reduce(_ || _)//这个FIFO是否还有空位
-    val MAX_Fill_Times = outsideDataWidthByte/AMatrixRegEntryByteSize
+    val MAX_Fill_Times = outsideDataWidthByte/ABMatrixRegEntryByteSize
     val zero_fill_k = RegInit(0.U((log2Ceil(MAX_Fill_Times)+1).W))
 
-    val Bank_Fill_Search_FIFO = RegInit((VecInit(Seq.fill(AMatrixRegNBanks)(VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(AMemoryLoaderReadFromMemoryFIFODepth).W)))))))//记录fifo里的数据是哪个bank的
-    val Bank_Fill_Search_FIFO_Head = RegInit((VecInit(Seq.fill(AMatrixRegNBanks)(0.U(log2Ceil(AMemoryLoaderReadFromMemoryFIFODepth).W)))))//想要往scp里bank(x)写的最后一个scp_fill_fifo的index
-    val Bank_Fill_Search_FIFO_Tail = RegInit((VecInit(Seq.fill(AMatrixRegNBanks)(0.U(log2Ceil(AMemoryLoaderReadFromMemoryFIFODepth).W)))))
-    val Bank_Fill_Search_FIFO_Full = WireInit(VecInit(Seq.fill(AMatrixRegNBanks)(false.B)))
-    val Bank_Fill_Search_FIFO_Empty = WireInit(VecInit(Seq.fill(AMatrixRegNBanks)(true.B)))
-    val Bank_Fill_Valid = WireInit(VecInit(Seq.fill(AMatrixRegNBanks)(false.B)))//每个bank是否有数据需要写入scp
+    val Bank_Fill_Search_FIFO = RegInit((VecInit(Seq.fill(ABMatrixRegNBanks)(VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(AMemoryLoaderReadFromMemoryFIFODepth).W)))))))//记录fifo里的数据是哪个bank的
+    val Bank_Fill_Search_FIFO_Head = RegInit((VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(log2Ceil(AMemoryLoaderReadFromMemoryFIFODepth).W)))))//想要往scp里bank(x)写的最后一个scp_fill_fifo的index
+    val Bank_Fill_Search_FIFO_Tail = RegInit((VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(log2Ceil(AMemoryLoaderReadFromMemoryFIFODepth).W)))))
+    val Bank_Fill_Search_FIFO_Full = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(false.B)))
+    val Bank_Fill_Search_FIFO_Empty = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(true.B)))
+    val Bank_Fill_Valid = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(false.B)))//每个bank是否有数据需要写入scp
     val Have_Bank_Fill = Bank_Fill_Valid.reduce(_ || _)//是否有数据需要写scp
 
-    for(i <- 0 until AMatrixRegNBanks){
+    for(i <- 0 until ABMatrixRegNBanks){
         Bank_Fill_Search_FIFO_Full(i) := Bank_Fill_Search_FIFO_Tail(i) === WrapInc(Bank_Fill_Search_FIFO_Head(i), AMemoryLoaderReadFromMemoryFIFODepth)//fifo满了
         Bank_Fill_Search_FIFO_Empty(i) := Bank_Fill_Search_FIFO_Head(i) === Bank_Fill_Search_FIFO_Tail(i)//这个bank不需要写scp
         Bank_Fill_Valid(i) := Bank_Fill_Search_FIFO_Head(i) =/= Bank_Fill_Search_FIFO_Tail(i)//这个bank有数据需要写scp
     }
 
     // 向上取到4的倍数
-    val MaxBlockTensor_M_Index = MatrixRegTensor_M / Matrix_M.U * Matrix_M.U + ((MatrixRegTensor_M % Matrix_M.U) =/= 0.U) * 4.U
+    val MaxBlockTensor_M_Index = MatrixRegTensor_M / Matrix_MN.U * Matrix_MN.U + ((MatrixRegTensor_M % Matrix_MN.U) =/= 0.U) * 4.U
     val MaxBlockTensor_K_Index = MatrixRegTensor_K
 
     val Init_Current_M_BaseAddr = RegInit(0.U((MMUAddrWidth).W))//当前M不动的情况下的基地指
@@ -295,8 +295,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
 
         when(Request.fire && sourceId.valid && !Is_invalid_IH_IW && !Finish_Decode_Load_Request){
             val TableItem = Wire(new ASourceIdSearch)
-            TableItem.MatrixRegBankId := CurrentLoaded_BlockTensor_M % AMatrixRegNBanks.U
-            TableItem.MatrixRegAddr := ((CurrentLoaded_BlockTensor_M / AMatrixRegNBanks.U) * ReduceGroupSize.U) + CurrentLoaded_BlockTensor_K
+            TableItem.MatrixRegBankId := CurrentLoaded_BlockTensor_M % ABMatrixRegNBanks.U
+            TableItem.MatrixRegAddr := ((CurrentLoaded_BlockTensor_M / ABMatrixRegNBanks.U) * ReduceGroupSize.U) + CurrentLoaded_BlockTensor_K
             SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
 
             if(YJPAMLDebugEnable)
@@ -344,8 +344,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         }.elsewhen(Is_invalid_IH_IW && !Finish_Decode_Load_Request)
         {
             val TableItem = Wire(new ASourceIdSearch)
-            TableItem.MatrixRegBankId := CurrentLoaded_BlockTensor_M % AMatrixRegNBanks.U
-            TableItem.MatrixRegAddr := ((CurrentLoaded_BlockTensor_M / AMatrixRegNBanks.U) * ReduceGroupSize.U) + CurrentLoaded_BlockTensor_K + zero_fill_k
+            TableItem.MatrixRegBankId := CurrentLoaded_BlockTensor_M % ABMatrixRegNBanks.U
+            TableItem.MatrixRegAddr := ((CurrentLoaded_BlockTensor_M / ABMatrixRegNBanks.U) * ReduceGroupSize.U) + CurrentLoaded_BlockTensor_K + zero_fill_k
             TableItem.asUInt
 
             val Response_sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
@@ -369,7 +369,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             //有MReg要写回时，是最高优先级的任务
             //次高优先级的任务是以前的零填充的NACK的任务
             //预填充好Zero_Fill_TableItem和Zero_Fill_TableItem_Valid，表示这一拍会执行的0填充任务，这些任务是上一拍冲突的任务，在这一拍优先被处理
-            for (i <- 0 until AMatrixRegNBanks)
+            for (i <- 0 until ABMatrixRegNBanks)
             {
                 //当前bank的NACK是有效的，且当前的bank不是当前Response的bank
                 if (ABMLNeedMRegFillTable)
@@ -486,7 +486,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             //有MReg要写回时，是最高优先级的任务
             //次高优先级的任务是以前的零填充的NACK的任务
             //预填充好Zero_Fill_TableItem和Zero_Fill_TableItem_Valid，表示这一拍会执行的0填充任务，这些任务是上一拍冲突的任务，在这一拍优先被处理
-            for (i <- 0 until AMatrixRegNBanks)
+            for (i <- 0 until ABMatrixRegNBanks)
             {
                 //当前bank的NACK是有效的，且当前的bank不是当前Response的bank
                 if (ABMLNeedMRegFillTable)
@@ -554,7 +554,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
 
             if (!ABMLNeedMRegFillTable)
             {
-                for (i <- 0 until AMatrixRegNBanks)
+                for (i <- 0 until ABMatrixRegNBanks)
                 {
                     when(MatrixRegBankId === i.U)
                     {
@@ -577,15 +577,15 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         }
 
         // Fill_Table的回填优先级最高，一旦有回填任务就立即执行
-        val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(AMatrixRegNBanks)(0.U(1.W))))
+        val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(1.W))))
         if (ABMLNeedMRegFillTable)
         {
-            for (i <- 0 until AMatrixRegNBanks){
+            for (i <- 0 until ABMatrixRegNBanks){
                 when(Bank_Fill_Search_FIFO_Empty(i) === false.B){
                     val CurrentFIFOIndex = Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Tail(i))
                     Current_Fill_MReg_Time(i) := 1.U
                     val MatrixRegWriteRequest = io.ToMatrixRegIO
-                    val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*AMatrixRegEntryByteSize).W)))))
+                    val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*ABMatrixRegEntryByteSize).W)))))
                     FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
                     MatrixRegWriteRequest.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + (MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
                     MatrixRegWriteRequest.BankAddr(i).valid := true.B
@@ -608,7 +608,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         }
 
         //完成零填充写回
-        for (i <- 0 until AMatrixRegNBanks)
+        for (i <- 0 until ABMatrixRegNBanks)
         {
             when(Zero_Fill_TableItem_Valid(i))
             {
@@ -625,7 +625,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         Infight_Load_Request_Num := Mux(Request.fire === false.B && io.LocalMMUIO.Response.fire === true.B,Infight_Load_Request_Num - 1.U,
                                     Mux(Request.fire === true.B && io.LocalMMUIO.Response.fire === false.B,Infight_Load_Request_Num + 1.U,Infight_Load_Request_Num))
 
-        val Load_Size = WireInit(0.U((log2Ceil(AMatrixRegNBanks)+1).W))
+        val Load_Size = WireInit(0.U((log2Ceil(ABMatrixRegNBanks)+1).W))
         if (ABMLNeedMRegFillTable)
         {
             Load_Size := PopCount(Current_Fill_MReg_Time.asUInt) + PopCount(Zero_Fill_TableItem_Valid)

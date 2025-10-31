@@ -14,9 +14,9 @@ class BDataController(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
 
         //先整一个 MatrixReg 的接口的总体设计
-        val FromMatrixRegIO = Flipped(new BDataControlMatrixRegIO)
+        val FromMatrixRegIO = Flipped(new ABDataControlMatrixRegIO)
         val ConfigInfo = Flipped(new BDCMicroTaskConfigIO)
-        val VectorB = DecoupledIO(UInt((ReduceWidth*Matrix_N).W))
+        val VectorB = DecoupledIO(UInt((ReduceWidth*Matrix_MN).W))
         val ComputeGo = Input(Bool())//由TE发出的计算同步锁步信号，指可以接收新的数据了
         val DebugInfo = Input(new DebugInfoIO)
     })
@@ -100,8 +100,8 @@ class BDataController(implicit p: Parameters) extends CuteModule{
 
     //我们这里scala写做除法，但其实硬件里面是移位，所以不会有除法的延迟
     //Matrix_M一定是2的幂次，所有这个除法一定会被优化成移位，一定是一拍完成的，一定会优化成移位电路
-    val M_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_M.U) + ((MatrixRegWorkingTensor_M % Matrix_M.U) =/= 0.U) //每次送入的数据是Matrix_M个，所以M的迭代器是Tensor_M/Matrix_M, 如果不能整除，那么就要多迭代一次
-    val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_N.U)//每次送入的数据是Matrix_N个，所以N的迭代器是Tensor_N/Matrix_N
+    val M_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_MN.U) + ((MatrixRegWorkingTensor_M % Matrix_MN.U) =/= 0.U) //每次送入的数据是Matrix_M个，所以M的迭代器是Tensor_M/Matrix_MN, 如果不能整除，那么就要多迭代一次
+    val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_MN.U)//每次送入的数据是Matrix_N个，所以N的迭代器是Tensor_N/Matrix_MN
     val K_IteratorMax = (MatrixRegWorkingTensor_K)//K已经是ReduceVector的数量了不需要再除了
 
     val Max_Caculate_Iter = M_IteratorMax * N_IteratorMax * K_IteratorMax   //总共的迭代次数
@@ -140,7 +140,7 @@ class BDataController(implicit p: Parameters) extends CuteModule{
             //     printf("[BDataController<%d>]BDataController: M_IteratorMax is %d, N_IteratorMax is %d, K_IteratorMax is %d\n",io.DebugInfo.DebugTimeStampe, M_IteratorMax, N_IteratorMax, K_IteratorMax)
             // }
             //MTE循环的最外层是M，然后是N，最后是K,所以这里在同步信号的ComputeGo的协同下，执行Max_Caculate_Iter次取数
-            val next_addr = Wire(UInt(AMatrixRegBankNEntrys.W))
+            val next_addr = Wire(UInt(ABMatrixRegBankNEntrys.W))
             next_addr := N_Iterator * K_IteratorMax + K_Iterator
             MatrixRegRequestBankAddr.bits.foreach(_ := next_addr)
             
