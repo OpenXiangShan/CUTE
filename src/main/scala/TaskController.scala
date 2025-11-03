@@ -238,7 +238,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     MacroInst_Init.conv_ow_max := 16384.U
     MacroInst_Init.kernel_size := 1.U
     MacroInst_Init.conv_oh_per_add := 0.U
-    MacroInst_Init.conv_ow_per_add := 64.U
+    MacroInst_Init.conv_ow_per_add := Tensor_MN.U
     MacroInst_Init.conv_oh_index := 0.U
     MacroInst_Init.conv_ow_index := 0.U // TODO: make sure this is correct
     val MacroInst_Reg = RegInit(MacroInst_Init)
