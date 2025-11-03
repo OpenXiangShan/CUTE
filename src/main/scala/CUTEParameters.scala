@@ -65,7 +65,34 @@ object CuteParams {
         // Debug = CuteDebugParams.AMLDebugEnable
     )
 
-    def CUTE_8Tops_128SCP = baseParams.copy(
+
+    def CUTE_32Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_M = 256,
+        Tensor_N = 256,
+        Tensor_K = 64,
+        Matrix_M = 16,
+        Matrix_N = 16,
+        ReduceWidthByte = 32,
+        // Debug = CuteDebugParams.AllDebugOn,
+    )
+
+    def CUTE_16Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_M = 128,
+        Tensor_N = 128,
+        Tensor_K = 64,
+        Matrix_M = 8,
+        Matrix_N = 8,
+        ReduceWidthByte = 64,
+        // Debug = CuteDebugParams.AllDebugOn,
+    )
+
+    def CUTE_8Tops = baseParams.copy(
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
@@ -78,17 +105,17 @@ object CuteParams {
         // Debug = CuteDebugParams.AMLDebugEnable
     )
 
-    def CUTE_32Tops_128SCP = baseParams.copy(
+    def CUTE_4Tops = baseParams.copy(
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
-        Tensor_M = 256,
-        Tensor_N = 256,
+        Tensor_M = 64,
+        Tensor_N = 64,
         Tensor_K = 64,
-        Matrix_M = 16,
-        Matrix_N = 16,
-        ReduceWidthByte = 32,
-        Debug = CuteDebugParams.AllDebugOn,
+        Matrix_M = 4,
+        Matrix_N = 4,
+        ReduceWidthByte = 64,
+        // Debug = CuteDebugParams.AMLDebugEnable
     )
 
     def CUTE_2Tops = baseParams.copy(
@@ -101,6 +128,80 @@ object CuteParams {
         Matrix_M = 4,
         Matrix_N = 4,
         ReduceWidthByte = 32,
+        // Debug = CuteDebugParams.AMLDebugEnable
+    )
+
+    def CUTE_1Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_M = 64,
+        Tensor_N = 64,
+        Tensor_K = 64,
+        Matrix_M = 2,
+        Matrix_N = 2,
+        ReduceWidthByte = 64,
+        // Debug = CuteDebugParams.AMLDebugEnable
+    )
+
+    def CUTE_05Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_M = 64,
+        Tensor_N = 64,
+        Tensor_K = 64,
+        Matrix_M = 2,
+        Matrix_N = 2,
+        ReduceWidthByte = 32,
+        // Debug = CuteDebugParams.AMLDebugEnable
+    )
+
+
+    def CUTE_512SCP(params: CuteParams) = params.copy(
+        Tensor_M = 512,
+        Tensor_N = 512,
+        Tensor_K = 64,
+    )
+
+    def CUTE_256SCP(params: CuteParams) = params.copy(
+        Tensor_M = 256,
+        Tensor_N = 256,
+        Tensor_K = 64,
+    )
+
+    def CUTE_128SCP(params: CuteParams) = params.copy(
+        Tensor_M = 128,
+        Tensor_N = 128,
+        Tensor_K = 64,
+    )
+
+    def CUTE_64SCP(params: CuteParams) = params.copy(
+        Tensor_M = 64,
+        Tensor_N = 64,
+        Tensor_K = 64,
+    )
+
+    def CUTE_32Tops_512SCP  = CUTE_512SCP(CUTE_32Tops)
+    def CUTE_16Tops_512SCP  = CUTE_512SCP(CUTE_16Tops)
+    def CUTE_8Tops_512SCP   = CUTE_512SCP(CUTE_8Tops)
+    def CUTE_4Tops_512SCP   = CUTE_512SCP(CUTE_4Tops)
+    def CUTE_16Tops_256SCP  = CUTE_256SCP(CUTE_16Tops)
+    def CUTE_8Tops_256SCP   = CUTE_256SCP(CUTE_8Tops)
+    def CUTE_4Tops_256SCP   = CUTE_256SCP(CUTE_4Tops)
+    def CUTE_2Tops_256SCP   = CUTE_256SCP(CUTE_2Tops)
+    def CUTE_8Tops_128SCP   = CUTE_128SCP(CUTE_8Tops)
+    def CUTE_4Tops_128SCP   = CUTE_128SCP(CUTE_4Tops)
+    def CUTE_2Tops_128SCP   = CUTE_128SCP(CUTE_2Tops)
+    def CUTE_1Tops_128SCP   = CUTE_128SCP(CUTE_1Tops)
+    def CUTE_4Tops_64SCP    =  CUTE_64SCP(CUTE_4Tops)
+    def CUTE_2Tops_64SCP    =  CUTE_64SCP(CUTE_2Tops)
+    def CUTE_1Tops_64SCP    =  CUTE_64SCP(CUTE_1Tops)
+    def CUTE_05Tops_64SCP   =  CUTE_64SCP(CUTE_05Tops)
+
+
+    def CUTE_4Tops_128SCP_debug   = CUTE_4Tops_128SCP.copy(
+        Debug = CuteDebugParams.AllDebugOn
     )
 
     def CUTE_2Tops_debug = baseParams.copy(
@@ -179,7 +280,7 @@ object CuteDebugParams {
   def ComputeDebugeNable = NoDebug.copy(
     // YJPMACDebugEnable = true,
     YJPCMLDebugEnable = true,
-    // YJPDebugEnable = true,
+    YJPDebugEnable = true,
   )
 
   def AllDebugOn = NoDebug.copy(
@@ -268,7 +369,7 @@ case class CuteParams(
 
     val ApplicationMaxTensorSize :Int = 65536, //最大可处理的程序的张量形状，
 
-    val MMUAddrWidth :Int = 64 , //CUTE MMU的地址宽度
+    val MMUAddrWidth :Int = 39 , //CUTE MMU的地址宽度
 
     val LLCSourceMaxNum :Int = 64, //LLC总线上的source最大数量 --> 这个参数和LLC的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必须大于LLC的访存延迟
     val MemorysourceMaxNum :Int = 64, //Memory总线上的source最大数量 --> 这个参数和Memory的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必顶大于Memory的访存延迟
@@ -314,7 +415,7 @@ case class CuteParams(
     require((KernelSizeMax & (KernelSizeMax - 1)) == 0, "KernelSizeMax must be power of 2")
     require((StrideSizeMax & (StrideSizeMax - 1)) == 0, "StrideSizeMax must be power of 2")
     require((ApplicationMaxTensorSize & (ApplicationMaxTensorSize - 1)) == 0, "ApplicationMaxTensorSize must be power of 2")
-    require((MMUAddrWidth & (MMUAddrWidth - 1)) == 0, "MMUAddrWidth must be power of 2" )
+    // require((MMUAddrWidth & (MMUAddrWidth - 1)) == 0, "MMUAddrWidth must be power of 2" )
     require((LLCSourceMaxNum & (LLCSourceMaxNum - 1)) == 0, "LLCSourceMaxNum must be power of 2")
     require((MemorysourceMaxNum & (MemorysourceMaxNum - 1)) == 0, "MemorysourceMaxNum must be power of 2")
     require((Tensor_M & (Tensor_M - 1)) == 0, "Tensor_M must be power of 2")
@@ -381,7 +482,7 @@ case class CuteParams(
     def BScratchpadBankNEntrys = BScratchpadBankSize / BScratchpadEntryByteSize
     def CScratchpadBankNEntrys = CScratchpadBankSize / CScratchpadEntryByteSize
 
-    require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
+    // require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
     require(outsideDataWidthByte <= Tensor_K, "outsideDataWidthByte must be less than or equal to Tensor_K, or a load will exceed the subtensor in micro load")
 
 }
@@ -651,6 +752,7 @@ class ComputeMicroInst()(implicit p: Parameters) extends CuteBundle{
     val DataType_B                          = UInt(ElementDataType.DataTypeBitWidth.W) //矩阵B的数据类型
     val DataType_C                          = UInt(ElementDataType.DataTypeBitWidth.W) //矩阵C的数据类型
     val DataType_D                          = UInt(ElementDataType.DataTypeBitWidth.W) //矩阵D的数据类型
+    val DataType                            = UInt(ElementDataType.DataTypeBitWidth.W)
 
     val Have_Aops                         = Bool()      //是否有AfterOps
     val Is_AfterOps_Tile = Bool()            //是否是AfterOps的Tile
@@ -962,6 +1064,7 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 }
 
 class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
+    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
     val dataType                            = Output(UInt(ElementDataType.DataTypeBitWidth.W))
 }
 
@@ -1179,50 +1282,70 @@ class CUTECounter(implicit p: Parameters) extends CuteBundle{
 }
 
 
-class FReducePEDataType(dataType: UInt){
+class FReducePEDataType(){
 //0:Int8, 1:FP16, 2:BF16, 3:TF32, 4:I8 * UI8, 5:UI8 * I8, 6:UI8 * UI8
-    def AdataByteWidth: Int = dataType match {
-        case ElementDataType.DataTypeI8I8I32 => 1
-        case ElementDataType.DataTypeF16F16F32 => 2
-        case ElementDataType.DataTypeBF16BF16F32 => 2
-        case ElementDataType.DataTypeTF32TF32F32 => 4
-        case ElementDataType.DataTypeI8U8I32 => 1
-        case ElementDataType.DataTypeU8I8I32 => 1
-        case ElementDataType.DataTypeU8U8I32 => 1
-        case _ => 0 //未定义的类型，返回0字节宽度
+    def AdataByteWidth(dataType : UInt) : UInt = { 
+        val dataByteWidth = Wire(UInt(3.W))
+        dataByteWidth := 0.U
+        switch(dataType){
+        is (ElementDataType.DataTypeI8I8I32) { dataByteWidth := 1.U }
+        is (ElementDataType.DataTypeF16F16F32)  { dataByteWidth := 2.U }
+        is (ElementDataType.DataTypeBF16BF16F32) { dataByteWidth := 2.U }
+        is (ElementDataType.DataTypeTF32TF32F32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeI8U8I32) { dataByteWidth := 1.U }
+        is (ElementDataType.DataTypeU8I8I32) { dataByteWidth := 1.U }
+        is (ElementDataType.DataTypeU8U8I32) { dataByteWidth := 1.U }
+        is (ElementDataType.DataTypee4m3F32) { dataByteWidth := 1.U }
+        }
+        dataByteWidth
     }
 
-    def BdataByteWidth: Int = dataType match {
-        case ElementDataType.DataTypeI8I8I32 => 1
-        case ElementDataType.DataTypeF16F16F32 => 2
-        case ElementDataType.DataTypeBF16BF16F32 => 2
-        case ElementDataType.DataTypeTF32TF32F32 => 4
-        case ElementDataType.DataTypeI8U8I32 => 1
-        case ElementDataType.DataTypeU8I8I32 => 1
-        case ElementDataType.DataTypeU8U8I32 => 1
-        case _ => 0 //未定义的类型，返回0字节宽度
+    def BdataByteWidth(dataType : UInt) : UInt = {
+        val dataByteWidth = Wire(UInt(3.W))
+        dataByteWidth := 0.U
+        switch(dataType){
+        is (ElementDataType.DataTypeI8I8I32) { dataByteWidth := 1.U }
+        is (ElementDataType.DataTypeF16F16F32) { dataByteWidth := 2.U }
+        is (ElementDataType.DataTypeBF16BF16F32) { dataByteWidth := 2.U }
+        is (ElementDataType.DataTypeTF32TF32F32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeI8U8I32) { dataByteWidth := 1.U }
+        is (ElementDataType.DataTypeU8I8I32) { dataByteWidth := 1.U }
+        is (ElementDataType.DataTypeU8U8I32) { dataByteWidth := 1.U }
+        is (ElementDataType.DataTypee4m3F32) { dataByteWidth := 1.U }
+        }
+        dataByteWidth
     }
 
-    def CdataByteWidth: Int = dataType match {
-        case ElementDataType.DataTypeI8I8I32 => 4
-        case ElementDataType.DataTypeF16F16F32 => 4
-        case ElementDataType.DataTypeBF16BF16F32 => 4
-        case ElementDataType.DataTypeTF32TF32F32 => 4
-        case ElementDataType.DataTypeI8U8I32 => 4
-        case ElementDataType.DataTypeU8I8I32 => 4
-        case ElementDataType.DataTypeU8U8I32 => 4
-        case _ => 0 //未定义的类型，返回0字节宽度
+    def CdataByteWidth(dataType : UInt) : UInt = {
+        val dataByteWidth = Wire(UInt(3.W))
+        dataByteWidth := 0.U
+        switch(dataType){
+        is (ElementDataType.DataTypeI8I8I32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeF16F16F32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeBF16BF16F32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeTF32TF32F32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeI8U8I32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeU8I8I32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeU8U8I32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypee4m3F32) { dataByteWidth := 4.U }
+        }
+        dataByteWidth
     }
 
-    def DdataByteWidth: Int = dataType match {
-        case ElementDataType.DataTypeI8I8I32 => 4
-        case ElementDataType.DataTypeF16F16F32 => 4
-        case ElementDataType.DataTypeBF16BF16F32 => 4
-        case ElementDataType.DataTypeTF32TF32F32 => 4
-        case ElementDataType.DataTypeI8U8I32 => 4
-        case ElementDataType.DataTypeU8I8I32 => 4
-        case ElementDataType.DataTypeU8U8I32 => 4
-        case _ => 0 //未定义的类型，返回0字节宽度
+    def DdataByteWidth(dataType : UInt) : UInt = {
+        val dataByteWidth = Wire(UInt(3.W))
+        dataByteWidth := 0.U
+        switch(dataType){
+        is (ElementDataType.DataTypeI8I8I32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeF16F16F32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeBF16BF16F32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeTF32TF32F32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeI8U8I32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeU8I8I32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypeU8U8I32) { dataByteWidth := 4.U }
+        is (ElementDataType.DataTypee4m3F32) { dataByteWidth := 4.U }
+        }
+        dataByteWidth
     }
 }
 
@@ -1241,7 +1364,7 @@ case object  ElementDataType extends Field[UInt]{
     val DataTypeI8U8I32     = 4.U(DataTypeBitWidth.W)     //I8 * UI8 * I32
     val DataTypeU8I8I32     = 5.U(DataTypeBitWidth.W)     //U8 * I8 * I32
     val DataTypeU8U8I32     = 6.U(DataTypeBitWidth.W)     //U8 * U8 * I32
-
+    val DataTypee4m3F32     = 7.U(DataTypeBitWidth.W)     //E4M3 * E4M3 * FP32
 }
 
 //工作任务的样板类

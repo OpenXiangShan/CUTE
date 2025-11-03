@@ -23,6 +23,13 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     //实例化ReducePE
     val Matrix = VecInit.tabulate(Matrix_M, Matrix_N){(x,y) => Module(new FReducePE()).io}
 
+    // 配置数据类型
+    val DataType = Reg(UInt((ElementDataType.DataTypeBitWidth).W))
+
+    when (io.ConfigInfo.MicroTaskValid) {
+        DataType := io.ConfigInfo.dataType
+    }
+
     //直接驱动ReducePE的输入
     //接下来给每个ReducePE的输入进行赋值
     //broadcaster的逻辑
@@ -34,7 +41,7 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
             Matrix(i)(j).BVector.valid      := io.VectorB.valid
             Matrix(i)(j).CAdd.bits          := io.MatirxC.bits((i*Matrix_N+j+1)*ResultWidth-1,(i*Matrix_N+j)*ResultWidth)
             Matrix(i)(j).CAdd.valid         := io.MatirxC.valid
-            Matrix(i)(j).opcode             := io.ConfigInfo.dataType
+            Matrix(i)(j).opcode             := DataType
             when(io.VectorA.valid && io.VectorB.valid && io.MatirxC.valid){
                 // printf("[MatrixTE]: Matrix(%d)(%d) ReduceA:%x ReduceB:%x AddC:%x\n",i.U,j.U,Matrix(i)(j).ReduceA.bits,Matrix(i)(j).ReduceB.bits,Matrix(i)(j).AddC.bits)
             }
