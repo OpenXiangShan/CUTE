@@ -238,7 +238,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     MacroInst_Init.conv_ow_max := 16384.U
     MacroInst_Init.kernel_size := 1.U
     MacroInst_Init.conv_oh_per_add := 0.U
-    MacroInst_Init.conv_ow_per_add := 64.U
+    MacroInst_Init.conv_ow_per_add := 0.U
     MacroInst_Init.conv_oh_index := 0.U
     MacroInst_Init.conv_ow_index := 0.U // TODO: make sure this is correct
     val MacroInst_Reg = RegInit(MacroInst_Init)
@@ -567,6 +567,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     val Decode_B_MReg_ID = RegInit(0.U(2.W))
     val Decode_C_MReg_ID = RegInit(0.U(2.W))
 
+    val a_m_offset = WireInit(0.U(64.W))
+    val a_k_offset = WireInit(0.U(64.W))
+
     //解码宏指令,宏指令在被解码时，不响应微指令的发射和新的宏指令
     when(MarcoInst_Can_Decode)
     {
@@ -771,7 +774,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
             Load_MicroInst.IsTranspose := Decoding_MacroInst.transpose_result
 
-            Load_MicroInst.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := Decoding_MacroInst.ApplicationTensor_A_BaseVaddr + Current_Tile_Tensor_K_Iter*(ReduceWidthByte*ReduceGroupSize).U  //TODO:初始地址需要改！因为当前的K移动了！
+            a_m_offset := Current_Tile_M_Iter * Decoding_MacroInst.ApplicationTensor_A_Stride
+            a_k_offset := (Current_Tile_Tensor_K_Iter * (ReduceWidthByte * ReduceGroupSize).U(MMUAddrWidth.W))(MMUAddrWidth-1, 0)
+            Load_MicroInst.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := Decoding_MacroInst.ApplicationTensor_A_BaseVaddr + a_m_offset + a_k_offset  //TODO:初始地址需要改！因为当前的K移动了！
             Load_MicroInst.ApplicationTensor_A.ApplicationTensor_A_Stride_M := Decoding_MacroInst.ApplicationTensor_A_Stride
             Load_MicroInst.ApplicationTensor_A.Convolution_OH_DIM_Length := Decoding_MacroInst.conv_oh_max
             Load_MicroInst.ApplicationTensor_A.Convolution_OW_DIM_Length := Decoding_MacroInst.conv_ow_max
