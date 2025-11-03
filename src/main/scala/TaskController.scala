@@ -253,6 +253,7 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 {
                     matmul_inst.conv_oh_max := 1.U
                     matmul_inst.conv_ow_max := MacroInst_Reg.asTypeOf(new MacroInst).Application_M
+                    matmul_inst.conv_ow_per_add := Tensor_M.U
                 }
                 MacroInst_FIFO(MacroInst_FIFO_Head) := Mux(is_matmul_inst, matmul_inst.asUInt, MacroInst_Reg)
                 MacroInst_FIFO_Valid(MacroInst_FIFO_Head) := true.B

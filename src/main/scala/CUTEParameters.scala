@@ -65,7 +65,34 @@ object CuteParams {
         // Debug = CuteDebugParams.AMLDebugEnable
     )
 
-    def CUTE_8Tops_128SCP = baseParams.copy(
+
+    def CUTE_32Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_M = 256,
+        Tensor_N = 256,
+        Tensor_K = 64,
+        Matrix_M = 16,
+        Matrix_N = 16,
+        ReduceWidthByte = 32,
+        // Debug = CuteDebugParams.AllDebugOn,
+    )
+
+    def CUTE_16Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_M = 128,
+        Tensor_N = 128,
+        Tensor_K = 64,
+        Matrix_M = 8,
+        Matrix_N = 8,
+        ReduceWidthByte = 64,
+        // Debug = CuteDebugParams.AllDebugOn,
+    )
+
+    def CUTE_8Tops = baseParams.copy(
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
@@ -78,17 +105,17 @@ object CuteParams {
         // Debug = CuteDebugParams.AMLDebugEnable
     )
 
-    def CUTE_32Tops_128SCP = baseParams.copy(
+    def CUTE_4Tops = baseParams.copy(
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
-        Tensor_M = 256,
-        Tensor_N = 256,
+        Tensor_M = 64,
+        Tensor_N = 64,
         Tensor_K = 64,
-        Matrix_M = 16,
-        Matrix_N = 16,
-        ReduceWidthByte = 32,
-        Debug = CuteDebugParams.AllDebugOn,
+        Matrix_M = 4,
+        Matrix_N = 4,
+        ReduceWidthByte = 64,
+        // Debug = CuteDebugParams.AMLDebugEnable
     )
 
     def CUTE_2Tops = baseParams.copy(
@@ -101,30 +128,80 @@ object CuteParams {
         Matrix_M = 4,
         Matrix_N = 4,
         ReduceWidthByte = 32,
+        // Debug = CuteDebugParams.AMLDebugEnable
     )
 
-    def CUTE_4Tops = baseParams.copy(
+    def CUTE_1Tops = baseParams.copy(
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
         Tensor_M = 64,
         Tensor_N = 64,
         Tensor_K = 64,
-        Matrix_M = 4,
-        Matrix_N = 4,
+        Matrix_M = 2,
+        Matrix_N = 2,
         ReduceWidthByte = 64,
+        // Debug = CuteDebugParams.AMLDebugEnable
     )
 
-    def CUTE_4Tops_128SCP = baseParams.copy(
+    def CUTE_05Tops = baseParams.copy(
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
+        Tensor_M = 64,
+        Tensor_N = 64,
+        Tensor_K = 64,
+        Matrix_M = 2,
+        Matrix_N = 2,
+        ReduceWidthByte = 32,
+        // Debug = CuteDebugParams.AMLDebugEnable
+    )
+
+
+    def CUTE_512SCP(params: CuteParams) = params.copy(
+        Tensor_M = 512,
+        Tensor_N = 512,
+        Tensor_K = 64,
+    )
+
+    def CUTE_256SCP(params: CuteParams) = params.copy(
+        Tensor_M = 256,
+        Tensor_N = 256,
+        Tensor_K = 64,
+    )
+
+    def CUTE_128SCP(params: CuteParams) = params.copy(
         Tensor_M = 128,
         Tensor_N = 128,
         Tensor_K = 64,
-        Matrix_M = 4,
-        Matrix_N = 4,
-        ReduceWidthByte = 64,
+    )
+
+    def CUTE_64SCP(params: CuteParams) = params.copy(
+        Tensor_M = 64,
+        Tensor_N = 64,
+        Tensor_K = 64,
+    )
+
+    def CUTE_32Tops_512SCP  = CUTE_512SCP(CUTE_32Tops)
+    def CUTE_16Tops_512SCP  = CUTE_512SCP(CUTE_16Tops)
+    def CUTE_8Tops_512SCP   = CUTE_512SCP(CUTE_8Tops)
+    def CUTE_4Tops_512SCP   = CUTE_512SCP(CUTE_4Tops)
+    def CUTE_16Tops_256SCP  = CUTE_256SCP(CUTE_16Tops)
+    def CUTE_8Tops_256SCP   = CUTE_256SCP(CUTE_8Tops)
+    def CUTE_4Tops_256SCP   = CUTE_256SCP(CUTE_4Tops)
+    def CUTE_2Tops_256SCP   = CUTE_256SCP(CUTE_2Tops)
+    def CUTE_8Tops_128SCP   = CUTE_128SCP(CUTE_8Tops)
+    def CUTE_4Tops_128SCP   = CUTE_128SCP(CUTE_4Tops)
+    def CUTE_2Tops_128SCP   = CUTE_128SCP(CUTE_2Tops)
+    def CUTE_1Tops_128SCP   = CUTE_128SCP(CUTE_1Tops)
+    def CUTE_4Tops_64SCP    =  CUTE_64SCP(CUTE_4Tops)
+    def CUTE_2Tops_64SCP    =  CUTE_64SCP(CUTE_2Tops)
+    def CUTE_1Tops_64SCP    =  CUTE_64SCP(CUTE_1Tops)
+    def CUTE_05Tops_64SCP   =  CUTE_64SCP(CUTE_05Tops)
+
+
+    def CUTE_4Tops_128SCP_debug   = CUTE_4Tops_128SCP.copy(
+        Debug = CuteDebugParams.AllDebugOn
     )
 
     def CUTE_2Tops_debug = baseParams.copy(
@@ -292,7 +369,7 @@ case class CuteParams(
 
     val ApplicationMaxTensorSize :Int = 65536, //最大可处理的程序的张量形状，
 
-    val MMUAddrWidth :Int = 64 , //CUTE MMU的地址宽度
+    val MMUAddrWidth :Int = 39 , //CUTE MMU的地址宽度
 
     val LLCSourceMaxNum :Int = 64, //LLC总线上的source最大数量 --> 这个参数和LLC的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必须大于LLC的访存延迟
     val MemorysourceMaxNum :Int = 64, //Memory总线上的source最大数量 --> 这个参数和Memory的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必顶大于Memory的访存延迟
@@ -338,7 +415,7 @@ case class CuteParams(
     require((KernelSizeMax & (KernelSizeMax - 1)) == 0, "KernelSizeMax must be power of 2")
     require((StrideSizeMax & (StrideSizeMax - 1)) == 0, "StrideSizeMax must be power of 2")
     require((ApplicationMaxTensorSize & (ApplicationMaxTensorSize - 1)) == 0, "ApplicationMaxTensorSize must be power of 2")
-    require((MMUAddrWidth & (MMUAddrWidth - 1)) == 0, "MMUAddrWidth must be power of 2" )
+    // require((MMUAddrWidth & (MMUAddrWidth - 1)) == 0, "MMUAddrWidth must be power of 2" )
     require((LLCSourceMaxNum & (LLCSourceMaxNum - 1)) == 0, "LLCSourceMaxNum must be power of 2")
     require((MemorysourceMaxNum & (MemorysourceMaxNum - 1)) == 0, "MemorysourceMaxNum must be power of 2")
     require((Tensor_M & (Tensor_M - 1)) == 0, "Tensor_M must be power of 2")
