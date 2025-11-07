@@ -4,13 +4,13 @@ import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
 
-// 寄存器状态枚举
+// 寄存器状态枚举（简化版：3 状态）
 object RegState {
     val Width = 2
     val Idle = 0.U(Width.W)      // 空闲，可以被分配
     val Writing = 1.U(Width.W)   // 正在被写入（Load或Compute写C）
-    val Ready = 2.U(Width.W)     // 写入完成，可以被读取
-    val Reading = 3.U(Width.W)   // 正在被读取（可以有多个读者）
+    val Ready = 2.U(Width.W)     // 写入完成，可以被读取或释放
+    // 删除 Reading 状态：单发射场景下，Reading 和 Ready 合并
 }
 
 // 单个寄存器的记分牌条目
@@ -140,26 +140,23 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
     def checkLoadDependency(a_reg: UInt, b_reg: UInt, c_reg: UInt, 
                            has_a: Bool, has_b: Bool, has_c: Bool): Bool = {
         val a_ok = !has_a || (ab_scoreboard(a_reg).state === RegState.Idle)
-        val b_ok = !has_b || (ab_scoreboard(b_reg + 2.U).state === RegState.Idle)
+        val b_ok = !has_b || (ab_scoreboard(b_reg).state === RegState.Idle)
         val c_ok = !has_c || (c_scoreboard(c_reg).state === RegState.Idle)
         a_ok && b_ok && c_ok
     }
     
     // Compute指令依赖检查：
-    // - 读A/B/C：必须是Ready或Reading状态
-    // - 写C：如果C正在被读，需要等待；如果C是Idle或Ready(没有其他写者)，可以写
+    // - 读A/B/C：必须是Ready状态（Load已完成）
+    // - 写C：C必须没有其他写者（避免WAW冲突）
     def checkComputeDependency(a_reg: UInt, b_reg: UInt, c_reg: UInt): Bool = {
         // A必须Ready（Load已完成）
-        val a_ready = (ab_scoreboard(a_reg).state === RegState.Ready) || 
-                     (ab_scoreboard(a_reg).state === RegState.Reading)
+        val a_ready = ab_scoreboard(a_reg).state === RegState.Ready
         
         // B必须Ready（Load已完成）
-        val b_ready = (ab_scoreboard(b_reg + 2.U).state === RegState.Ready) || 
-                     (ab_scoreboard(b_reg + 2.U).state === RegState.Reading)
+        val b_ready = ab_scoreboard(b_reg).state === RegState.Ready
         
         // C必须Ready（可以读）
-        val c_read_ready = (c_scoreboard(c_reg).state === RegState.Ready) || 
-                          (c_scoreboard(c_reg).state === RegState.Reading)
+        val c_read_ready = c_scoreboard(c_reg).state === RegState.Ready
         
         // C必须没有其他写者（避免WAW冲突）
         val c_write_ok = !c_scoreboard(c_reg).writer_valid
@@ -167,10 +164,20 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
         a_ready && b_ready && c_read_ready && c_write_ok
     }
     
-    // Store指令依赖检查：C必须Ready（Compute已完成写入）
+    // Store指令依赖检查：
+    // - C必须Ready（Load已完成）
+    // - C必须没有写者（Compute已完成写入）
+    // - C不能被当前周期的Compute正在发射（前递检查，解决同周期冲突）
+    // 注意：这是过渡期的临时方案，用数据依赖模拟程序顺序依赖
+    //       步骤4完成全局指令队列后，将通过程序顺序正确处理
     def checkStoreDependency(c_reg: UInt): Bool = {
-        (c_scoreboard(c_reg).state === RegState.Ready) || 
-        (c_scoreboard(c_reg).state === RegState.Reading)
+        val c_ready = c_scoreboard(c_reg).state === RegState.Ready
+        val c_no_writer = !c_scoreboard(c_reg).writer_valid
+        
+        // 前递检查：如果当前周期有Compute正在发射到这个寄存器，阻塞Store
+        val no_compute_issuing_to_c = !(io.update.compute_issue && io.update.compute_issue_c_reg === c_reg)
+        
+        c_ready && c_no_writer && no_compute_issuing_to_c
     }
     
     // ===========================================
@@ -216,7 +223,7 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
         }
         
         when(io.update.load_alloc_has_b) {
-            val b_reg = io.update.load_alloc_b_reg + 2.U
+            val b_reg = io.update.load_alloc_b_reg
             ab_scoreboard(b_reg).state := RegState.Writing
             ab_scoreboard(b_reg).writer_valid := true.B
             ab_scoreboard(b_reg).writer_fifo_idx := io.update.load_alloc_fifo_idx
@@ -245,7 +252,7 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
     
     // Load完成B：标记为Ready
     when(io.update.load_finish_b) {
-        val b_reg = io.update.load_finish_b_reg + 2.U
+        val b_reg = io.update.load_finish_b_reg
         ab_scoreboard(b_reg).state := RegState.Ready
         ab_scoreboard(b_reg).writer_valid := false.B
     }
@@ -257,29 +264,24 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
         c_scoreboard(c_reg).writer_valid := false.B
     }
     
-    // Compute发射：增加A/B/C的读者计数，设置C的写者
+    // Compute发射：增加A/B的读者计数，设置C的写者
+    // 注意：C 的读写是原子的（MMA: C = A×B + C），不单独跟踪 C 的读者
     when(io.update.compute_issue) {
         val a_reg = io.update.compute_issue_a_reg
-        val b_reg = io.update.compute_issue_b_reg + 2.U
+        val b_reg = io.update.compute_issue_b_reg
         val c_reg = io.update.compute_issue_c_reg
         val fifo_idx = io.update.compute_issue_fifo_idx
         
-        // A寄存器增加读者
-        ab_scoreboard(a_reg).state := RegState.Reading
+        // A寄存器增加读者（保持 Ready 状态）
         ab_scoreboard(a_reg).reader_count := ab_scoreboard(a_reg).reader_count + 1.U
         ab_scoreboard(a_reg).reader_mask := ab_scoreboard(a_reg).reader_mask | (1.U << fifo_idx)
         
-        // B寄存器增加读者
-        ab_scoreboard(b_reg).state := RegState.Reading
+        // B寄存器增加读者（保持 Ready 状态）
         ab_scoreboard(b_reg).reader_count := ab_scoreboard(b_reg).reader_count + 1.U
         ab_scoreboard(b_reg).reader_mask := ab_scoreboard(b_reg).reader_mask | (1.U << fifo_idx)
         
-        // C寄存器增加读者（读老值）
-        c_scoreboard(c_reg).state := RegState.Reading
-        c_scoreboard(c_reg).reader_count := c_scoreboard(c_reg).reader_count + 1.U
-        c_scoreboard(c_reg).reader_mask := c_scoreboard(c_reg).reader_mask | (1.U << fifo_idx)
-        
-        // C寄存器设置写者（写新值）
+        // C寄存器：只设置写者，不增加读者
+        // （因为 MMA 的读写是原子的，不需要分开跟踪）
         c_scoreboard(c_reg).writer_valid := true.B
         c_scoreboard(c_reg).writer_fifo_idx := fifo_idx
         c_scoreboard(c_reg).writer_type := 1.U  // Compute
@@ -289,40 +291,38 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
     when(io.update.compute_read_finish_a) {
         val a_reg = io.update.compute_read_finish_a_reg
         ab_scoreboard(a_reg).reader_count := ab_scoreboard(a_reg).reader_count - 1.U
-        // 如果没有读者了，恢复为Ready状态
+        // 如果没有读者了，变为 Idle 状态（可释放）
         when(ab_scoreboard(a_reg).reader_count === 1.U) {
-            ab_scoreboard(a_reg).state := RegState.Ready
+            ab_scoreboard(a_reg).state := RegState.Idle
             ab_scoreboard(a_reg).reader_mask := 0.U
         }
     }
     
     // Compute完成读B：减少读者计数
     when(io.update.compute_read_finish_b) {
-        val b_reg = io.update.compute_read_finish_b_reg + 2.U
+        val b_reg = io.update.compute_read_finish_b_reg
         ab_scoreboard(b_reg).reader_count := ab_scoreboard(b_reg).reader_count - 1.U
-        // 如果没有读者了，恢复为Ready状态
+        // 如果没有读者了，变为 Idle 状态（可释放）
         when(ab_scoreboard(b_reg).reader_count === 1.U) {
-            ab_scoreboard(b_reg).state := RegState.Ready
+            ab_scoreboard(b_reg).state := RegState.Idle
             ab_scoreboard(b_reg).reader_mask := 0.U
         }
     }
     
-    // Compute完成写C：标记为Ready，清除写者
+    // Compute完成写C：清除写者，恢复 Ready 状态
     when(io.update.compute_write_finish_c) {
         val c_reg = io.update.compute_write_finish_c_reg
         c_scoreboard(c_reg).writer_valid := false.B
-        // 如果还有读者，保持Reading状态；否则变为Ready
-        when(c_scoreboard(c_reg).reader_count === 0.U) {
-            c_scoreboard(c_reg).state := RegState.Ready
-        }
+        // 因为 Compute 不增加 C 的 reader_count，所以这里直接变为 Ready
+        // （除非有 Store 正在读，但那是后续的事件）
+        c_scoreboard(c_reg).state := RegState.Ready
     }
     
-    // Store发射：增加C的读者计数
+    // Store发射：增加C的读者计数（保持 Ready 状态）
     when(io.update.store_issue) {
         val c_reg = io.update.store_issue_c_reg
         val fifo_idx = io.update.store_issue_fifo_idx
         
-        c_scoreboard(c_reg).state := RegState.Reading
         c_scoreboard(c_reg).reader_count := c_scoreboard(c_reg).reader_count + 1.U
         c_scoreboard(c_reg).reader_mask := c_scoreboard(c_reg).reader_mask | (1.U << fifo_idx)
     }
@@ -332,14 +332,13 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
         val c_reg = io.update.store_finish_c_reg
         c_scoreboard(c_reg).reader_count := c_scoreboard(c_reg).reader_count - 1.U
         
-        // 如果没有读者了，释放寄存器
+        // 如果没有读者了，释放寄存器到 Idle 状态
         when(c_scoreboard(c_reg).reader_count === 1.U) {
             c_scoreboard(c_reg).state := RegState.Idle
             c_scoreboard(c_reg).reader_mask := 0.U
             c_scoreboard(c_reg).writer_valid := false.B
-        }.otherwise {
-            c_scoreboard(c_reg).state := RegState.Reading
         }
+        // 如果还有读者，保持 Ready 状态（为多发射准备）
     }
     
     // ===========================================
@@ -361,7 +360,7 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
     // 调试打印（可选）
     // ===========================================
     if (YJPDebugEnable) {
-        printf("[Scoreboard] AB States: [%d,%d,%d,%d], C States: [%d,%d]\n",
+        printf("[Scoreboard] AB States: [%d,%d,%d,%d], C States: [%d,%d] (0=Idle,1=Writing,2=Ready)\n",
             ab_scoreboard(0).state, ab_scoreboard(1).state,
             ab_scoreboard(2).state, ab_scoreboard(3).state,
             c_scoreboard(0).state, c_scoreboard(1).state

@@ -486,6 +486,196 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     // 合并A和B的寄存器堆状态：AB_MReg_Free[0-1]对应A矩阵，AB_MReg_Free[2-3]对应B矩阵
     val AB_MReg_Free = RegInit(VecInit(Seq.fill(4)(true.B)))
     val C_MReg_Free = RegInit(VecInit(Seq.fill(2)(true.B)))
+    
+    // ====================================================================
+    // Scoreboard 实例
+    // 【步骤3/3：Load、Compute、Store 全部切换到 Scoreboard】
+    // - Load发射：查询scoreboard.io.query.load（已完成 - 步骤3.3）
+    // - Compute发射：查询scoreboard.io.query.compute（已完成 - 步骤3.4）
+    // - Store发射：查询scoreboard.io.query.store（已完成 - 步骤3.5）
+    // - 过渡期：
+    //   * 仍保留 MReg_Free 更新，用于验证 Scoreboard 正确性
+    //   * 后续可以移除所有 MReg_Free 相关代码（步骤3.6）
+    // ====================================================================
+    val scoreboard = Module(new Scoreboard)
+    
+    // 查询接口默认值（将在Load/Compute/Store发射时动态设置）
+    scoreboard.io.query.load.valid := false.B
+    scoreboard.io.query.load.bits := DontCare
+    scoreboard.io.query.compute.valid := false.B
+    scoreboard.io.query.compute.bits := DontCare
+    scoreboard.io.query.store.valid := false.B
+    scoreboard.io.query.store.bits := DontCare
+    
+    // Update 接口默认值
+    scoreboard.io.update.load_allocate := false.B
+    scoreboard.io.update.load_alloc_a_reg := 0.U
+    scoreboard.io.update.load_alloc_b_reg := 0.U
+    scoreboard.io.update.load_alloc_c_reg := 0.U
+    scoreboard.io.update.load_alloc_has_a := false.B
+    scoreboard.io.update.load_alloc_has_b := false.B
+    scoreboard.io.update.load_alloc_has_c := false.B
+    scoreboard.io.update.load_alloc_fifo_idx := 0.U
+    
+    scoreboard.io.update.load_finish_a := false.B
+    scoreboard.io.update.load_finish_a_reg := 0.U
+    scoreboard.io.update.load_finish_b := false.B
+    scoreboard.io.update.load_finish_b_reg := 0.U
+    scoreboard.io.update.load_finish_c := false.B
+    scoreboard.io.update.load_finish_c_reg := 0.U
+    
+    scoreboard.io.update.compute_issue := false.B
+    scoreboard.io.update.compute_issue_a_reg := 0.U
+    scoreboard.io.update.compute_issue_b_reg := 0.U
+    scoreboard.io.update.compute_issue_c_reg := 0.U
+    scoreboard.io.update.compute_issue_fifo_idx := 0.U
+    
+    scoreboard.io.update.compute_read_finish_a := false.B
+    scoreboard.io.update.compute_read_finish_a_reg := 0.U
+    scoreboard.io.update.compute_read_finish_b := false.B
+    scoreboard.io.update.compute_read_finish_b_reg := 0.U
+    
+    scoreboard.io.update.compute_write_finish_c := false.B
+    scoreboard.io.update.compute_write_finish_c_reg := 0.U
+    
+    scoreboard.io.update.store_issue := false.B
+    scoreboard.io.update.store_issue_c_reg := 0.U
+    scoreboard.io.update.store_issue_fifo_idx := 0.U
+    
+    scoreboard.io.update.store_finish := false.B
+    scoreboard.io.update.store_finish_c_reg := 0.U
+    
+    // ====================================================================
+    // Scoreboard 验证：对比 Scoreboard 状态与 MReg_Free 的一致性
+    // ====================================================================
+    
+    // 验证 AB 寄存器堆状态的一致性
+    for (i <- 0 until 4) {
+        // Assertion 1: 如果 MReg_Free 为 false，Scoreboard 状态应该不是 Idle
+        assert(
+            !(!AB_MReg_Free(i) && (scoreboard.io.debug.ab_reg_states(i) === RegState.Idle)),
+            cf"[Scoreboard Check] AB_Reg[$i] is allocated (Free=false) but Scoreboard shows Idle!"
+        )
+        
+        // Assertion 2: 如果 MReg_Free 为 true，Scoreboard 状态应该是 Idle
+        assert(
+            !(AB_MReg_Free(i) && (scoreboard.io.debug.ab_reg_states(i) =/= RegState.Idle)),
+            cf"[Scoreboard Check] AB_Reg[$i] is free (Free=true) but Scoreboard shows busy (state=${scoreboard.io.debug.ab_reg_states(i)})!"
+        )
+    }
+    
+    // 验证 C 寄存器堆状态的一致性
+    for (i <- 0 until 2) {
+        // Assertion 1: 如果 MReg_Free 为 false，Scoreboard 状态应该不是 Idle
+        assert(
+            !(!C_MReg_Free(i) && (scoreboard.io.debug.c_reg_states(i) === RegState.Idle)),
+            cf"[Scoreboard Check] C_Reg[$i] is allocated (Free=false) but Scoreboard shows Idle!"
+        )
+        
+        // Assertion 2: 如果 MReg_Free 为 true，Scoreboard 状态应该是 Idle
+        assert(
+            !(C_MReg_Free(i) && (scoreboard.io.debug.c_reg_states(i) =/= RegState.Idle)),
+            cf"[Scoreboard Check] C_Reg[$i] is free (Free=true) but Scoreboard shows busy (state=${scoreboard.io.debug.c_reg_states(i)})!"
+        )
+    }
+    
+    // 调试输出（可选）：定期打印 Scoreboard 状态
+    if (YJPDebugEnable) {
+        when(io.DebugTimeStampe % 100.U === 0.U && !MacroInst_FIFO_Empty) {
+            printf("[Scoreboard Shadow @%d] AB_Free: [%d,%d,%d,%d], AB_States: [%d,%d,%d,%d]\n",
+                io.DebugTimeStampe,
+                AB_MReg_Free(0), AB_MReg_Free(1), AB_MReg_Free(2), AB_MReg_Free(3),
+                scoreboard.io.debug.ab_reg_states(0), scoreboard.io.debug.ab_reg_states(1),
+                scoreboard.io.debug.ab_reg_states(2), scoreboard.io.debug.ab_reg_states(3)
+            )
+            printf("[Scoreboard Shadow @%d] C_Free: [%d,%d], C_States: [%d,%d]\n",
+                io.DebugTimeStampe,
+                C_MReg_Free(0), C_MReg_Free(1),
+                scoreboard.io.debug.c_reg_states(0), scoreboard.io.debug.c_reg_states(1)
+            )
+            printf("[Scoreboard Shadow @%d] AB_Readers: [%d,%d,%d,%d], C_Readers: [%d,%d]\n",
+                io.DebugTimeStampe,
+                scoreboard.io.debug.ab_reg_reader_counts(0), scoreboard.io.debug.ab_reg_reader_counts(1),
+                scoreboard.io.debug.ab_reg_reader_counts(2), scoreboard.io.debug.ab_reg_reader_counts(3),
+                scoreboard.io.debug.c_reg_reader_counts(0), scoreboard.io.debug.c_reg_reader_counts(1)
+            )
+        }
+        
+        // 状态变化时立即打印
+        when(scoreboard.io.update.load_allocate) {
+            printf("[Scoreboard Update @%d] Load Allocate: A%d=%d, B%d=%d, C%d=%d (FIFO_idx=%d)\n",
+                io.DebugTimeStampe,
+                scoreboard.io.update.load_alloc_a_reg, scoreboard.io.update.load_alloc_has_a,
+                scoreboard.io.update.load_alloc_b_reg, scoreboard.io.update.load_alloc_has_b,
+                scoreboard.io.update.load_alloc_c_reg, scoreboard.io.update.load_alloc_has_c,
+                scoreboard.io.update.load_alloc_fifo_idx
+            )
+        }
+        
+        // 【步骤1】Load查询日志
+        when(scoreboard.io.query.load.valid) {
+            printf("[Scoreboard Query @%d] 【步骤1】Load Query: A%d, B%d, C%d (need: A=%d,B=%d,C=%d) -> ready=%d\n",
+                io.DebugTimeStampe,
+                scoreboard.io.query.load.bits.a_reg,
+                scoreboard.io.query.load.bits.b_reg,
+                scoreboard.io.query.load.bits.c_reg,
+                scoreboard.io.query.load.bits.has_a,
+                scoreboard.io.query.load.bits.has_b,
+                scoreboard.io.query.load.bits.has_c,
+                scoreboard.io.query.load.ready
+            )
+        }
+        
+        // 【步骤2】Compute查询日志
+        when(scoreboard.io.query.compute.valid) {
+            printf("[Scoreboard Query @%d] 【步骤2】Compute Query: A%d, B%d, C%d -> ready=%d\n",
+                io.DebugTimeStampe,
+                scoreboard.io.query.compute.bits.a_reg,
+                scoreboard.io.query.compute.bits.b_reg,
+                scoreboard.io.query.compute.bits.c_reg,
+                scoreboard.io.query.compute.ready
+            )
+        }
+        
+        when(scoreboard.io.update.compute_issue) {
+            printf("[Scoreboard Update @%d] 【步骤2】Compute Issue: A%d, B%d, C%d (FIFO_idx=%d)\n",
+                io.DebugTimeStampe,
+                scoreboard.io.update.compute_issue_a_reg,
+                scoreboard.io.update.compute_issue_b_reg,
+                scoreboard.io.update.compute_issue_c_reg,
+                scoreboard.io.update.compute_issue_fifo_idx
+            )
+        }
+        
+        when(scoreboard.io.update.compute_read_finish_a) {
+            printf("[Scoreboard Update @%d] 【步骤2】Compute Read A Finish: A%d (释放供后续Load使用)\n",
+                io.DebugTimeStampe,
+                scoreboard.io.update.compute_read_finish_a_reg
+            )
+        }
+        
+        when(scoreboard.io.update.compute_read_finish_b) {
+            printf("[Scoreboard Update @%d] 【步骤2】Compute Read B Finish: B%d (释放供后续Load使用)\n",
+                io.DebugTimeStampe,
+                scoreboard.io.update.compute_read_finish_b_reg
+            )
+        }
+        
+        when(scoreboard.io.update.compute_write_finish_c) {
+            printf("[Scoreboard Update @%d] 【步骤2】Compute Write C Finish: C%d (可供Store读取)\n",
+                io.DebugTimeStampe,
+                scoreboard.io.update.compute_write_finish_c_reg
+            )
+        }
+        
+        when(scoreboard.io.update.store_issue) {
+            printf("[Scoreboard Update @%d] Store Issue: C%d (FIFO_idx=%d)\n",
+                io.DebugTimeStampe,
+                scoreboard.io.update.store_issue_c_reg,
+                scoreboard.io.update.store_issue_fifo_idx
+            )
+        }
+    }
 
     //微指令队列
     val Load_MicroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U.asTypeOf(new LoadMicroInst()))))
@@ -880,31 +1070,6 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         }
     }
 
-    // 微指令队列
-    // val Load_MicroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U(new LoadMicroInst().getWidth.W))))
-    // val Store_MicroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U(new StoreMicroInst().getWidth.W))))
-    // val Compute_MicroInst_FIFO = RegInit(VecInit(Seq.fill(4)(0.U(new ComputeMicroInst().getWidth.W))))
-
-    // val Load_MicroInst_FIFO_Head = RegInit(0.U(2.W))
-    // val Load_MicroInst_FIFO_Tail = RegInit(0.U(2.W))
-    // val Load_MicroInst_FIFO_Empty = Load_MicroInst_FIFO_Head === Load_MicroInst_FIFO_Tail
-    // val Load_MicroInst_FIFO_Full = WrapInc(Load_MicroInst_FIFO_Head, 4) === Load_MicroInst_FIFO_Tail
-
-    // val Store_MicroInst_FIFO_Head = RegInit(0.U(2.W))
-    // val Store_MicroInst_FIFO_Tail = RegInit(0.U(2.W))
-    // val Store_MicroInst_FIFO_Empty = Store_MicroInst_FIFO_Head === Store_MicroInst_FIFO_Tail
-    // val Store_MicroInst_FIFO_Full = WrapInc(Store_MicroInst_FIFO_Head, 4) === Store_MicroInst_FIFO_Tail
-
-    // val Compute_MicroInst_FIFO_Head = RegInit(0.U(2.W))
-    // val Compute_MicroInst_FIFO_Tail = RegInit(0.U(2.W))
-    // val Compute_MicroInst_FIFO_Empty = Compute_MicroInst_FIFO_Head === Compute_MicroInst_FIFO_Tail
-    // val Compute_MicroInst_FIFO_Full = WrapInc(Compute_MicroInst_FIFO_Head, 4) === Compute_MicroInst_FIFO_Tail
-
-    // //微指令执行状态队列
-    // val Load_MicroInst_Resource_Info_FIFO = RegInit(VecInit(Seq.fill(4)(0.U(new LoadMicroInst_Resource_Info().getWidth.W))))
-    // val Store_MicroInst_Resource_Info_FIFO = RegInit(VecInit(Seq.fill(4)(0.U(new StoreMicroInst_Resource_Info().getWidth.W))))
-    // val Compute_MicroInst_Resource_Info_FIFO = RegInit(VecInit(Seq.fill(4)(0.U(new ComputeMicroInst_Resource_Info().getWidth.W))))
-
     val Current_ADC_MReg_ID = RegInit(0.U(2.W))
     val Current_BDC_MReg_ID = RegInit(0.U(2.W))
     val Current_CDC_MReg_ID = RegInit(0.U(2.W))
@@ -936,16 +1101,31 @@ class TaskController(implicit p: Parameters) extends CuteModule{
     {
         val Load_MicroInst = Load_MicroInst_FIFO(Load_MicroInst_FINISH_Head) //取出的Load指令
 
-        //发射这条指令，填AML、BML、CML的config输入
-        val Can_Issue_AML_Micro_Inst = io.AML_MicroTask_Config.MicroTaskReady && AB_MReg_Free(Load_MicroInst.A_MRegID) //A矩阵使用AB_MReg_Free[0-1]
-        val Can_Issue_BML_Micro_Inst = io.BML_MicroTask_Config.MicroTaskReady && AB_MReg_Free(Load_MicroInst.B_MRegID) //B矩阵使用AB_MReg_Free[2-3]
-        val Can_Issue_CML_Micro_Inst = io.CML_MicroTask_Config.MicroTaskReady && C_MReg_Free(Load_MicroInst.C_MRegID) //C矩阵使用C_MReg_Free[0-1]
-
         val Need_Issue_AML_Micro_Inst = Load_MicroInst.Is_A_Work
         val Need_Issue_BML_Micro_Inst = Load_MicroInst.Is_B_Work
         val Need_Issue_CML_Micro_Inst = Load_MicroInst.Is_C_Work
 
-        val Can_Issue_Load_Micro_Inst = (Can_Issue_AML_Micro_Inst | !Need_Issue_AML_Micro_Inst) && (Can_Issue_BML_Micro_Inst | !Need_Issue_BML_Micro_Inst) && (Can_Issue_CML_Micro_Inst | !Need_Issue_CML_Micro_Inst)
+        // ====================================================================
+        // 【步骤1：Load切换到Scoreboard】查询Scoreboard获取寄存器可用性
+        // ====================================================================
+        scoreboard.io.query.load.valid := true.B
+        scoreboard.io.query.load.bits.a_reg := Load_MicroInst.A_MRegID
+        scoreboard.io.query.load.bits.b_reg := Load_MicroInst.B_MRegID
+        scoreboard.io.query.load.bits.c_reg := Load_MicroInst.C_MRegID
+        scoreboard.io.query.load.bits.has_a := Need_Issue_AML_Micro_Inst
+        scoreboard.io.query.load.bits.has_b := Need_Issue_BML_Micro_Inst
+        scoreboard.io.query.load.bits.has_c := Need_Issue_CML_Micro_Inst
+        
+        // Scoreboard检查：需要的寄存器是否都空闲
+        val Scoreboard_Can_Issue_Load = scoreboard.io.query.load.ready
+        
+        // 硬件资源检查：AML/BML/CML是否ready
+        val Hardware_Ready = io.AML_MicroTask_Config.MicroTaskReady && 
+                             io.BML_MicroTask_Config.MicroTaskReady && 
+                             io.CML_MicroTask_Config.MicroTaskReady
+        
+        // 综合判断：Scoreboard允许 && 硬件资源ready
+        val Can_Issue_Load_Micro_Inst = Scoreboard_Can_Issue_Load && Hardware_Ready
         //即need又can，才能发射这条Load微指令
         // if (YJPDebugEnable)
         //     {
@@ -977,6 +1157,9 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             io.CML_MicroTask_Config.LoadTaskInfo := Load_MicroInst.CLoadTaskInfo
             io.CML_MicroTask_Config.Is_Transpose := Load_MicroInst.IsTranspose
 
+            // ====================================================================
+            // 【步骤1过渡期】继续更新MReg_Free（因为Compute/Store还在用旧机制）
+            // ====================================================================
             AB_MReg_Free(Load_MicroInst.A_MRegID)  := false.B  // A矩阵占用AB[0-1]
             Current_AML_MReg_ID := Load_MicroInst.A_MRegID
             AB_MReg_Free(Load_MicroInst.B_MRegID)  := false.B  // B矩阵占用AB[2-3]
@@ -986,6 +1169,16 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 C_MReg_Free(Load_MicroInst.C_MRegID) := false.B
                 Current_CML_MReg_ID := Load_MicroInst.C_MRegID
             }
+            
+            // Scoreboard Update: Load 分配
+            scoreboard.io.update.load_allocate := true.B
+            scoreboard.io.update.load_alloc_a_reg := Load_MicroInst.A_MRegID
+            scoreboard.io.update.load_alloc_b_reg := Load_MicroInst.B_MRegID
+            scoreboard.io.update.load_alloc_c_reg := Load_MicroInst.C_MRegID
+            scoreboard.io.update.load_alloc_has_a := Need_Issue_AML_Micro_Inst
+            scoreboard.io.update.load_alloc_has_b := Need_Issue_BML_Micro_Inst
+            scoreboard.io.update.load_alloc_has_c := Need_Issue_CML_Micro_Inst
+            scoreboard.io.update.load_alloc_fifo_idx := Load_MicroInst_FINISH_Head
 
             io.AML_MicroTask_Config.MicroTaskValid := Need_Issue_AML_Micro_Inst
             io.BML_MicroTask_Config.MicroTaskValid := Need_Issue_BML_Micro_Inst
@@ -1014,6 +1207,10 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 load_afinish.entry.Load_MicroInst := Load_MicroInst
                 load_afinish.entry.FIFO_Index := Load_MicroInst_FINISH_Head
                 load_afinish.en := true.B
+                
+                // Scoreboard Update: Load A 完成
+                scoreboard.io.update.load_finish_a := true.B
+                scoreboard.io.update.load_finish_a_reg := Load_MicroInst.A_MRegID
             }
             when(Load_Micro_Inst_Wait_B_Finish && io.BML_MicroTask_Config.MicroTaskEndValid)
             {
@@ -1022,6 +1219,10 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 load_bfinish.entry.Load_MicroInst := Load_MicroInst
                 load_bfinish.entry.FIFO_Index := Load_MicroInst_FINISH_Head
                 load_bfinish.en := true.B
+                
+                // Scoreboard Update: Load B 完成
+                scoreboard.io.update.load_finish_b := true.B
+                scoreboard.io.update.load_finish_b_reg := Load_MicroInst.B_MRegID
             }
             when(Load_Micro_Inst_Wait_C_Finish && io.CML_MicroTask_Config.MicroTaskEndValid)
             {
@@ -1030,6 +1231,10 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 load_cfinish.entry.Load_MicroInst := Load_MicroInst
                 load_cfinish.entry.FIFO_Index := Load_MicroInst_FINISH_Head
                 load_cfinish.en := true.B
+                
+                // Scoreboard Update: Load C 完成
+                scoreboard.io.update.load_finish_c := true.B
+                scoreboard.io.update.load_finish_c_reg := Load_MicroInst.C_MRegID
             }
             when(!Load_Micro_Inst_Wait_A_Finish && !Load_Micro_Inst_Wait_B_Finish && !Load_Micro_Inst_Wait_C_Finish)
             {
@@ -1072,6 +1277,23 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         val Compute_MicroInst = Compute_MicroInst_FIFO(Compute_MicroInst_FINISH_HEAD) //取出的Compute指令
         val Compute_MicroInst_Resource_Info = Compute_MicroInst_Resource_Info_FIFO(Compute_MicroInst_FINISH_HEAD).asTypeOf(new ComputeMicroInst_Resource_Info)
 
+        // ====================================================================
+        // 步骤 3.4: 使用 Scoreboard 进行 Compute 依赖检查
+        // - Scoreboard 检查 A/B/C 寄存器是否 Ready（替代 Dependent_Load_Finish_Ready_Go）
+        // - Scoreboard 的 checkComputeDependency 已包含 Load 完成的检查
+        // ====================================================================
+        
+        // Scoreboard 查询：检查 A/B/C 寄存器依赖
+        scoreboard.io.query.compute.valid := true.B
+        scoreboard.io.query.compute.bits.a_reg := Compute_MicroInst_Resource_Info.A_MRegID
+        scoreboard.io.query.compute.bits.b_reg := Compute_MicroInst_Resource_Info.B_MRegID
+        scoreboard.io.query.compute.bits.c_reg := Compute_MicroInst_Resource_Info.C_MRegID
+        
+        // Scoreboard 返回的 ready 信号表示依赖检查通过
+        // 包含了：A/B/C 都是 Ready 状态（Load 已完成），且 C 没有其他写者
+        val Scoreboard_Dependency_Ready = scoreboard.io.query.compute.ready
+        
+        // 保留旧的 Dependent_Load_Finish_Ready_Go 用于过渡期验证（可在后续移除）
         val Dependent_Load_Finish_Ready_Go = Load_MicroInst_FINISH_Ready_GO(Compute_MicroInst_Resource_Info.Load_Micro_Inst_FIFO_Index)
 
         val Can_Issue_ADC_Micro_Inst = io.ADC_MicroTask_Config.MicroTaskReady //缺少AMReg的空闲状态,保证同时任务被发射
@@ -1079,9 +1301,37 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         val Can_Issue_CDC_Micro_Inst = io.CDC_MicroTask_Config.MicroTaskReady //缺少CMReg的空闲状态,保证同时任务被发射
         val Can_Issue_AOP_Micro_Inst = true.B
 
-        val Can_Issue_Compute_Micro_Inst = Can_Issue_ADC_Micro_Inst && Can_Issue_BDC_Micro_Inst && Can_Issue_CDC_Micro_Inst && Dependent_Load_Finish_Ready_Go && Can_Issue_AOP_Micro_Inst
+        // 使用 Scoreboard 依赖检查替代 Dependent_Load_Finish_Ready_Go
+        val Can_Issue_Compute_Micro_Inst = Can_Issue_ADC_Micro_Inst && Can_Issue_BDC_Micro_Inst && Can_Issue_CDC_Micro_Inst && Scoreboard_Dependency_Ready && Can_Issue_AOP_Micro_Inst
 
         io.ctrlCounter.computeInstCanIssue := Can_Issue_Compute_Micro_Inst && Compute_Micro_Inst_Issue_State_Reg === issue_state_idle
+        
+        // ====================================================================
+        // 过渡期验证：确保 Scoreboard 和旧机制的一致性
+        // ====================================================================
+        // 验证1: Scoreboard_Dependency_Ready 应该包含 Dependent_Load_Finish_Ready_Go 的语义
+        // Scoreboard 检查 A/B/C 寄存器 Ready，等价于 Load 已完成
+        when(Scoreboard_Dependency_Ready && !Dependent_Load_Finish_Ready_Go) {
+            printf("[WARNING @%d] Scoreboard allows Compute issue but Dependent_Load not ready! " +
+                   "A_MRegID=%d, B_MRegID=%d, C_MRegID=%d, Load_FIFO_idx=%d\n",
+                io.DebugTimeStampe,
+                Compute_MicroInst_Resource_Info.A_MRegID,
+                Compute_MicroInst_Resource_Info.B_MRegID,
+                Compute_MicroInst_Resource_Info.C_MRegID,
+                Compute_MicroInst_Resource_Info.Load_Micro_Inst_FIFO_Index
+            )
+        }
+        
+        when(!Scoreboard_Dependency_Ready && Dependent_Load_Finish_Ready_Go) {
+            printf("[INFO @%d] Scoreboard blocks Compute issue but old mechanism allows. " +
+                   "This is expected if there's a WAW hazard on C. " +
+                   "A_MRegID=%d, B_MRegID=%d, C_MRegID=%d\n",
+                io.DebugTimeStampe,
+                Compute_MicroInst_Resource_Info.A_MRegID,
+                Compute_MicroInst_Resource_Info.B_MRegID,
+                Compute_MicroInst_Resource_Info.C_MRegID
+            )
+        }
 
         // if (YJPDebugEnable)
         // {
@@ -1145,6 +1395,13 @@ class TaskController(implicit p: Parameters) extends CuteModule{
 
             Load_MicroInst_FINISH_Ready_Commit(Compute_MicroInst_Resource_Info.Load_Micro_Inst_FIFO_Index) := true.B//标记这条Load指令已经可以被提交了
             
+            // Scoreboard Update: Compute 发射
+            scoreboard.io.update.compute_issue := true.B
+            scoreboard.io.update.compute_issue_a_reg := Compute_MicroInst_Resource_Info.A_MRegID
+            scoreboard.io.update.compute_issue_b_reg := Compute_MicroInst_Resource_Info.B_MRegID
+            scoreboard.io.update.compute_issue_c_reg := Compute_MicroInst_Resource_Info.C_MRegID
+            scoreboard.io.update.compute_issue_fifo_idx := Compute_MicroInst_FINISH_HEAD
+            
             comp_issue.entry.Compute_MicroInst := Compute_MicroInst
             comp_issue.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
             comp_issue.en := true.B
@@ -1162,6 +1419,10 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 comp_afinish.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
                 comp_afinish.en := true.B
                 AB_MReg_Free(Current_ADC_MReg_ID) := true.B  // A矩阵释放AB[0-1]
+                
+                // Scoreboard Update: Compute 读取 A 完成
+                scoreboard.io.update.compute_read_finish_a := true.B
+                scoreboard.io.update.compute_read_finish_a_reg := Current_ADC_MReg_ID
             }
             when(Compute_Micro_Inst_Wait_B_Finish && io.BDC_MicroTask_Config.MicroTaskEndValid)
             {
@@ -1170,7 +1431,11 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 comp_bfinish.entry.Compute_MicroInst := Compute_MicroInst
                 comp_bfinish.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
                 comp_bfinish.en := true.B
-                AB_MReg_Free(Current_BDC_MReg_ID + 2.U) := true.B  // B矩阵释放AB[2-3]
+                AB_MReg_Free(Current_BDC_MReg_ID) := true.B  // B矩阵释放AB[2-3]
+                
+                // Scoreboard Update: Compute 读取 B 完成
+                scoreboard.io.update.compute_read_finish_b := true.B
+                scoreboard.io.update.compute_read_finish_b_reg := Current_BDC_MReg_ID
             }
             when(Compute_Micro_Inst_Wait_C_Finish && io.CDC_MicroTask_Config.MicroTaskEndValid)
             {
@@ -1179,6 +1444,10 @@ class TaskController(implicit p: Parameters) extends CuteModule{
                 comp_cfinish.entry.Compute_MicroInst := Compute_MicroInst
                 comp_cfinish.entry.FIFO_Index := Compute_MicroInst_FINISH_HEAD
                 comp_cfinish.en := true.B
+                
+                // Scoreboard Update: Compute 写入 C 完成
+                scoreboard.io.update.compute_write_finish_c := true.B
+                scoreboard.io.update.compute_write_finish_c_reg := Compute_MicroInst_Resource_Info.C_MRegID
             }
             when(Compute_Micro_Inst_Wait_Aop_Finish && io.AOP_MicroTask_Config.MicroTaskEndValid)
             {
@@ -1234,11 +1503,53 @@ class TaskController(implicit p: Parameters) extends CuteModule{
         val Store_MicroInst = Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
         val Store_MicroInst_Resource_Info = Store_MicroInst_Resource_Info_FIFO(Store_MicroInst_FIFO_Tail).asTypeOf(new StoreMicroInst_Resource_Info)
 
+        // ====================================================================
+        // 步骤 3.5: 使用 Scoreboard 进行 Store 依赖检查（临时方案）
+        // - Scoreboard 检查 C 是否 Ready 且没有写者（writer_valid = false）
+        // - 用数据依赖（writer_valid）模拟程序顺序依赖
+        // 
+        // 注意：这是过渡期临时方案，因为当前架构缺少全局指令队列
+        //       Compute 和 Store 虽来自同一宏指令，但被拆分到不同 FIFO
+        //       Scoreboard 无法感知程序顺序，只能通过 writer_valid 间接保证顺序
+        //       步骤4将建立全局指令队列，正确处理程序顺序依赖
+        // ====================================================================
+        
+        // Scoreboard 查询：检查 C 寄存器依赖
+        scoreboard.io.query.store.valid := true.B
+        scoreboard.io.query.store.bits.c_reg := Store_MicroInst_Resource_Info.C_MRegID
+        
+        // Scoreboard 返回的 ready 信号表示：
+        // 1. C Ready（Load 已完成）
+        // 2. C 无写者（Compute 已完成写入）
+        val Scoreboard_Dependency_Ready = scoreboard.io.query.store.ready
+        
+        // 保留旧的 Dependent_Compute_Finish_Ready_Go 用于过渡期验证
         val Dependent_Compute_Finish_Ready_Go = Compute_MicroInst_FINISH_Ready_GO(Store_MicroInst_Resource_Info.Compute_Micro_Inst_FIFO_Index)
 
         val Can_Issue_CML_Micro_Inst = io.CML_MicroTask_Config.MicroTaskReady //缺少DMReg的空闲状态,保证同时任务被发射
 
-        val Can_Issue_Store_Micro_Inst = Can_Issue_CML_Micro_Inst && Dependent_Compute_Finish_Ready_Go
+        // 使用 Scoreboard 依赖检查（临时方案）
+        val Can_Issue_Store_Micro_Inst = Can_Issue_CML_Micro_Inst && Scoreboard_Dependency_Ready
+        
+        // ====================================================================
+        // 过渡期验证：检查 Scoreboard 和旧机制的一致性
+        // ====================================================================
+        when(Scoreboard_Dependency_Ready && !Dependent_Compute_Finish_Ready_Go) {
+            printf("[WARNING @%d] Store temporary solution: Scoreboard allows but Compute not finished! " +
+                   "C_MRegID=%d, Compute_FIFO_idx=%d\n",
+                io.DebugTimeStampe,
+                Store_MicroInst_Resource_Info.C_MRegID,
+                Store_MicroInst_Resource_Info.Compute_Micro_Inst_FIFO_Index
+            )
+        }
+        
+        when(!Scoreboard_Dependency_Ready && Dependent_Compute_Finish_Ready_Go) {
+            printf("[INFO @%d] Store temporary solution: Scoreboard blocks but old mechanism allows. " +
+                   "C_MRegID=%d (Compute is writing)\n",
+                io.DebugTimeStampe,
+                Store_MicroInst_Resource_Info.C_MRegID
+            )
+        }
 
         // if (YJPDebugEnable)
         // {
@@ -1266,6 +1577,11 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             Store_Micro_Inst_Issue_State_Reg := issue_state_issue
             Compute_MicroInst_FINISH_Ready_Commit(Store_MicroInst_Resource_Info.Compute_Micro_Inst_FIFO_Index) := true.B//标记这条Compute指令已经可以被提交了
             
+            // Scoreboard Update: Store 发射
+            scoreboard.io.update.store_issue := true.B
+            scoreboard.io.update.store_issue_c_reg := Store_MicroInst_Resource_Info.C_MRegID
+            scoreboard.io.update.store_issue_fifo_idx := Store_MicroInst_FIFO_Tail
+            
             store_issue.entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
             store_issue.entry.FIFO_Index := Store_MicroInst_FIFO_Tail
             store_issue.en := true.B
@@ -1276,6 +1592,10 @@ class TaskController(implicit p: Parameters) extends CuteModule{
             {
                 Store_Micro_Inst_Wait_C_Finish := false.B
                 C_MReg_Free(Store_MicroInst_Resource_Info.C_MRegID) := true.B
+                
+                // Scoreboard Update: Store 完成
+                scoreboard.io.update.store_finish := true.B
+                scoreboard.io.update.store_finish_c_reg := Store_MicroInst_Resource_Info.C_MRegID
                 
                 store_cfinish.entry.Store_MicroInst := Store_MicroInst_FIFO(Store_MicroInst_FIFO_Tail)
                 store_cfinish.entry.FIFO_Index := Store_MicroInst_FIFO_Tail
