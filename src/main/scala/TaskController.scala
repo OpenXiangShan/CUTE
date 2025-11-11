@@ -8,8 +8,6 @@ import utility.ChiselDB
 
 class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val ygjkctrl = Flipped(new YGJKControl)
-  val instfifo_head_id = Output(UInt(MarcoInstFIFODepthBitSize.W))
-  val instfifo_tail_id = Output(UInt(MarcoInstFIFODepthBitSize.W))
   val instfifo_release = Output(Bool())
   val ADC_MicroTask_Config = new ADCMicroTaskConfigIO
   val BDC_MicroTask_Config = new BDCMicroTaskConfigIO
@@ -21,7 +19,6 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val AOP_MicroTask_Config = new AfterOpsMicroTaskConfigIO
   val MReg_CtrlInfo = new MRegControlInfo
   val DebugTimeStampe = Input(UInt(32.W))
-  val ctrlCounter = Output(new CTRLCounter)
 }
 
 abstract class BaseTaskController(implicit p: Parameters) extends CuteModule {
@@ -49,21 +46,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   dontTouch(io)
 
-  io.instfifo_head_id := 0.U
-  io.instfifo_tail_id := 0.U
   io.instfifo_release := false.B
   io.ygjkctrl.mrelease.valid := false.B
   io.ygjkctrl.mrelease.bits := 0.U.asTypeOf(new MreleaseIO)
-  
-  io.ygjkctrl.acc_running := false.B    // TODO: remove me
-  io.ygjkctrl.InstFIFO_Finish := 0.U    // TODO: remove me
-  io.ygjkctrl.InstFIFO_Full := false.B  // TODO: remove me
-  io.ygjkctrl.InstFIFO_Info := 0.U      // TODO: remove me
 
-  val ctrlCounter = WireDefault(0.U.asTypeOf(new CTRLCounter))
   val mRegCtrlInfo = WireDefault(0.U.asTypeOf(new MRegControlInfo))
 
-  io.ctrlCounter := ctrlCounter
   io.MReg_CtrlInfo := mRegCtrlInfo
 
   // 默认输出赋值
@@ -219,8 +207,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private val computeReadAFinishEventEn = WireInit(false.B)
   private val computeReadBFinishEvent = WireInit(0.U.asTypeOf(new ComputeEventEntry))
   private val computeReadBFinishEventEn = WireInit(false.B)
-  private val computeReadCFinishEvent = WireInit(0.U.asTypeOf(new ComputeEventEntry))
-  private val computeReadCFinishEventEn = WireInit(false.B)
+  private val computeWriteCFinishEvent = WireInit(0.U.asTypeOf(new ComputeEventEntry))
+  private val computeWriteCFinishEventEn = WireInit(false.B)
 
   private val storeIssueEvent = WireInit(0.U.asTypeOf(new StoreEventEntry))
   private val storeIssueEventEn = WireInit(false.B)
@@ -229,14 +217,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   private val releaseIssueEvent = WireInit(0.U.asTypeOf(new ReleaseEventEntry))
   private val releaseIssueEventEn = WireInit(false.B)
-
-  // Scoreboard查询/更新默认值
-  scoreboard.io.query.load.valid := false.B
-  scoreboard.io.query.load.bits := 0.U.asTypeOf(new LoadQueryReq)
-  scoreboard.io.query.compute.valid := false.B
-  scoreboard.io.query.compute.bits := 0.U.asTypeOf(new ComputeQueryReq)
-  scoreboard.io.query.store.valid := false.B
-  scoreboard.io.query.store.bits := 0.U.asTypeOf(new StoreQueryReq)
 
   scoreboard.io.update.load_allocate := false.B
   scoreboard.io.update.load_alloc_a_reg := 0.U
@@ -421,17 +401,17 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     scoreboard.io.update.compute_write_finish_c := true.B
     scoreboard.io.update.compute_write_finish_c_reg := pendingComputeCReg
     pendingComputeC := false.B
-    computeReadCFinishEvent.eventType := 3.U
-    computeReadCFinishEvent.aReg := pendingComputeAReg
-    computeReadCFinishEvent.bReg := pendingComputeBReg
-    computeReadCFinishEvent.cReg := pendingComputeCReg
-    computeReadCFinishEvent.fifoIdx := pendingComputeCFifoIdx
-    computeReadCFinishEvent.mtilem := pendingComputeM
-    computeReadCFinishEvent.mtilen := pendingComputeN
-    computeReadCFinishEvent.mtilek := pendingComputeK
-    computeReadCFinishEvent.isMma := pendingComputeIsMma
-    computeReadCFinishEvent.isFp := pendingComputeIsFp
-    computeReadCFinishEventEn := true.B
+    computeWriteCFinishEvent.eventType := 3.U
+    computeWriteCFinishEvent.aReg := pendingComputeAReg
+    computeWriteCFinishEvent.bReg := pendingComputeBReg
+    computeWriteCFinishEvent.cReg := pendingComputeCReg
+    computeWriteCFinishEvent.fifoIdx := pendingComputeCFifoIdx
+    computeWriteCFinishEvent.mtilem := pendingComputeM
+    computeWriteCFinishEvent.mtilen := pendingComputeN
+    computeWriteCFinishEvent.mtilek := pendingComputeK
+    computeWriteCFinishEvent.isMma := pendingComputeIsMma
+    computeWriteCFinishEvent.isFp := pendingComputeIsFp
+    computeWriteCFinishEventEn := true.B
   }
 
   // 解码后的指令FIFO
@@ -505,37 +485,62 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val isLoad = isLsu && headEntry.writeValid(0)
   val isStore = isLsu && !headEntry.writeValid(0) && headEntry.readValid(0)
 
-  val loadQuery = WireInit(0.U.asTypeOf(new LoadQueryReq))
-  when(isLoad) {
-    loadQuery.a_reg := lsuInfo.ms(1, 0)
-    loadQuery.b_reg := lsuInfo.ms(1, 0)
-    loadQuery.c_reg := lsuInfo.ms(1, 0)
-    loadQuery.has_a := lsuInfo.isA
-    loadQuery.has_b := lsuInfo.isB
-    loadQuery.has_c := lsuInfo.isC || lsuInfo.isacc
+  val scoreboardReq = WireInit(0.U.asTypeOf(new QueryReq))
+  val scoreboardReqValid = WireInit(false.B)
+  when(headValid) {
+    when(isLoad) {
+      scoreboardReqValid := true.B
+      val fuType = MuxCase(ScoreboardFuType.AML, Seq(
+        (lsuInfo.isacc || lsuInfo.isC) -> ScoreboardFuType.CML,
+        lsuInfo.isA -> ScoreboardFuType.AML,
+        lsuInfo.isB -> ScoreboardFuType.BML
+      ))
+      scoreboardReq.fuType := fuType
+      scoreboardReq.dest.valid := true.B
+      scoreboardReq.dest.bits.is_acc := lsuInfo.isacc
+      scoreboardReq.dest.bits.regIdx := lsuInfo.ms(ScoreboardConsts.RegIdxWidth - 1, 0)
+    }.elsewhen(isMma) {
+      scoreboardReqValid := true.B
+      scoreboardReq.fuType := ScoreboardFuType.Compute
+      scoreboardReq.dest.valid := true.B
+      scoreboardReq.dest.bits.is_acc := true.B
+      scoreboardReq.dest.bits.regIdx := mmaInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
+      scoreboardReq.src1.valid := true.B
+      scoreboardReq.src1.bits.is_acc := false.B
+      scoreboardReq.src1.bits.regIdx := mmaInfo.ms1(ScoreboardConsts.RegIdxWidth - 1, 0)
+      scoreboardReq.src2.valid := true.B
+      scoreboardReq.src2.bits.is_acc := false.B
+      scoreboardReq.src2.bits.regIdx := mmaInfo.ms2(ScoreboardConsts.RegIdxWidth - 1, 0)
+      scoreboardReq.src3.valid := true.B
+      scoreboardReq.src3.bits.is_acc := true.B
+      scoreboardReq.src3.bits.regIdx := mmaInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
+    }.elsewhen(isArith) {
+      scoreboardReqValid := true.B
+      scoreboardReq.fuType := ScoreboardFuType.Compute
+      scoreboardReq.dest.valid := true.B
+      val arithDestIsAcc = arithInfo.opType === "b110_111_1_00".U
+      scoreboardReq.dest.bits.is_acc := arithDestIsAcc
+      scoreboardReq.dest.bits.regIdx := arithInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
+      when(arithDestIsAcc) {
+        scoreboardReq.src3.valid := true.B
+        scoreboardReq.src3.bits.is_acc := true.B
+        scoreboardReq.src3.bits.regIdx := arithInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
+      }.otherwise {
+        scoreboardReq.src1.valid := true.B
+        scoreboardReq.src1.bits.is_acc := false.B
+        scoreboardReq.src1.bits.regIdx := arithInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
+      }
+    }.elsewhen(isStore) {
+      scoreboardReqValid := true.B
+      scoreboardReq.fuType := ScoreboardFuType.CML
+      scoreboardReq.src1.valid := true.B
+      scoreboardReq.src1.bits.is_acc := lsuInfo.isacc
+      scoreboardReq.src1.bits.regIdx := lsuInfo.ms(ScoreboardConsts.RegIdxWidth - 1, 0)
+    }
   }
-  scoreboard.io.query.load.valid := headValid && isLoad
-  scoreboard.io.query.load.bits := loadQuery
 
-  val computeQuery = WireInit(0.U.asTypeOf(new ComputeQueryReq))
-  when(isMma) {
-    computeQuery.a_reg := mmaInfo.ms1(1, 0)
-    computeQuery.b_reg := mmaInfo.ms2(1, 0)
-    computeQuery.c_reg := mmaInfo.md(1, 0)
-  }.elsewhen(isArith) {
-    computeQuery.a_reg := arithInfo.md(1, 0)
-    computeQuery.b_reg := arithInfo.md(1, 0)
-    computeQuery.c_reg := arithInfo.md(1, 0)
-  }
-  scoreboard.io.query.compute.valid := headValid && (isMma || isArith)
-  scoreboard.io.query.compute.bits := computeQuery
-
-  val storeQuery = WireInit(0.U.asTypeOf(new StoreQueryReq))
-  when(isStore) {
-    storeQuery.c_reg := lsuInfo.ms(1, 0)
-  }
-  scoreboard.io.query.store.valid := headValid && isStore
-  scoreboard.io.query.store.bits := storeQuery
+  scoreboard.io.query.req.valid := scoreboardReqValid
+  scoreboard.io.query.req.bits := scoreboardReq
 
   val computeUnitsReady = io.ADC_MicroTask_Config.MicroTaskReady &&
     io.BDC_MicroTask_Config.MicroTaskReady &&
@@ -550,13 +555,15 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     (!needB || io.BML_MicroTask_Config.MicroTaskReady) &&
     (!needC || io.CML_MicroTask_Config.MicroTaskReady)
 
-  val storeReadersEmpty = scoreboard.io.debug.c_reg_reader_counts.map(_ === 0.U).reduce(_ && _)
-  val releaseReady = !pendingStore && storeReadersEmpty
+  // val storeReadersEmpty = scoreboard.io.debug.c_reg_reader_counts.map(_ === 0.U).reduce(_ && _)
+  val releaseReady = !pendingStore // && storeReadersEmpty
+
+  val scoreboardReqReady = !scoreboardReqValid || scoreboard.io.query.req.ready
 
   val headReady = MuxCase(true.B, Seq(
-    (isLoad) -> (scoreboard.io.query.load.ready && loadUnitsReady),
-    (isStore) -> (scoreboard.io.query.store.ready && storeUnitsReady),
-    (isMma || isArith) -> (scoreboard.io.query.compute.ready && computeUnitsReady),
+    (isLoad) -> (scoreboardReqReady && loadUnitsReady),
+    (isStore) -> (scoreboardReqReady && storeUnitsReady),
+    (isMma || isArith) -> (scoreboardReqReady && computeUnitsReady),
     (isRelease) -> releaseReady
   ))
 
@@ -567,14 +574,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val issueStore = issueFire && isStore
   val issueCompute = issueFire && (isMma || isArith)
   val issueRelease = issueFire && isRelease
-
-  ctrlCounter.InstQueueEmpty := !headValid
-  ctrlCounter.computeInstQueueEmpty := !issueCompute
-  ctrlCounter.computeInstCanIssue := issueCompute
-  ctrlCounter.ALoad := issueLoad && needA
-  ctrlCounter.BLoad := issueLoad && needB
-  ctrlCounter.CLoad := issueLoad && needC
-  ctrlCounter.DStore := issueStore
 
   when(issueLoad) {
     val regIdx = lsuInfo.ms(1, 0)
@@ -834,7 +833,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   computeEventTable.log(computeIssueEvent, computeIssueEventEn, "ComputeIssue", clock, reset)
   computeEventTable.log(computeReadAFinishEvent, computeReadAFinishEventEn, "ComputeReadAFinish", clock, reset)
   computeEventTable.log(computeReadBFinishEvent, computeReadBFinishEventEn, "ComputeReadBFinish", clock, reset)
-  computeEventTable.log(computeReadCFinishEvent, computeReadCFinishEventEn, "ComputeWriteCFinish", clock, reset)
+  computeEventTable.log(computeWriteCFinishEvent, computeWriteCFinishEventEn, "ComputeWriteCFinish", clock, reset)
 
   storeEventTable.log(storeIssueEvent, storeIssueEventEn, "StoreIssue", clock, reset)
   storeEventTable.log(storeFinishEvent, storeFinishEventEn, "StoreFinish", clock, reset)

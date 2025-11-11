@@ -294,7 +294,6 @@ case class CuteParams(
     val VecTaskDataBufferDepth :Int = 4, //VecTask的指令缓冲深度掩盖从VecInterface到VPU的数据传输延迟即可
 
     val EnableAsyncGemm: Boolean = true, //是否使用异步GEMM
-    val UseNewTaskController: Boolean = true, //是否使用新版任务调度器
 
     val Debug : CuteDebugParams = CuteDebugParams.NoDebug, //调试参数
     val MMUParams: CuteMMUParams = CuteMMUParams.baseParams, //MMU的参数
@@ -469,7 +468,6 @@ trait CUTEImplParameters{
     val VecTaskInstBufferDepth = cuteParams.VecTaskInstBufferDepth
     val VecTaskInstBufferSize = cuteParams.VecTaskInstBufferSize
     val VecTaskDataBufferDepth = cuteParams.VecTaskDataBufferDepth
-    val UseNewTaskController = cuteParams.UseNewTaskController
     val ReduceGroupSize = cuteParams.ReduceGroupSize
 
     val cmptreelayers = FPEparams.cmptreelayers //FPE的计算树层数

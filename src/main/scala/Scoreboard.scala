@@ -4,68 +4,75 @@ import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
 
-// 寄存器状态枚举（简化版：3 状态）
-object RegState {
-    val Width = 2
-    val Idle = 0.U(Width.W)      // 空闲，可以被分配
-    val Writing = 1.U(Width.W)   // 正在被写入（Load或Compute写C）
-    val Ready = 2.U(Width.W)     // 写入完成，可以被读取或释放
-    // 删除 Reading 状态：单发射场景下，Reading 和 Ready 合并
+object ScoreboardConsts {
+  val NumAbRegs = 4
+  val NumCRegs = 2
+  val NumAMLUnits = 1
+  val NumBMLUnits = 1
+  val NumCMLUnits = 1
+  val NumComputeUnits = 1
+  val TotalUnits = NumAMLUnits + NumBMLUnits + NumCMLUnits + NumComputeUnits
+
+  val TileRegIdxWidth = math.max(1, log2Ceil(NumAbRegs))
+  val AccRegIdxWidth = math.max(1, log2Ceil(NumCRegs))
+  val RegIdxWidth = TileRegIdxWidth max AccRegIdxWidth
 }
 
-// 单个寄存器的记分牌条目
-class RegScoreboardEntry(implicit p: Parameters) extends CuteBundle {
-    val state = UInt(RegState.Width.W)           // 寄存器当前状态
-    val writer_valid = Bool()                     // 是否有写者
-    val writer_fifo_idx = UInt(2.W)              // 写入者的FIFO索引
-    val writer_type = UInt(2.W)                   // 写入者类型: 0=Load, 1=Compute, 2=Store
-    val reader_count = UInt(3.W)                  // 当前读者数量（最多支持7个并发读者）
-    val reader_mask = UInt(4.W)                   // 读者掩码（用于跟踪是哪些微指令在读）
+class RegIdx(implicit p: Parameters) extends CuteBundle {
+  val is_acc = Bool()
+  val regIdx = UInt(ScoreboardConsts.RegIdxWidth.W)
 }
 
-// Load微指令查询请求
-class LoadQueryReq(implicit p: Parameters) extends CuteBundle {
-    val a_reg = UInt(2.W)
-    val b_reg = UInt(2.W)
-    val c_reg = UInt(2.W)
-    val has_a = Bool()
-    val has_b = Bool()
-    val has_c = Bool()
+class RegResultStatus(fuIdWidth: Int) extends Bundle {
+  val busy = Bool()
+  val fuId = UInt(fuIdWidth.W)
 }
 
-// Compute微指令查询请求
-class ComputeQueryReq(implicit p: Parameters) extends CuteBundle {
-    val a_reg = UInt(2.W)
-    val b_reg = UInt(2.W)
-    val c_reg = UInt(2.W)
+class FuncUnitSrcStatus(fuIdWidth: Int)(implicit p: Parameters) extends Bundle {
+  val valid = Bool()
+  val reg = new RegIdx()
+  val ready = Bool()
+  val waitFu = UInt(fuIdWidth.W)
+  val readPending = Bool()
 }
 
-// Store微指令查询请求
-class StoreQueryReq(implicit p: Parameters) extends CuteBundle {
-    val c_reg = UInt(2.W)
+class FuncUnitStatus(fuIdWidth: Int)(implicit p: Parameters) extends Bundle {
+  val busy = Bool()
+  val fifoIdx = UInt(2.W)
+
+  val destValid = Bool()
+  val destReg = UInt(ScoreboardConsts.RegIdxWidth.W)
+
+  val srcs = Vec(3, new FuncUnitSrcStatus(fuIdWidth))
+}
+
+
+class QueryReq(implicit p: Parameters) extends CuteBundle {
+    val fuType = ScoreboardFuType()
+    val dest = Valid(new RegIdx())
+    val src1 = Valid(new RegIdx())
+    val src2 = Valid(new RegIdx())
+    val src3 = Valid(new RegIdx())
+}
+
+object ScoreboardFuType extends ChiselEnum {
+  val None, AML, BML, CML, Compute = Value
 }
 
 // Scoreboard的查询接口：用于依赖检查（使用Valid-Ready握手）
 // valid: TaskController有指令要发射
 // ready: Scoreboard检查依赖通过，允许发射
 class ScoreboardQueryIO(implicit p: Parameters) extends CuteBundle {
-    // Load微指令依赖查询
-    val load = Flipped(DecoupledIO(new LoadQueryReq))
-    
-    // Compute微指令依赖查询
-    val compute = Flipped(DecoupledIO(new ComputeQueryReq))
-    
-    // Store微指令依赖查询
-    val store = Flipped(DecoupledIO(new StoreQueryReq))
+    val req = Flipped(DecoupledIO(new QueryReq))
 }
 
 // Scoreboard的更新接口：用于更新寄存器状态
 class ScoreboardUpdateIO(implicit p: Parameters) extends CuteBundle {
     // 分配寄存器给Load指令
     val load_allocate = Input(Bool())
-    val load_alloc_a_reg = Input(UInt(2.W))
-    val load_alloc_b_reg = Input(UInt(2.W))
-    val load_alloc_c_reg = Input(UInt(2.W))
+    val load_alloc_a_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val load_alloc_b_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val load_alloc_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
     val load_alloc_has_a = Input(Bool())
     val load_alloc_has_b = Input(Bool())
     val load_alloc_has_c = Input(Bool())
@@ -73,351 +80,446 @@ class ScoreboardUpdateIO(implicit p: Parameters) extends CuteBundle {
     
     // Load完成，标记寄存器为Ready
     val load_finish_a = Input(Bool())
-    val load_finish_a_reg = Input(UInt(2.W))
+    val load_finish_a_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
     val load_finish_b = Input(Bool())
-    val load_finish_b_reg = Input(UInt(2.W))
+    val load_finish_b_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
     val load_finish_c = Input(Bool())
-    val load_finish_c_reg = Input(UInt(2.W))
+    val load_finish_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
     
     // Compute发射，读取A/B/C，写入C
     val compute_issue = Input(Bool())
-    val compute_issue_a_reg = Input(UInt(2.W))
-    val compute_issue_b_reg = Input(UInt(2.W))
-    val compute_issue_c_reg = Input(UInt(2.W))
+    val compute_issue_a_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val compute_issue_b_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val compute_issue_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
     val compute_issue_fifo_idx = Input(UInt(2.W))
     
     // Compute完成读取A/B
     val compute_read_finish_a = Input(Bool())
-    val compute_read_finish_a_reg = Input(UInt(2.W))
+    val compute_read_finish_a_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
     val compute_read_finish_b = Input(Bool())
-    val compute_read_finish_b_reg = Input(UInt(2.W))
+    val compute_read_finish_b_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
     
     // Compute完成写入C
     val compute_write_finish_c = Input(Bool())
-    val compute_write_finish_c_reg = Input(UInt(2.W))
+    val compute_write_finish_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
     
     // Store发射，读取C
     val store_issue = Input(Bool())
-    val store_issue_c_reg = Input(UInt(2.W))
+    val store_issue_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
     val store_issue_fifo_idx = Input(UInt(2.W))
     
     // Store完成，释放C
     val store_finish = Input(Bool())
-    val store_finish_c_reg = Input(UInt(2.W))
+    val store_finish_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
 }
 
-// Scoreboard的调试接口
-class ScoreboardDebugIO(implicit p: Parameters) extends CuteBundle {
-    val ab_reg_states = Output(Vec(4, UInt(RegState.Width.W)))
-    val c_reg_states = Output(Vec(2, UInt(RegState.Width.W)))
-    val ab_reg_writers = Output(Vec(4, UInt(2.W)))
-    val c_reg_writers = Output(Vec(2, UInt(2.W)))
-    val ab_reg_reader_counts = Output(Vec(4, UInt(3.W)))
-    val c_reg_reader_counts = Output(Vec(2, UInt(3.W)))
-}
-
-// 主Scoreboard模块
 class Scoreboard(implicit p: Parameters) extends CuteModule {
-    val io = IO(new Bundle {
-        val query = new ScoreboardQueryIO
-        val update = new ScoreboardUpdateIO
-        val debug = new ScoreboardDebugIO
-    })
-    
-    val useNewTaskController = UseNewTaskController
+  import ScoreboardConsts._
 
-    // ===========================================
-    // 寄存器状态存储
-    // ===========================================
-    // AB寄存器：[0-1]对应A矩阵，[2-3]对应B矩阵
-    val ab_scoreboard = RegInit(VecInit(Seq.fill(4)(0.U.asTypeOf(new RegScoreboardEntry))))
-    // C寄存器：[0-1]对应C矩阵
-    val c_scoreboard = RegInit(VecInit(Seq.fill(2)(0.U.asTypeOf(new RegScoreboardEntry))))
-    
-    // ===========================================
-    // 依赖检查逻辑
-    // ===========================================
-    
-    // Load指令依赖检查：需要的寄存器必须全部Idle
-    def checkLoadDependency(a_reg: UInt, b_reg: UInt, c_reg: UInt, 
-                           has_a: Bool, has_b: Bool, has_c: Bool): Bool = {
-        val a_ok = !has_a || (ab_scoreboard(a_reg).state === RegState.Idle)
-        val b_ok = !has_b || (ab_scoreboard(b_reg).state === RegState.Idle)
-        val c_ok = !has_c || (c_scoreboard(c_reg).state === RegState.Idle)
-        a_ok && b_ok && c_ok
-    }
-    
-    // Compute指令依赖检查：
-    // - 读A/B/C：必须是Ready状态（Load已完成）
-    // - 写C：C必须没有其他写者（避免WAW冲突）
-    def checkComputeDependency(a_reg: UInt, b_reg: UInt, c_reg: UInt): Bool = {
-        // A必须Ready（Load已完成）
-        val a_ready = ab_scoreboard(a_reg).state === RegState.Ready
-        
-        // B必须Ready（Load已完成）
-        val b_ready = ab_scoreboard(b_reg).state === RegState.Ready
-        
-        // C必须Ready（可以读）
-        val c_read_ready = c_scoreboard(c_reg).state === RegState.Ready
-        
-        // C必须没有其他写者（避免WAW冲突）
-        val c_write_ok = !c_scoreboard(c_reg).writer_valid
-        
-        a_ready && b_ready && c_read_ready && c_write_ok
-    }
-    
-    // Store指令依赖检查：
-    // - C必须Ready（Load已完成）
-    // - C必须没有写者（Compute已完成写入）
-    // - C不能被当前周期的Compute正在发射（前递检查，解决同周期冲突）
-    // 注意：这是过渡期的临时方案，用数据依赖模拟程序顺序依赖
-    //       步骤4完成全局指令队列后，将通过程序顺序正确处理
-    def checkStoreDependency(c_reg: UInt): Bool = {
-        val c_ready = c_scoreboard(c_reg).state === RegState.Ready
-        val c_no_writer = !c_scoreboard(c_reg).writer_valid
+  val io = IO(new Bundle {
+      val query = new ScoreboardQueryIO
+      val update = new ScoreboardUpdateIO
+  })
 
-        if (useNewTaskController) {
-            val no_pending_store = c_scoreboard(c_reg).reader_count === 0.U
-            c_ready && c_no_writer && no_pending_store
-        } else {
-            // 临时方案：依赖于同周期的Compute Issue信息避免冲突
-            val no_compute_issuing_to_c = !(io.update.compute_issue && io.update.compute_issue_c_reg === c_reg)
-            c_ready && c_no_writer && no_compute_issuing_to_c
-        }
-    }
-    
-    // ===========================================
-    // 查询接口连接（Valid-Ready握手）
-    // ===========================================
-    
-    // Load查询：ready信号表示依赖检查通过
-    io.query.load.ready := checkLoadDependency(
-        io.query.load.bits.a_reg, 
-        io.query.load.bits.b_reg, 
-        io.query.load.bits.c_reg,
-        io.query.load.bits.has_a,
-        io.query.load.bits.has_b,
-        io.query.load.bits.has_c
-    )
-    
-    // Compute查询：ready信号表示依赖检查通过
-    io.query.compute.ready := checkComputeDependency(
-        io.query.compute.bits.a_reg,
-        io.query.compute.bits.b_reg,
-        io.query.compute.bits.c_reg
-    )
-    
-    // Store查询：ready信号表示依赖检查通过
-    io.query.store.ready := checkStoreDependency(
-        io.query.store.bits.c_reg
-    )
-    
-    // ===========================================
-    // 寄存器状态更新逻辑
-    // ===========================================
-    
-    // Load分配：将寄存器标记为Writing
-    when(io.update.load_allocate) {
-        when(io.update.load_alloc_has_a) {
-            val a_reg = io.update.load_alloc_a_reg
-            ab_scoreboard(a_reg).state := RegState.Writing
-            ab_scoreboard(a_reg).writer_valid := true.B
-            ab_scoreboard(a_reg).writer_fifo_idx := io.update.load_alloc_fifo_idx
-            ab_scoreboard(a_reg).writer_type := 0.U  // Load
-            ab_scoreboard(a_reg).reader_count := 0.U
-            ab_scoreboard(a_reg).reader_mask := 0.U
-        }
-        
-        when(io.update.load_alloc_has_b) {
-            val b_reg = io.update.load_alloc_b_reg
-            ab_scoreboard(b_reg).state := RegState.Writing
-            ab_scoreboard(b_reg).writer_valid := true.B
-            ab_scoreboard(b_reg).writer_fifo_idx := io.update.load_alloc_fifo_idx
-            ab_scoreboard(b_reg).writer_type := 0.U  // Load
-            ab_scoreboard(b_reg).reader_count := 0.U
-            ab_scoreboard(b_reg).reader_mask := 0.U
-        }
-        
-        when(io.update.load_alloc_has_c) {
-            val c_reg = io.update.load_alloc_c_reg
-            c_scoreboard(c_reg).state := RegState.Writing
-            c_scoreboard(c_reg).writer_valid := true.B
-            c_scoreboard(c_reg).writer_fifo_idx := io.update.load_alloc_fifo_idx
-            c_scoreboard(c_reg).writer_type := 0.U  // Load
-            c_scoreboard(c_reg).reader_count := 0.U
-            c_scoreboard(c_reg).reader_mask := 0.U
-        }
-    }
-    
-    // Load完成A：标记为Ready
-    when(io.update.load_finish_a) {
-        val a_reg = io.update.load_finish_a_reg
-        ab_scoreboard(a_reg).state := RegState.Ready
-        ab_scoreboard(a_reg).writer_valid := false.B
-    }
-    
-    // Load完成B：标记为Ready
-    when(io.update.load_finish_b) {
-        val b_reg = io.update.load_finish_b_reg
-        ab_scoreboard(b_reg).state := RegState.Ready
-        ab_scoreboard(b_reg).writer_valid := false.B
-    }
-    
-    // Load完成C：标记为Ready
-    when(io.update.load_finish_c) {
-        val c_reg = io.update.load_finish_c_reg
-        c_scoreboard(c_reg).state := RegState.Ready
-        c_scoreboard(c_reg).writer_valid := false.B
-    }
-    
-    // Compute发射：增加A/B的读者计数，设置C的写者
-    // 注意：C 的读写是原子的（MMA: C = A×B + C），不单独跟踪 C 的读者
-    when(io.update.compute_issue) {
-        val a_reg = io.update.compute_issue_a_reg
-        val b_reg = io.update.compute_issue_b_reg
-        val c_reg = io.update.compute_issue_c_reg
-        val fifo_idx = io.update.compute_issue_fifo_idx
-        
-        // A寄存器增加读者（保持 Ready 状态）
-        ab_scoreboard(a_reg).reader_count := ab_scoreboard(a_reg).reader_count + 1.U
-        ab_scoreboard(a_reg).reader_mask := ab_scoreboard(a_reg).reader_mask | (1.U << fifo_idx)
-        
-        // B寄存器增加读者（保持 Ready 状态）
-        ab_scoreboard(b_reg).reader_count := ab_scoreboard(b_reg).reader_count + 1.U
-        ab_scoreboard(b_reg).reader_mask := ab_scoreboard(b_reg).reader_mask | (1.U << fifo_idx)
-        
-        // C寄存器：只设置写者，不增加读者
-        // （因为 MMA 的读写是原子的，不需要分开跟踪）
-        c_scoreboard(c_reg).writer_valid := true.B
-        c_scoreboard(c_reg).writer_fifo_idx := fifo_idx
-        c_scoreboard(c_reg).writer_type := 1.U  // Compute
-    }
-    
-    // Compute完成读A：减少读者计数
-    when(io.update.compute_read_finish_a) {
-        val a_reg = io.update.compute_read_finish_a_reg
-        ab_scoreboard(a_reg).reader_count := ab_scoreboard(a_reg).reader_count - 1.U
-        // 如果没有读者了，变为 Idle 状态（可释放）
-        when(ab_scoreboard(a_reg).reader_count === 1.U) {
-            ab_scoreboard(a_reg).state := RegState.Idle
-            ab_scoreboard(a_reg).reader_mask := 0.U
-        }
-    }
-    
-    // Compute完成读B：减少读者计数
-    when(io.update.compute_read_finish_b) {
-        val b_reg = io.update.compute_read_finish_b_reg
-        ab_scoreboard(b_reg).reader_count := ab_scoreboard(b_reg).reader_count - 1.U
-        // 如果没有读者了，变为 Idle 状态（可释放）
-        when(ab_scoreboard(b_reg).reader_count === 1.U) {
-            ab_scoreboard(b_reg).state := RegState.Idle
-            ab_scoreboard(b_reg).reader_mask := 0.U
-        }
-    }
-    
-    // Compute完成写C：清除写者，恢复 Ready 状态
-    when(io.update.compute_write_finish_c) {
-        val c_reg = io.update.compute_write_finish_c_reg
-        c_scoreboard(c_reg).writer_valid := false.B
-        // 因为 Compute 不增加 C 的 reader_count，所以这里直接变为 Ready
-        // （除非有 Store 正在读，但那是后续的事件）
-        c_scoreboard(c_reg).state := RegState.Ready
-    }
-    
-    // Store发射：增加C的读者计数（保持 Ready 状态）
-    when(io.update.store_issue) {
-        val c_reg = io.update.store_issue_c_reg
-        val fifo_idx = io.update.store_issue_fifo_idx
+  private val fuIdWidth = ScoreboardFuType.getWidth
+  private val noneFuId = ScoreboardFuType.None.asUInt
+  private val amlFuIdConst = ScoreboardFuType.AML.asUInt
+  private val bmlFuIdConst = ScoreboardFuType.BML.asUInt
+  private val cmlFuIdConst = ScoreboardFuType.CML.asUInt
+  private val computeFuIdConst = ScoreboardFuType.Compute.asUInt
 
-        c_scoreboard(c_reg).reader_count := c_scoreboard(c_reg).reader_count + 1.U
-        c_scoreboard(c_reg).reader_mask := c_scoreboard(c_reg).reader_mask | (1.U << fifo_idx)
-        if (useNewTaskController) {
-            c_scoreboard(c_reg).state := RegState.Ready
-        }
+  private val abRegStatus = RegInit(VecInit(Seq.fill(NumAbRegs)(0.U.asTypeOf(new RegResultStatus(fuIdWidth)))))
+  private val cRegStatus = RegInit(VecInit(Seq.fill(NumCRegs)(0.U.asTypeOf(new RegResultStatus(fuIdWidth)))))
+
+  private val fuStatuses = RegInit(VecInit(Seq.fill(ScoreboardFuType.all.length)(0.U.asTypeOf(new FuncUnitStatus(fuIdWidth)))))
+
+  private def statusOf(fuType: ScoreboardFuType.Type): FuncUnitStatus =
+    fuStatuses(fuType.litValue.toInt)
+
+  private def amlStatus: FuncUnitStatus = statusOf(ScoreboardFuType.AML)
+  private def bmlStatus: FuncUnitStatus = statusOf(ScoreboardFuType.BML)
+  private def cmlStatus: FuncUnitStatus = statusOf(ScoreboardFuType.CML)
+  private def computeStatus: FuncUnitStatus = statusOf(ScoreboardFuType.Compute)
+
+  private def fuBusy(fuType: ScoreboardFuType.Type): Bool = statusOf(fuType).busy
+  private def fuFree(fuType: ScoreboardFuType.Type): Bool = !fuBusy(fuType)
+
+  private def computeStatuses: Seq[FuncUnitStatus] =
+    if (NumComputeUnits > 0) Seq(computeStatus) else Seq.empty
+
+  private def cmlStatuses: Seq[FuncUnitStatus] =
+    if (NumCMLUnits > 0) Seq(cmlStatus) else Seq.empty
+
+  require(NumAMLUnits == 1 && NumBMLUnits == 1 && NumCMLUnits == 1 && NumComputeUnits == 1,
+    "Scoreboard FU ID encoding assumes a single instance per functional unit type")
+
+  private val SrcAIdx = 0
+  private val SrcBIdx = 1
+  private val SrcCIdx = 2
+
+  private def toTileIdx(idx: UInt): UInt = idx(ScoreboardConsts.TileRegIdxWidth - 1, 0)
+  private def toAccIdx(idx: UInt): UInt = idx(ScoreboardConsts.AccRegIdxWidth - 1, 0)
+
+  private def resetSrcStatus(src: FuncUnitSrcStatus): Unit = {
+    src.valid := false.B
+    src.reg.is_acc := false.B
+    src.reg.regIdx := 0.U(ScoreboardConsts.RegIdxWidth.W)
+    src.ready := false.B
+    src.waitFu := noneFuId
+    src.readPending := false.B
+  }
+
+  private def reduceOr(list: Seq[Bool]): Bool = list.foldLeft(false.B)(_ || _)
+
+  private def hasPendingReaders(reg: RegIdx, excludeFuId: UInt): Bool = {
+    def hasPendingReadersAB(regIdx: UInt, excludeFuId: UInt): Bool = {
+      val target = toTileIdx(regIdx)
+      val fromComputeA = computeStatuses.map { fu =>
+        val fuId = computeFuIdConst
+        val src = fu.srcs(SrcAIdx)
+        fu.busy && (fuId =/= excludeFuId) && src.valid && src.readPending && (toTileIdx(src.reg.regIdx) === target)
+      }
+      val fromComputeB = computeStatuses.map { fu =>
+        val fuId = computeFuIdConst
+        val src = fu.srcs(SrcBIdx)
+        fu.busy && (fuId =/= excludeFuId) && src.valid && src.readPending && (toTileIdx(src.reg.regIdx) === target)
+      }
+      reduceOr(fromComputeA ++ fromComputeB)
+    }
+
+    def hasPendingReadersC(regIdx: UInt, excludeFuId: UInt): Bool = {
+      val target = toAccIdx(regIdx)
+      val fromCompute = computeStatuses.map { fu =>
+        val fuId = computeFuIdConst
+        val src = fu.srcs(SrcCIdx)
+        fu.busy && (fuId =/= excludeFuId) && src.valid && src.readPending && (toAccIdx(src.reg.regIdx) === target)
+      }
+      val fromCmlStore = cmlStatuses.map { fu =>
+        val fuId = cmlFuIdConst
+        val src = fu.srcs(SrcCIdx)
+        src.valid && src.readPending && (toAccIdx(src.reg.regIdx) === target) && (fuId =/= excludeFuId)
+      }
+      reduceOr(fromCompute ++ fromCmlStore)
     }
     
-    // Store完成：减少C的读者计数，如果是最后一个读者则释放
-    when(io.update.store_finish) {
-        val c_reg = io.update.store_finish_c_reg
-        c_scoreboard(c_reg).reader_count := c_scoreboard(c_reg).reader_count - 1.U
-        
-        // 如果没有读者了，释放寄存器到 Idle 状态
-        when(c_scoreboard(c_reg).reader_count === 1.U) {
-            c_scoreboard(c_reg).state := RegState.Idle
-            c_scoreboard(c_reg).reader_mask := 0.U
-            c_scoreboard(c_reg).writer_valid := false.B
-        }
-        // 如果还有读者，保持 Ready 状态（为多发射准备）
+    Mux(reg.is_acc,
+      hasPendingReadersC(reg.regIdx, excludeFuId),
+      hasPendingReadersAB(reg.regIdx, excludeFuId))
+  }
+
+  private def wakeupAbConsumers(regIdx: UInt, producerFuId: UInt): Unit = {
+    val target = toTileIdx(regIdx)
+    computeStatuses.foreach { fu =>
+      val srcA = fu.srcs(SrcAIdx)
+      when(fu.busy && srcA.valid && (srcA.waitFu === producerFuId) && (toTileIdx(srcA.reg.regIdx) === target)) {
+        srcA.ready := true.B
+        srcA.waitFu := noneFuId
+      }
+      val srcB = fu.srcs(SrcBIdx)
+      when(fu.busy && srcB.valid && (srcB.waitFu === producerFuId) && (toTileIdx(srcB.reg.regIdx) === target)) {
+        srcB.ready := true.B
+        srcB.waitFu := noneFuId
+      }
     }
-    
-    // ===========================================
-    // 调试输出
-    // ===========================================
-    for (i <- 0 until 4) {
-        io.debug.ab_reg_states(i) := ab_scoreboard(i).state
-        io.debug.ab_reg_writers(i) := ab_scoreboard(i).writer_fifo_idx
-        io.debug.ab_reg_reader_counts(i) := ab_scoreboard(i).reader_count
+  }
+
+  private def wakeupCConsumers(regIdx: UInt, producerFuId: UInt): Unit = {
+    val target = toAccIdx(regIdx)
+    computeStatuses.foreach { fu =>
+      val srcC = fu.srcs(SrcCIdx)
+      when(fu.busy && srcC.valid && (srcC.waitFu === producerFuId) && (toAccIdx(srcC.reg.regIdx) === target)) {
+        srcC.ready := true.B
+        srcC.waitFu := noneFuId
+      }
     }
-    
-    for (i <- 0 until 2) {
-        io.debug.c_reg_states(i) := c_scoreboard(i).state
-        io.debug.c_reg_writers(i) := c_scoreboard(i).writer_fifo_idx
-        io.debug.c_reg_reader_counts(i) := c_scoreboard(i).reader_count
+    cmlStatuses.foreach { fu =>
+      val srcC = fu.srcs(SrcCIdx)
+      when(srcC.valid && (srcC.waitFu === producerFuId) && (toAccIdx(srcC.reg.regIdx) === target)) {
+        srcC.ready := true.B
+        srcC.waitFu := noneFuId
+      }
     }
-    
-    // ===========================================
-    // 调试打印（可选）
-    // ===========================================
-    if (YJPDebugEnable) {
-        printf("[Scoreboard] AB States: [%d,%d,%d,%d], C States: [%d,%d] (0=Idle,1=Writing,2=Ready)\n",
-            ab_scoreboard(0).state, ab_scoreboard(1).state,
-            ab_scoreboard(2).state, ab_scoreboard(3).state,
-            c_scoreboard(0).state, c_scoreboard(1).state
-        )
-        
-        // 查询请求日志
-        when(io.query.load.valid) {
-            printf("[Scoreboard] Load Query: A%d, B%d, C%d -> ready=%d\n",
-                io.query.load.bits.a_reg,
-                io.query.load.bits.b_reg,
-                io.query.load.bits.c_reg,
-                io.query.load.ready
-            )
-        }
-        
-        when(io.query.compute.valid) {
-            printf("[Scoreboard] Compute Query: A%d, B%d, C%d -> ready=%d\n",
-                io.query.compute.bits.a_reg,
-                io.query.compute.bits.b_reg,
-                io.query.compute.bits.c_reg,
-                io.query.compute.ready
-            )
-        }
-        
-        when(io.query.store.valid) {
-            printf("[Scoreboard] Store Query: C%d -> ready=%d\n",
-                io.query.store.bits.c_reg,
-                io.query.store.ready
-            )
-        }
-        
-        // 状态更新日志
-        when(io.update.load_allocate) {
-            printf("[Scoreboard] Load Allocate: A%d=%d, B%d=%d, C%d=%d\n",
-                io.update.load_alloc_a_reg, io.update.load_alloc_has_a,
-                io.update.load_alloc_b_reg, io.update.load_alloc_has_b,
-                io.update.load_alloc_c_reg, io.update.load_alloc_has_c
-            )
-        }
-        
-        when(io.update.compute_issue) {
-            printf("[Scoreboard] Compute Issue: Read A%d, B%d, C%d; Write C%d\n",
-                io.update.compute_issue_a_reg,
-                io.update.compute_issue_b_reg,
-                io.update.compute_issue_c_reg,
-                io.update.compute_issue_c_reg
-            )
-        }
+  }
+
+  private def reserveAbRegister(regIdx: UInt, fuId: UInt): Unit = {
+    val entry = abRegStatus(toTileIdx(regIdx))
+    entry.busy := true.B
+    entry.fuId := fuId
+  }
+
+  private def releaseAbRegister(regIdx: UInt, fuId: UInt): Unit = {
+    val entry = abRegStatus(toTileIdx(regIdx))
+    when(entry.busy && (entry.fuId === fuId)) {
+      entry.busy := false.B
+      entry.fuId := noneFuId
+      wakeupAbConsumers(regIdx, fuId)
     }
+  }
+
+  private def reserveCRegister(regIdx: UInt, fuId: UInt): Unit = {
+    val entry = cRegStatus(toAccIdx(regIdx))
+    entry.busy := true.B
+    entry.fuId := fuId
+  }
+
+  private def releaseCRegister(regIdx: UInt, fuId: UInt): Unit = {
+    val entry = cRegStatus(toAccIdx(regIdx))
+    when(entry.busy && (entry.fuId === fuId)) {
+      entry.busy := false.B
+      entry.fuId := noneFuId
+      wakeupCConsumers(regIdx, fuId)
+    }
+  }
+
+  private def regBusy(reg: RegIdx): Bool =
+    Mux(reg.is_acc,
+      cRegStatus(toAccIdx(reg.regIdx)).busy,
+      abRegStatus(toTileIdx(reg.regIdx)).busy)
+
+  private def regReady(reg: Valid[RegIdx]): Bool =
+    !reg.valid || !regBusy(reg.bits)
+
+  private def canIssueReq(req: QueryReq): Bool = {
+    val isAML = req.fuType === ScoreboardFuType.AML
+    val isBML = req.fuType === ScoreboardFuType.BML
+    val isCML = req.fuType === ScoreboardFuType.CML
+    val isCompute = req.fuType === ScoreboardFuType.Compute
+    val isCMLLoad = isCML && req.dest.valid
+    val isCMLStore = isCML && !req.dest.valid
+    val recognized = req.fuType =/= ScoreboardFuType.None
+
+    val destReg = req.dest.bits
+    val destBusy = req.dest.valid && regBusy(destReg)
+
+    val writerFuId = Mux(req.dest.valid, req.fuType.asUInt, noneFuId)
+
+    val destHasConsumers = req.dest.valid && recognized &&
+      hasPendingReaders(destReg, writerFuId)
+    val writesOk = !req.dest.valid || (!destBusy && !destHasConsumers)
+
+    val srcsReady = regReady(req.src1) && regReady(req.src2) && regReady(req.src3)
+
+    val loadChecks =
+      (isAML && fuFree(ScoreboardFuType.AML)) ||
+      (isBML && fuFree(ScoreboardFuType.BML)) ||
+      (isCMLLoad && fuFree(ScoreboardFuType.CML))
+
+    val computeChecks =
+      isCompute &&
+        fuFree(ScoreboardFuType.Compute)
+
+    val storeConsumersOk = !hasPendingReaders(req.src1.bits, cmlFuIdConst)
+    val storeChecks =
+      isCMLStore &&
+        fuFree(ScoreboardFuType.CML) &&
+        storeConsumersOk
+
+    val issueOk = (loadChecks || computeChecks || storeChecks) && srcsReady && writesOk
+
+    recognized && issueOk
+  }
+
+  io.query.req.ready := !io.query.req.valid || canIssueReq(io.query.req.bits)
+
+  // Issue stage updates
+  when(io.update.load_allocate) {
+    val fifoIdx = io.update.load_alloc_fifo_idx
+
+    when(io.update.load_alloc_has_a) {
+      val fu = amlStatus
+      assert(!fu.busy, "AML FU allocation while busy")
+      fu.busy := true.B
+      fu.fifoIdx := fifoIdx
+      fu.destValid := true.B
+      fu.destReg := io.update.load_alloc_a_reg
+      fu.srcs.foreach(resetSrcStatus)
+      reserveAbRegister(io.update.load_alloc_a_reg, amlFuIdConst)
+    }
+
+    when(io.update.load_alloc_has_b) {
+      val fu = bmlStatus
+      assert(!fu.busy, "BML FU allocation while busy")
+      fu.busy := true.B
+      fu.fifoIdx := fifoIdx
+      fu.destValid := true.B
+      fu.destReg := io.update.load_alloc_b_reg
+      fu.srcs.foreach(resetSrcStatus)
+      reserveAbRegister(io.update.load_alloc_b_reg, bmlFuIdConst)
+    }
+
+    when(io.update.load_alloc_has_c) {
+      val fu = cmlStatus
+      assert(!fu.busy, "CML load allocation while busy")
+      fu.busy := true.B
+      fu.fifoIdx := fifoIdx
+      fu.destValid := true.B
+      fu.destReg := io.update.load_alloc_c_reg
+      fu.srcs.foreach(resetSrcStatus)
+      reserveCRegister(io.update.load_alloc_c_reg, cmlFuIdConst)
+    }
+  }
+
+  when(io.update.compute_issue) {
+    val fu = computeStatus
+    when(!fu.busy) {
+      fu.busy := true.B
+      fu.fifoIdx := io.update.compute_issue_fifo_idx
+      fu.destValid := true.B
+      fu.destReg := io.update.compute_issue_c_reg
+      reserveCRegister(io.update.compute_issue_c_reg, computeFuIdConst)
+
+      // Source A
+      val srcA = fu.srcs(SrcAIdx)
+      srcA.valid := true.B
+      srcA.reg.is_acc := false.B
+      srcA.reg.regIdx := io.update.compute_issue_a_reg
+      srcA.readPending := true.B
+      val aEntry = abRegStatus(toTileIdx(io.update.compute_issue_a_reg))
+      when(aEntry.busy) {
+        srcA.ready := false.B
+        srcA.waitFu := aEntry.fuId
+      }.otherwise {
+        srcA.ready := true.B
+        srcA.waitFu := noneFuId
+      }
+
+      // Source B
+      val srcB = fu.srcs(SrcBIdx)
+      srcB.valid := true.B
+      srcB.reg.is_acc := false.B
+      srcB.reg.regIdx := io.update.compute_issue_b_reg
+      srcB.readPending := true.B
+      val bEntry = abRegStatus(toTileIdx(io.update.compute_issue_b_reg))
+      when(bEntry.busy) {
+        srcB.ready := false.B
+        srcB.waitFu := bEntry.fuId
+      }.otherwise {
+        srcB.ready := true.B
+        srcB.waitFu := noneFuId
+      }
+
+      // Source C (old value)
+      val srcC = fu.srcs(SrcCIdx)
+      srcC.valid := true.B
+      srcC.reg.is_acc := true.B
+      srcC.reg.regIdx := io.update.compute_issue_c_reg
+      srcC.readPending := false.B
+      val cEntry = cRegStatus(toAccIdx(io.update.compute_issue_c_reg))
+      when(cEntry.busy && (cEntry.fuId =/= computeFuIdConst)) {
+        srcC.ready := false.B
+        srcC.waitFu := cEntry.fuId
+        srcC.readPending := true.B
+      }.otherwise {
+        srcC.ready := true.B
+        srcC.waitFu := noneFuId
+      }
+    }.otherwise {
+      assert(false.B, "Compute FU allocation while busy")
+    }
+  }
+
+  when(io.update.store_issue) {
+    val fu = cmlStatus
+    val srcC = fu.srcs(SrcCIdx)
+    when(!fu.busy && !srcC.valid) {
+      fu.busy := true.B
+      fu.fifoIdx := io.update.store_issue_fifo_idx
+      fu.destValid := false.B
+      resetSrcStatus(fu.srcs(SrcAIdx))
+      resetSrcStatus(fu.srcs(SrcBIdx))
+      srcC.valid := true.B
+      srcC.reg.is_acc := true.B
+      srcC.reg.regIdx := io.update.store_issue_c_reg
+      srcC.readPending := true.B
+      val cEntry = cRegStatus(toAccIdx(io.update.store_issue_c_reg))
+      when(cEntry.busy) {
+        srcC.ready := false.B
+        srcC.waitFu := cEntry.fuId
+      }.otherwise {
+        srcC.ready := true.B
+        srcC.waitFu := noneFuId
+      }
+    }.otherwise {
+      assert(false.B, "CML store allocation while busy")
+    }
+  }
+
+  // Read stage completions
+  when(io.update.compute_read_finish_a) {
+    val target = io.update.compute_read_finish_a_reg
+    computeStatuses.foreach { fu =>
+      val srcA = fu.srcs(SrcAIdx)
+      when(fu.busy && srcA.valid && (srcA.reg.regIdx === target)) {
+        srcA.readPending := false.B
+      }
+    }
+  }
+
+  when(io.update.compute_read_finish_b) {
+    val target = io.update.compute_read_finish_b_reg
+    computeStatuses.foreach { fu =>
+      val srcB = fu.srcs(SrcBIdx)
+      when(fu.busy && srcB.valid && (srcB.reg.regIdx === target)) {
+        srcB.readPending := false.B
+      }
+    }
+  }
+
+  // Writebacks
+  when(io.update.load_finish_a) {
+    val regIdx = io.update.load_finish_a_reg
+    val fu = amlStatus
+    when(fu.busy && fu.destValid && (fu.destReg === regIdx)) {
+      fu.destValid := false.B
+      fu.busy := false.B
+      releaseAbRegister(regIdx, amlFuIdConst)
+    }
+  }
+
+  when(io.update.load_finish_b) {
+    val regIdx = io.update.load_finish_b_reg
+    val fu = bmlStatus
+    when(fu.busy && fu.destValid && (fu.destReg === regIdx)) {
+      fu.destValid := false.B
+      fu.busy := false.B
+      releaseAbRegister(regIdx, bmlFuIdConst)
+    }
+  }
+
+  when(io.update.load_finish_c) {
+    val regIdx = io.update.load_finish_c_reg
+    val fu = cmlStatus
+    when(fu.busy && fu.destValid && (fu.destReg === regIdx)) {
+      fu.destValid := false.B
+      fu.busy := false.B
+      releaseCRegister(regIdx, cmlFuIdConst)
+    }
+  }
+
+  when(io.update.compute_write_finish_c) {
+    val regIdx = io.update.compute_write_finish_c_reg
+    computeStatuses.foreach { fu =>
+      when(fu.busy && fu.destValid && (fu.destReg === regIdx)) {
+        fu.destValid := false.B
+        fu.busy := false.B
+        releaseCRegister(regIdx, computeFuIdConst)
+      }
+    }
+  }
+
+  when(io.update.store_finish) {
+    val regIdx = io.update.store_finish_c_reg
+    val fu = cmlStatus
+    val srcC = fu.srcs(SrcCIdx)
+    when(fu.busy && srcC.valid && (srcC.reg.regIdx === regIdx)) {
+      fu.busy := false.B
+      resetSrcStatus(srcC)
+    }
+  }
+
+  if (YJPDebugEnable) {
+    printf("[NewScoreboard] AB Busy: [%d,%d,%d,%d], C Busy: [%d,%d]\n",
+      abRegStatus(0).busy, abRegStatus(1).busy, abRegStatus(2).busy, abRegStatus(3).busy,
+      cRegStatus(0).busy, cRegStatus(1).busy)
+  }
 }
-

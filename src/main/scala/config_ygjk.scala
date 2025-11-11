@@ -42,10 +42,6 @@ class MreleaseIO extends Bundle{
 
 class YGJKControl extends Bundle{
   val reset = Output(Bool())
-  val acc_running = Input(Bool())          // TODO: remove me
-  val InstFIFO_Info = Input((UInt(5.W)))   // TODO: remove me
-  val InstFIFO_Full = Input((Bool()))      // TODO: remove me
-  val InstFIFO_Finish = Input((UInt(5.W))) // TODO: remove me
   val amuCtrl = Decoupled(new AmuCtrlIO)
   val mrelease = Flipped(Valid(new MreleaseIO))
 }
