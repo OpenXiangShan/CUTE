@@ -124,6 +124,8 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
         val debug = new ScoreboardDebugIO
     })
     
+    val useNewTaskController = UseNewTaskController
+
     // ===========================================
     // 寄存器状态存储
     // ===========================================
@@ -173,11 +175,15 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
     def checkStoreDependency(c_reg: UInt): Bool = {
         val c_ready = c_scoreboard(c_reg).state === RegState.Ready
         val c_no_writer = !c_scoreboard(c_reg).writer_valid
-        
-        // 前递检查：如果当前周期有Compute正在发射到这个寄存器，阻塞Store
-        val no_compute_issuing_to_c = !(io.update.compute_issue && io.update.compute_issue_c_reg === c_reg)
-        
-        c_ready && c_no_writer && no_compute_issuing_to_c
+
+        if (useNewTaskController) {
+            val no_pending_store = c_scoreboard(c_reg).reader_count === 0.U
+            c_ready && c_no_writer && no_pending_store
+        } else {
+            // 临时方案：依赖于同周期的Compute Issue信息避免冲突
+            val no_compute_issuing_to_c = !(io.update.compute_issue && io.update.compute_issue_c_reg === c_reg)
+            c_ready && c_no_writer && no_compute_issuing_to_c
+        }
     }
     
     // ===========================================
@@ -322,9 +328,12 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
     when(io.update.store_issue) {
         val c_reg = io.update.store_issue_c_reg
         val fifo_idx = io.update.store_issue_fifo_idx
-        
+
         c_scoreboard(c_reg).reader_count := c_scoreboard(c_reg).reader_count + 1.U
         c_scoreboard(c_reg).reader_mask := c_scoreboard(c_reg).reader_mask | (1.U << fifo_idx)
+        if (useNewTaskController) {
+            c_scoreboard(c_reg).state := RegState.Ready
+        }
     }
     
     // Store完成：减少C的读者计数，如果是最后一个读者则释放

@@ -28,6 +28,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         val ConfigInfo = Flipped(new CMLMicroTaskConfigIO)
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
+        val MatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
     })
 
     // 对外统一使用 ToMatrixRegIO
@@ -48,6 +49,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     
 
     val ConfigInfo = io.ConfigInfo
+    val CurrentMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
+    io.MatrixRegId := CurrentMatrixRegId
 
     val MatrixRegTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
@@ -94,6 +97,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         //如果configinfo有效
         when(io.ConfigInfo.MicroTaskReady && io.ConfigInfo.MicroTaskValid){
             state := s_mm_task
+            CurrentMatrixRegId := io.ConfigInfo.MatrixRegId
             when(io.ConfigInfo.IsLoadMicroTask === true.B && io.ConfigInfo.IsStoreMicroTask === false.B){
                 memoryload_state := s_load_init
                 Tensor_Block_BaseAddr := io.ConfigInfo.ApplicationTensor_C.BlockTensor_C_BaseVaddr

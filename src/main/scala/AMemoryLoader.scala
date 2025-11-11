@@ -52,6 +52,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         val ConfigInfo = Flipped(new AMLMicroTaskConfigIO)
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
+        val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
     })
     // 对外统一使用 ToMatrixRegIO
     //TODO:init
@@ -66,6 +67,11 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
+
+    val CurrentMatrixRegId = RegInit(0.U(ABMatrixRegIdWidth.W))
+    io.MatrixRegId := CurrentMatrixRegId
+
+    dontTouch(io)
 
 
     val MatrixRegBankAddr = io.ToMatrixRegIO.BankAddr
@@ -132,6 +138,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             memoryload_state := s_load_init
             MatrixRegTensor_M := ConfigInfo.MatrixRegTensor_M
             MatrixRegTensor_K := ConfigInfo.MatrixRegTensor_K
+            CurrentMatrixRegId := ConfigInfo.MatrixRegId
 
             Tensor_A_BaseVaddr := ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr
             // Tensor_Block_BaseAddr := ConfigInfo.ApplicationTensor_A.BlockTensor_A_BaseVaddr

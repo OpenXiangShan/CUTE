@@ -73,7 +73,7 @@ object Bundles {
 
     // TODO: use a correct width
     // The mlwidth is just a placeholder
-    def width = 9
+    def width = 16
   }
 
   class AmuMmaIO extends Bundle {
@@ -133,6 +133,17 @@ object Bundles {
     }
   }
 
+  class AmuArithIO extends Bundle {
+    val md     = UInt(4.W) // 3 : 0
+    val opType = UInt(9.W) // 12 : 4
+  }
+
+  object AmuArithIO {
+    def apply(): AmuArithIO = {
+      new AmuArithIO()
+    }
+  }
+
   class AmuCtrlIO extends Bundle {
     // op: Determine the operation
     // 0: MMA
@@ -143,6 +154,7 @@ object Bundles {
     def isMma()     : Bool = op === AmuCtrlIO.mmaOp()
     def isMls()     : Bool = op === AmuCtrlIO.mlsOp()
     def isRelease() : Bool = op === AmuCtrlIO.releaseOp()
+    def isArith()   : Bool = op === AmuCtrlIO.arithOp()
     // data: The ctrl signal for op
     val data = UInt(150.W)
   }
@@ -155,5 +167,6 @@ object Bundles {
     def mmaOp()     : UInt = "b00".U
     def mlsOp()     : UInt = "b01".U
     def releaseOp() : UInt = "b10".U
+    def arithOp()   : UInt = "b11".U
   }
 }

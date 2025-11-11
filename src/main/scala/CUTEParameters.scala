@@ -294,6 +294,7 @@ case class CuteParams(
     val VecTaskDataBufferDepth :Int = 4, //VecTask的指令缓冲深度掩盖从VecInterface到VPU的数据传输延迟即可
 
     val EnableAsyncGemm: Boolean = true, //是否使用异步GEMM
+    val UseNewTaskController: Boolean = true, //是否使用新版任务调度器
 
     val Debug : CuteDebugParams = CuteDebugParams.NoDebug, //调试参数
     val MMUParams: CuteMMUParams = CuteMMUParams.baseParams, //MMU的参数
@@ -386,6 +387,11 @@ trait CUTEImplParameters{
     val MarcoInstFIFODepth = 4  //宏指令FIFO的深度
     val MarcoInstFIFODepthBitSize = log2Ceil(MarcoInstFIFODepth) //宏指令FIFO的深度
 
+    val ABMatrixRegCount = 4
+    val CMatrixRegCount = 2
+    val ABMatrixRegIdWidth = log2Ceil(ABMatrixRegCount)
+    val CMatrixRegIdWidth = log2Ceil(CMatrixRegCount)
+
     val vpnBits = MMUParams.vpnBits
     val ppnBits = MMUParams.ppnBits
     val pgIdxBits = MMUParams.pgIdxBits
@@ -463,6 +469,7 @@ trait CUTEImplParameters{
     val VecTaskInstBufferDepth = cuteParams.VecTaskInstBufferDepth
     val VecTaskInstBufferSize = cuteParams.VecTaskInstBufferSize
     val VecTaskDataBufferDepth = cuteParams.VecTaskDataBufferDepth
+    val UseNewTaskController = cuteParams.UseNewTaskController
     val ReduceGroupSize = cuteParams.ReduceGroupSize
 
     val cmptreelayers = FPEparams.cmptreelayers //FPE的计算树层数
@@ -775,6 +782,7 @@ class ADCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
     val Is_Transpose                        = (Bool())      //是否需要转置
 
@@ -794,6 +802,7 @@ class BDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
     val Is_Transpose                        = (Bool())      //是否需要转置
 
@@ -819,6 +828,7 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
 
     val Is_Transpose                        = (Bool())      //是否需要转置
     val Is_AfterOps_Tile                    = (Bool())      //是否是需要执行后操作的Tile，包括转置等
@@ -856,6 +866,7 @@ class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
     //知道卷积核的位置和当前的OHOW，确认是否需要padding进行0填充
     val Convolution_Current_OH_Index        = (UInt(log2Ceil(ConvolutionDIM_Max).W))
@@ -887,6 +898,7 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
     //知道卷积核的位置，确认kernel的具体BlockTensor_B_BaseVaddr，那这个不需要传进来，TaskCtrl算完送进来就行了。
     // val Convolution_Current_KH_Index        = (UInt(ConvolutionApplicationConfigDataWidth.W))
@@ -936,6 +948,7 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val Is_Transpose                        = (Bool())      //是否需要转置
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
 
     val IsLoadMicroTask                     = (Bool())      //是否是Load任务
     val IsStoreMicroTask                    = (Bool())      //是否是Store任务
@@ -951,12 +964,12 @@ class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 }
 
 class MRegControlInfo()(implicit p: Parameters) extends CuteBundle{
-    val ADC_MReg_ID = UInt(1.W)
-    val BDC_MReg_ID = UInt(1.W)
-    val CDC_MReg_ID = UInt(1.W)
-    val AML_MReg_ID = UInt(1.W)
-    val BML_MReg_ID = UInt(1.W)
-    val CML_MReg_ID = UInt(1.W)
+    val ADC_MReg_ID = UInt(ABMatrixRegIdWidth.W)
+    val BDC_MReg_ID = UInt(ABMatrixRegIdWidth.W)
+    val CDC_MReg_ID = UInt(CMatrixRegIdWidth.W)
+    val AML_MReg_ID = UInt(ABMatrixRegIdWidth.W)
+    val BML_MReg_ID = UInt(ABMatrixRegIdWidth.W)
+    val CML_MReg_ID = UInt(CMatrixRegIdWidth.W)
 }
 
 

@@ -22,6 +22,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         val AfterOpsInterface = (new AfterOpsInterface)
         val ComputeGo = Input(Bool())//由TE发出的计算同步锁步信号，指可以接收新的数据了
         val DebugInfo = Input(new DebugInfoIO)
+        val MatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
     })
 
     io.Matrix_C.valid := false.B
@@ -48,6 +49,8 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     io.FromMatrixRegIO.WriteRequestData := 0.U.asTypeOf(io.FromMatrixRegIO.WriteRequestData)
 
     val ConfigInfo = io.ConfigInfo
+    val CurrentMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
+    io.MatrixRegId := CurrentMatrixRegId
 
     //任务状态机 先来个简单的，顺序遍历所有bank，返回数据
     val s_idle :: s_mm_task :: Nil = Enum(2)
@@ -86,6 +89,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
             MatrixRegWorkingTensor_N := ConfigInfo.MatrixRegTensor_N    //当前执行的矩阵乘任务的N
             MatrixRegWorkingTensor_K := ConfigInfo.MatrixRegTensor_K    //当前执行的矩阵乘任务的K的ReduceVector的数量
+            CurrentMatrixRegId := ConfigInfo.MatrixRegId
             
 
             Is_Transpose                := ConfigInfo.Is_Transpose          //是否需要转置

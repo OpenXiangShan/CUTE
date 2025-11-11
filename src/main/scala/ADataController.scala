@@ -22,6 +22,7 @@ class ADataController(implicit p: Parameters) extends CuteModule{
         val VectorA = DecoupledIO(UInt((ReduceWidth*Matrix_MN).W))
         val ComputeGo = Input(Bool())//由TE发出的计算同步锁步信号，指可以接收新的数据了
         val DebugInfo = Input(new DebugInfoIO)
+        val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
         // val CaculateEnd = DecoupledIO(Bool())
         // val TaskEnd = Flipped(DecoupledIO(Bool()))
     })
@@ -33,6 +34,8 @@ class ADataController(implicit p: Parameters) extends CuteModule{
     io.ConfigInfo.MicroTaskEndValid := false.B
 
     val ConfigInfo = io.ConfigInfo
+    val CurrentMatrixRegId = RegInit(0.U(ABMatrixRegIdWidth.W))
+    io.MatrixRegId := CurrentMatrixRegId
 
     //任务状态机
     val s_idle :: s_mm_task :: Nil = Enum(2)
@@ -72,6 +75,7 @@ class ADataController(implicit p: Parameters) extends CuteModule{
             MatrixRegWorkingTensor_M := ConfigInfo.MatrixRegTensor_M    //当前执行的矩阵乘任务的M
             MatrixRegWorkingTensor_N := ConfigInfo.MatrixRegTensor_N    //当前执行的矩阵乘任务的N
             MatrixRegWorkingTensor_K := ConfigInfo.MatrixRegTensor_K    //当前执行的矩阵乘任务的K的ReduceVector的数量
+            CurrentMatrixRegId := ConfigInfo.MatrixRegId
             
             //阶段0，让计算状态机开始初始化，开始计算状态机开始工作
             calculate_state := s_cal_init

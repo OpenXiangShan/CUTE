@@ -33,6 +33,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         val ConfigInfo = Flipped(new BMLMicroTaskConfigIO)
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
+        val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
     })
     // 对外统一使用 ToMatrixRegIO
 
@@ -53,6 +54,8 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
 
 
     val ConfigInfo = io.ConfigInfo
+    val CurrentMatrixRegId = RegInit(0.U(ABMatrixRegIdWidth.W))
+    io.MatrixRegId := CurrentMatrixRegId
 
     val MatrixRegTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
@@ -87,6 +90,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             // ApplicationTensor_M := io.ConfigInfo.bits.ApplicationTensor_M
             MatrixRegTensor_N := io.ConfigInfo.MatrixRegTensor_N
             MatrixRegTensor_K := io.ConfigInfo.MatrixRegTensor_K
+            CurrentMatrixRegId := io.ConfigInfo.MatrixRegId
             Tensor_B_BaseVaddr := io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr //这个不重要
             Tensor_Block_BaseAddr := io.ConfigInfo.ApplicationTensor_B.BlockTensor_B_BaseVaddr //这个是关键
             Conherent := io.ConfigInfo.Conherent
