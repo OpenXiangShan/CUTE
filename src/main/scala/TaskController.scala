@@ -484,6 +484,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   val isLoad = isLsu && headEntry.writeValid(0)
   val isStore = isLsu && !headEntry.writeValid(0) && headEntry.readValid(0)
+  val arithDestIsAcc = arithInfo.opType === "b110_111_1_00".U
+  val isMzeroAcc = isArith && arithDestIsAcc
+  val arithUsesCompute = isArith && !isMzeroAcc
 
   val scoreboardReq = WireInit(0.U.asTypeOf(new QueryReq))
   val scoreboardReqValid = WireInit(false.B)
@@ -516,20 +519,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       scoreboardReq.src3.bits.regIdx := mmaInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
     }.elsewhen(isArith) {
       scoreboardReqValid := true.B
-      scoreboardReq.fuType := ScoreboardFuType.Compute
+      scoreboardReq.fuType := Mux(isMzeroAcc, ScoreboardFuType.CML, ScoreboardFuType.Compute)
       scoreboardReq.dest.valid := true.B
-      val arithDestIsAcc = arithInfo.opType === "b110_111_1_00".U
       scoreboardReq.dest.bits.is_acc := arithDestIsAcc
       scoreboardReq.dest.bits.regIdx := arithInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
-      when(arithDestIsAcc) {
-        scoreboardReq.src3.valid := true.B
-        scoreboardReq.src3.bits.is_acc := true.B
-        scoreboardReq.src3.bits.regIdx := arithInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
-      }.otherwise {
-        scoreboardReq.src1.valid := true.B
-        scoreboardReq.src1.bits.is_acc := false.B
-        scoreboardReq.src1.bits.regIdx := arithInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
-      }
     }.elsewhen(isStore) {
       scoreboardReqValid := true.B
       scoreboardReq.fuType := ScoreboardFuType.CML
@@ -546,6 +539,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.BDC_MicroTask_Config.MicroTaskReady &&
     io.CDC_MicroTask_Config.MicroTaskReady
   val storeUnitsReady = io.CML_MicroTask_Config.MicroTaskReady
+  val zeroUnitsReady = storeUnitsReady
 
   val needA = isLoad && lsuInfo.isA
   val needB = isLoad && lsuInfo.isB
@@ -563,7 +557,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val headReady = MuxCase(true.B, Seq(
     (isLoad) -> (scoreboardReqReady && loadUnitsReady),
     (isStore) -> (scoreboardReqReady && storeUnitsReady),
-    (isMma || isArith) -> (scoreboardReqReady && computeUnitsReady),
+    (isMma || arithUsesCompute) -> (scoreboardReqReady && computeUnitsReady),
+    (isMzeroAcc) -> (scoreboardReqReady && zeroUnitsReady),
     (isRelease) -> releaseReady
   ))
 
@@ -572,7 +567,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val issueFire = decodedFifo.io.deq.fire
   val issueLoad = issueFire && isLoad
   val issueStore = issueFire && isStore
-  val issueCompute = issueFire && (isMma || isArith)
+  val issueCompute = issueFire && (isMma || arithUsesCompute)
+  val issueZeroAcc = issueFire && isMzeroAcc
   val issueRelease = issueFire && isRelease
 
   when(issueLoad) {
@@ -686,6 +682,65 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     loadIssueEvent.column := lsuInfo.column
     loadIssueEvent.transpose := lsuInfo.transpose
     loadIssueEvent.isAcc := lsuInfo.isacc
+    loadIssueEventEn := true.B
+  }
+
+  when(issueZeroAcc) {
+    val regIdx = arithInfo.md(1, 0)
+    val loadIdx = loadAllocIdx
+
+    mRegCtrlInfo.CML_MReg_ID := regIdx
+    mRegCtrlInfo.CDC_MReg_ID := regIdx
+
+    io.CML_MicroTask_Config.ApplicationTensor_C.dataType := ElementDataType.DataTypeWidth32
+    io.CML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
+    io.CML_MicroTask_Config.MatrixRegTensor_N := cuteParams.Tensor_MN.U
+    io.CML_MicroTask_Config.MatrixRegId := regIdx
+    io.CML_MicroTask_Config.IsLoadMicroTask := true.B
+    io.CML_MicroTask_Config.IsStoreMicroTask := false.B
+    io.CML_MicroTask_Config.MicroTaskValid := true.B
+    io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
+    io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
+    io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
+    io.CML_MicroTask_Config.Conherent := true.B
+    io.CML_MicroTask_Config.Is_Transpose := false.B
+
+    scoreboard.io.update.load_allocate := true.B
+    scoreboard.io.update.load_alloc_fifo_idx := loadIdx
+    scoreboard.io.update.load_alloc_a_reg := 0.U
+    scoreboard.io.update.load_alloc_b_reg := 0.U
+    scoreboard.io.update.load_alloc_c_reg := regIdx
+    scoreboard.io.update.load_alloc_has_a := false.B
+    scoreboard.io.update.load_alloc_has_b := false.B
+    scoreboard.io.update.load_alloc_has_c := true.B
+    loadAllocIdx := loadAllocIdx + 1.U
+
+    pendingLoadC := true.B
+    pendingLoadCReg := regIdx
+    pendingLoadCFifoIdx := loadIdx
+    pendingLoadRow := 0.U
+    pendingLoadColumn := 0.U
+    pendingLoadTranspose := false.B
+    pendingLoadIsAcc := true.B
+
+    loadAllocateEvent.eventType := 0.U
+    loadAllocateEvent.regId := regIdx
+    loadAllocateEvent.fifoIdx := loadIdx
+    loadAllocateEvent.needMask := "b100".U
+    loadAllocateEvent.row := 0.U
+    loadAllocateEvent.column := 0.U
+    loadAllocateEvent.transpose := false.B
+    loadAllocateEvent.isAcc := true.B
+    loadAllocateEventEn := true.B
+
+    loadIssueEvent.eventType := 1.U
+    loadIssueEvent.regId := regIdx
+    loadIssueEvent.fifoIdx := loadIdx
+    loadIssueEvent.needMask := "b100".U
+    loadIssueEvent.row := 0.U
+    loadIssueEvent.column := 0.U
+    loadIssueEvent.transpose := false.B
+    loadIssueEvent.isAcc := true.B
     loadIssueEventEn := true.B
   }
 
