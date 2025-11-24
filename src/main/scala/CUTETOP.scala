@@ -18,20 +18,14 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     val time_stamp = RegInit(0.U(40.W))
     time_stamp := time_stamp + 1.U
-
-    // printf("[CUTE perf %d] %x %x %x %x %x %x %x %x %x %x %x %x %x \n", time_stamp, cutecounter.ALoad, cutecounter.BLoad, cutecounter.CLoad, cutecounter.DStore, 
-    //     cutecounter.InstQueueEmpty, cutecounter.getConfigured, cutecounter.AOPBusy, cutecounter.computeBusy, cutecounter.computeInstQueueEmpty, cutecounter.computeInstCanIssue, cutecounter.InstCanDecode,
-    //     cutecounter.mmu_req_valid, cutecounter.mmu_req_ready)
     
-    // 统一的AB矩阵寄存器堆：4个实例
-    // AB(0)=A(0), AB(1)=A(1), AB(2)=B(0), AB(3)=B(1)
-    val ABMatrixRegs = Seq.tabulate(4)(i => Module(new ABMatrixReg(i))).toVector
+    val ABMatrixRegs = Seq.tabulate(ABMatrixRegCount)(i => Module(new ABMatrixReg(i))).toVector
     val ADC = Module(new ADataController)
     val AML = Module(new AMemoryLoader)
     val BDC = Module(new BDataController)
     val BML = Module(new BMemoryLoader)
 
-    val CMatrixRegs = Seq.tabulate(2)(i => Module(new CMatrixReg(i))).toVector//双缓冲（MatrixReg）
+    val CMatrixRegs = Seq.tabulate(CMatrixRegCount)(i => Module(new CMatrixReg(i))).toVector
     val CDC = Module(new CDataController)
     val CML = Module(new CMemoryLoader)
 
@@ -121,7 +115,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     //给每个 MatrixReg 的输入进行默认赋值
     
-    // AB MatrixReg：4个实例的初始化
+    // AB MatrixReg
     for (i <- 0 until ABMatrixRegCount){
         //DataController的请求
         ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
@@ -134,7 +128,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill)
     }
 
-    // C MatrixReg：2个实例的初始化
+    // C MatrixReg
     for (i <- 0 until CMatrixRegCount){
         //C MatrixReg
         //CDC的请求

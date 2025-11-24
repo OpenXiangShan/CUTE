@@ -386,8 +386,8 @@ trait CUTEImplParameters{
     val MarcoInstFIFODepth = 4  //宏指令FIFO的深度
     val MarcoInstFIFODepthBitSize = log2Ceil(MarcoInstFIFODepth) //宏指令FIFO的深度
 
-    val ABMatrixRegCount = 4
-    val CMatrixRegCount = 2
+    val ABMatrixRegCount = 8
+    val CMatrixRegCount = 8
     val ABMatrixRegIdWidth = log2Ceil(ABMatrixRegCount)
     val CMatrixRegIdWidth = log2Ceil(CMatrixRegCount)
 
