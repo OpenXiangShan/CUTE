@@ -77,16 +77,17 @@ object Bundles {
   }
 
   class AmuMmaIO extends Bundle {
-    val md     = UInt(4.W) // 3 : 0
-    val sat    = Bool()    // 4
-    val ms1    = UInt(4.W) // 8 : 5
-    val ms2    = UInt(4.W) // 12 : 9
-    val mtilem = Mtilex()  // 21 : 13
-    val mtilen = Mtilex()  // 30 : 22
-    val mtilek = Mtilex()  // 39 : 31
-    val types  = UInt(3.W) // 42 : 40
-    val typed  = UInt(3.W) // 45 : 43
-    val isfp   = Bool()    // 46
+    val md       = UInt(4.W) // 3 : 0
+    val sat      = Bool()    // 4
+    val ms1      = UInt(4.W) // 8 : 5
+    val ms2      = UInt(4.W) // 12 : 9
+    val mtilem   = Mtilex()  // 21 : 13
+    val mtilen   = Mtilex()  // 30 : 22
+    val mtilek   = Mtilex()  // 39 : 31
+    val types    = UInt(3.W) // 42 : 40
+    val typed    = UInt(3.W) // 45 : 43
+    val isfp     = Bool()    // 46
+    val issigned = Bool()  // 47
   }
 
   object AmuMmaIO {
