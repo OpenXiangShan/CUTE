@@ -1,4 +1,5 @@
 *~
+out/
 target/
 /.bsp/
 /.idea/
