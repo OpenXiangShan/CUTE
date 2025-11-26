@@ -4,3 +4,12 @@
 [submodule "cutetest"]
 	path = cutetest
 	url = git@github.com:OpenXiangShan/CUTETest.git
+[submodule "coupledL2"]
+	path = coupledL2
+	url = https://github.com/OpenXiangShan/HBL2.git
+[submodule "rocket-chip"]
+	path = rocket-chip
+	url = https://github.com/OpenXiangShan/rocket-chip.git
+[submodule "utility"]
+	path = utility
+	url = https://github.com/OpenXiangShan/Utility.git
