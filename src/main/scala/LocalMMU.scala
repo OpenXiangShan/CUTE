@@ -197,6 +197,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := false.B
     io.LastLevelCacheTLIO.Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W)) //MMU的Mask，默认全1
     io.LastLevelCacheTLIO.Request.bits.RequestData := 0.U
+    io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
     io.LastLevelCacheTLIO.Request.valid := false.B
     io.LastLevelCacheTLIO.Response.ready := false.B
     // //输出ABC的信息和valid和hasrequest
@@ -230,6 +231,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
             ltlb.io.req.vaddr0 := io.ALocalMMUIO.Request.bits.RequestVirtualAddr
             ltlb.io.req.vaddr0_v := true.B
             sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.AFirst
+            io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // A matrix is tile matrix register
         }.elsewhen(ChoseIndex_0 === LocalMMUTaskType.BFirst){
             io.BLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
             io.BLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
@@ -239,6 +241,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
             sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.BFirst
             //输出LocalMMUTaskType.BFirst
             // printf(p"[localmmu]LocalMMUTaskType.BFirst ${LocalMMUTaskType.BFirst}\n")
+            io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // B matrix is tile matrix register
         }.elsewhen(ChoseIndex_0 === LocalMMUTaskType.CFirst){
             io.CLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
             io.CLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
@@ -248,6 +251,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
             io.LastLevelCacheTLIO.Request.bits.RequestData := io.CLocalMMUIO.Request.bits.RequestData
             io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.CLocalMMUIO.Request.bits.RequestType_isWrite
             sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.CFirst
+            io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
         }.otherwise{
 
         }

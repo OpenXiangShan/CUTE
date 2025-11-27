@@ -840,6 +840,7 @@ class MMU2TLIO(implicit p: Parameters) extends CuteBundle{
         val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
         val RequestType_isWrite = Bool()
         val RequestMask = UInt(MMUMaskWidth.W) //MMU的Mask
+        val MatrixIsAcc = Bool() // false for A/B matrix (tile matrix register), true for C matrix (accumulation matrix register)
     }))
     //读请求分发到的TL Link的事务编号
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))

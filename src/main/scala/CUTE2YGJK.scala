@@ -144,7 +144,11 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
   ))
 
   // Assign MatrixKey to cooperate with HBL2.
-  tl_out.a.bits.user.lift(MatrixKey).foreach(_ := "b01".U)
+  // MatrixIsAcc: false for A/B matrix (tile matrix register), true for C matrix (accumulation matrix register)
+  // MatrixKey: "b01" for A/B matrix, "b11" for C matrix
+  tl_out.a.bits.user.lift(MatrixKey).foreach { matrixKey =>
+    matrixKey := Mux(io.mmu.Request.bits.MatrixIsAcc, "b11".U, "b01".U)
+  }
   tl_out.a.bits.user.lift(AmeIndexKey).foreach { ameIndex =>
     require(ameIndex.getWidth >= id.getWidth, "AmeIndex should cover Cute2TL id range.")
     ameIndex := id
