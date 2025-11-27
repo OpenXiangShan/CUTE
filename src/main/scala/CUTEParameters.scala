@@ -477,207 +477,6 @@ trait CUTEImplParameters{
 
 class CuteModule(implicit val p: Parameters) extends Module with CUTEImplParameters
 class CuteBundle(implicit val p: Parameters) extends Bundle with CUTEImplParameters
-//需要配置的信息：oc -- 控制器发来的oc编号, 
-//                ic, oh, ow, kh, kw, ohb -- 外层循环次数,
-//                icb -- 矩阵乘计算中的中间长度
-//                paddingH, paddingW, strideH, strideW -- 卷积层属性
-
-class TaskCtrlInfo()(implicit p: Parameters) extends CuteBundle{
-    val ADC = (new Bundle {
-        // val TaskWorking = Valid(Bool())
-        val TaskEnd = DecoupledIO(Bool())
-        val ComputeEnd = Flipped(DecoupledIO(Bool()))
-    })
-    val BDC = (new Bundle {
-        // val TaskWorking = Valid(Bool())
-        val TaskEnd = DecoupledIO(Bool())
-        val ComputeEnd = Flipped(DecoupledIO(Bool()))
-    })
-    val CDC = (new Bundle {
-        // val TaskWorking = Valid(Bool())
-        val TaskEnd = DecoupledIO(Bool())
-        val ComputeEnd = Flipped(DecoupledIO(Bool()))
-    })
-
-    val AML = (new Bundle {
-        // val TaskWorking = Valid(Bool())
-        val TaskEnd = DecoupledIO(Bool())
-        val LoadEnd = Flipped(DecoupledIO(Bool()))
-    })
-
-    val BML = (new Bundle {
-        // val TaskWorking = Valid(Bool())
-        val TaskEnd = DecoupledIO(Bool())
-        val LoadEnd = Flipped(DecoupledIO(Bool()))
-    })
-
-    val CML = (new Bundle {
-        // val TaskWorking = Valid(Bool())
-        val TaskEnd = DecoupledIO(Bool())
-        val LoadEnd = Flipped(DecoupledIO(Bool()))
-    })
-
-    val MatrixRegChosen = (new Bundle {
-        val ADataControllerChosenIndex = UInt(1.W)
-        val BDataControllerChosenIndex = UInt(1.W)
-        val CDataControllerChosenIndex = UInt(1.W)
-
-        val AMemoryLoaderChosenIndex = UInt(1.W)
-        val BMemoryLoaderChosenIndex = UInt(1.W)
-        val CMemoryLoaderChosenIndex = UInt(1.W)
-    })
-}
-
-//CUTE能接收的宏指令形式
-class MacroInst()(implicit p: Parameters) extends CuteBundle{
-    // Application_M,Application_N,Application_K代表这条宏指令要执行的MNK的长度
-    // conv_stride是卷积的stride步长
-    // kernel_size是卷积核的大小
-    // kernel_stride是每一个index的卷积核的大小，我们要求卷积核的数据排布是(kh,kw,oc,ic)
-    // stride_A、stride_B,stride_C,stride_D代表各个矩阵Reduce_DIM的长度(多少byte)
-    // transpose_result表示结果是否需要进行转置
-    // conv_oh_index,conv_ow_index代表当前处理的矩阵A的起始地址，落在卷积任务input的哪个index上
-    // conv_oh_max,conv_ow_max与index配合，可以完成padding、stride等操作的加速
-    // void * VectorOp,int VectorInst_Length代表了要融合的向量任务的具体指令和指令块长度。
-    // ABCD分别为矩阵A、矩阵B和结果矩阵C，偏置矩阵D的起始地址。要求所有矩阵都是Reduce_DIM_FIRST的
-    val ApplicationTensor_A_BaseVaddr = UInt(64.W) //矩阵A的起始地址
-    val ApplicationTensor_B_BaseVaddr = UInt(64.W) //矩阵B的起始地址
-    val ApplicationTensor_C_BaseVaddr = UInt(64.W) //矩阵C的起始地址
-    val ApplicationTensor_D_BaseVaddr = UInt(64.W) //矩阵D的起始地址
-
-    val ApplicationTensor_A_Stride = UInt(64.W) //矩阵A的stride,代表下一组Reduce_DIM需要增加多少地址偏移量，对于矩阵A[M][N]来说就是M+1需要增加多少地址偏移量，对于卷积[hw][c]来说，就是hw+1需要增加多少地址偏移量
-    val ApplicationTensor_B_Stride = UInt(64.W) //矩阵B的stride,代表下一组Reduce_DIM需要增加多少地址偏移量
-    val ApplicationTensor_C_Stride = UInt(64.W) //矩阵C的stride,代表下一组Reduce_DIM需要增加多少地址偏移量
-    val ApplicationTensor_D_Stride = UInt(64.W) //矩阵D的stride,代表下一组Reduce_DIM需要增加多少地址偏移量
-
-    val Application_M = UInt(ApplicationMaxTensorSizeBitSize.W) //矩阵乘的M的大小，对于卷积来说[ohow][oc][ic]的[ohow]的大小
-    val Application_N = UInt(ApplicationMaxTensorSizeBitSize.W) //矩阵乘的N的大小，对于卷积来说[ohow][oc][ic]的[oc]的大小
-    val Application_K = UInt(ApplicationMaxTensorSizeBitSize.W) //矩阵乘的K的大小，对于卷积来说[ohow][oc][ic]的[ic]的大小
-
-    val element_type = UInt(ElementDataType.DataTypeBitWidth.W) //矩阵元素的数据类型
-    val bias_data_type = UInt(ElementDataType.DataTypeBitWidth.W) //矩阵乘的bias的数据类型
-    val bias_type = UInt(CMemoryLoaderTaskType.TypeBitWidth.W) //矩阵乘的bias的存储类型
-
-    val transpose_result = Bool() //结果是否需要转置，用于attention加速
-    val conv_oh_index = UInt(log2Ceil(Convolution_Input_Height_Weight_Dim_Max).W) // TODO:位宽不够
-    val conv_ow_index = UInt(log2Ceil(Convolution_Input_Height_Weight_Dim_Max).W)
-    val conv_stride = UInt(log2Ceil(StrideSizeMax).W) //卷积的stride步长
-    val conv_oh_max = UInt(log2Ceil(Convolution_Input_Height_Weight_Dim_Max).W) //卷积的oh长度，用于和stride配合完成padding等操作
-    val conv_ow_max = UInt(log2Ceil(Convolution_Input_Height_Weight_Dim_Max).W) //卷积的ow长度，用于和stride配合完成padding等操作
-    val conv_oh_per_add = UInt(log2Ceil(Convolution_Input_Height_Weight_Dim_Max).W)//避免在计算过程中进行除法运算，这里可以提前计算好
-    val conv_ow_per_add = UInt(log2Ceil(Convolution_Input_Height_Weight_Dim_Max).W)//避免在计算过程中进行取余运算，这里可以提前计算好
-    val kernel_size = UInt(log2Ceil(KernelSizeMax).W) //卷积核的大小
-    val kernel_stride = UInt((64.W)) //kernel_stride是每一个index的卷积核的大小，我们要求卷积核的数据排布是(kh,kw,oc,ic)
-
-    val is_fp                               = (Bool())      //是否是浮点数的计算
-
-    // val VectorOpInstAddr = UInt(64.W)
-    // val VectorInst_Length = UInt(32.W)
-
-    val need_mrelease = Bool() // 执行完成后是否需要 mrelease
-    val token = Vec(32, Bool()) // token idx for mrelease
-}
-
-//CUTE能接受的，Load模块能处理的微指令形式
-class LoadMicroInst()(implicit p: Parameters) extends CuteBundle{
-    // Application_M,Application_N,Application_K代表这条宏指令要执行的MNK的长度
-    // conv_stride是卷积的stride步长
-    // kernel_size是卷积核的大小
-    // kernel_stride是每一个index的卷积核的大小，我们要求卷积核的数据排布是(kh,kw,oc,ic)
-    // stride_A、stride_B,stride_C,stride_D代表各个矩阵Reduce_DIM的长度(多少byte)
-    // transpose_result表示结果是否需要进行转置
-    // conv_oh_index,conv_ow_index代表当前处理的矩阵A的起始地址，落在卷积任务input的哪个index上
-    // conv_oh_max,conv_ow_max与index配合，可以完成padding、stride等操作的加速
-    // void * VectorOp,int VectorInst_Length代表了要融合的向量任务的具体指令和指令块长度。
-    // ABCD分别为矩阵A、矩阵B和结果矩阵C，偏置矩阵D的起始地址。要求所有矩阵都是Reduce_DIM_FIRST的
-    val ApplicationTensor_A = new ApplicationTensor_A_Info
-    val ApplicationTensor_B = new ApplicationTensor_B_Info
-    val ApplicationTensor_C = new ApplicationTensor_C_Info//大多时候是0，所以存在一个大寄存器里可能会亏？
-    val CLoadTaskInfo = new LoadTask_Info
-
-    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-
-    //知道卷积核的位置和当前的OHOW，确认是否需要padding进行0填充
-    val Convolution_Current_OH_Index        = (UInt(log2Ceil(ConvolutionDIM_Max).W))
-    val Convolution_Current_OW_Index        = (UInt(log2Ceil(ConvolutionDIM_Max).W))
-    val Convolution_Current_KH_Index        = (UInt(log2Ceil(KernelSizeMax).W))
-    val Convolution_Current_KW_Index        = (UInt(log2Ceil(KernelSizeMax).W))
-
-    val ConherentA                           = (Bool())      //是否需要coherent
-    val ConherentB                           = (Bool())      //是否需要coherent
-    val ConherentC                           = (Bool())      //是否需要coherent
-
-    val Is_A_Work                          = (Bool())      //是否需要工作
-    val Is_B_Work                          = (Bool())      //是否需要工作
-    val Is_C_Work                          = (Bool())      //是否需要工作
-
-    val A_MRegID                            = UInt(2.W)//代表Load的结果存在哪个MReg上，这个值保存在Resoure_Info里
-    val B_MRegID                            = UInt(2.W)//代表Load的结果存在哪个MReg上，这个值保存在Resoure_Info里
-    val C_MRegID                            = UInt(2.W)//代表Load的结果存在哪个MReg上，这个值保存在Resoure_Info里
-
-    val IsTranspose                         = (Bool())      //是否需要转置
-    
-
-    // val VectorOpInstAddr = UInt(64.W)
-    // val VectorInst_Length = UInt(32.W)
-}
-
-//用于描述微指令间依赖关系和资源依赖关系的信息，用于下一阶段的微指令(Compute)能否发射的信息
-class LoadMicroInst_Resource_Info()(implicit p: Parameters) extends CuteBundle{
-    // Application_M,Application_N,Application_K代表这条宏指令要执行的MNK的长度
-    val A_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
-    val B_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
-    val C_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
-    
-}
-
-//CUTE能接受的，Compute模块能处理的微指令形式
-class ComputeMicroInst()(implicit p: Parameters) extends CuteBundle{
-    val DataType_A                          = UInt(ElementDataType.DataTypeBitWidth.W) //矩阵A的数据类型
-    val DataType_B                          = UInt(ElementDataType.DataTypeBitWidth.W) //矩阵B的数据类型
-    val DataType_C                          = UInt(ElementDataType.DataTypeBitWidth.W) //矩阵C的数据类型
-    val DataType_D                          = UInt(ElementDataType.DataTypeBitWidth.W) //矩阵D的数据类型
-
-    val Have_Aops                         = Bool()      //是否有AfterOps
-    val Is_AfterOps_Tile = Bool()            //是否是AfterOps的Tile
-    val Is_Transpose = Bool()                //是否是Transpose的Tile
-    val Is_Reorder_Only_Ops = Bool()         //是否是Reorder的Tile
-    val Is_EasyScale_Only_Ops = Bool()       //是否是EasyScale的Tile
-    val Is_VecFIFO_Ops = Bool()              //是否是VecOps的Tile
-
-    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val Have_Store_Micro_Inst               = (Bool())      //是否有依赖于这条计算指令的Store的指令
-
-    val Is_Fp = Bool() //是否是浮点数的计算
-}
-
-//用于描述微指令间依赖关系和资源依赖关系的信息，用于下一阶段的微指令(Store)能否发射的信息
-class ComputeMicroInst_Resource_Info()(implicit p: Parameters) extends CuteBundle{
-    val A_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
-    val B_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
-    val C_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
-    val Load_Micro_Inst_FIFO_Index = UInt(4.W)//代表Load的指令在队列中的位置
-}
-//CUTE能接受的，Store模块能处理的微指令形式
-class StoreMicroInst()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationTensor_D = new ApplicationTensor_D_Info
-    val Conherent                           = (Bool())      //是否需要coherent
-    val Is_Transpose                        = (Bool())      //是否需要转置
-    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val Is_Last_Store                       = (Bool())      //是否是最后一次store
-}
-
-//用于描述微指令间依赖关系和资源依赖关系的信息，用于下一阶段的微指令(Vec或者唤醒CPU)能否发射的信息
-class StoreMicroInst_Resource_Info()(implicit p: Parameters) extends CuteBundle{
-    val C_MRegID = UInt(4.W)//代表Load的结果存在哪个MReg上
-    val Compute_Micro_Inst_FIFO_Index = UInt(4.W)//代表Compute的指令在队列中的位置
-    val Marco_Inst_FIFO_Index = UInt(4.W)//代表Marco的指令在队列中的位置
-}
 
 class AfterOpsInterface()(implicit p: Parameters) extends CuteBundle{
 
@@ -849,12 +648,6 @@ class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
     // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))//可能没有了
     val ApplicationTensor_A_Stride_M    = (UInt(MMUAddrWidth.W))//下一个M需要增加多少的地址偏移量
-    val Convolution_OH_DIM_Length       = (UInt(log2Ceil(ConvolutionDIM_Max).W))
-    val Convolution_OW_DIM_Length       = (UInt(log2Ceil(ConvolutionDIM_Max).W))
-    val Convolution_Stride_H            = (UInt(log2Ceil(StrideSizeMax).W))
-    val Convolution_Stride_W            = (UInt(log2Ceil(StrideSizeMax).W))
-    val Convolution_KH_DIM_Length       = (UInt(log2Ceil(KernelSizeMax).W))
-    val Convolution_KW_DIM_Length       = (UInt(log2Ceil(KernelSizeMax).W))
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
 }
 
@@ -866,12 +659,6 @@ class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
-    //知道卷积核的位置和当前的OHOW，确认是否需要padding进行0填充
-    val Convolution_Current_OH_Index        = (UInt(log2Ceil(ConvolutionDIM_Max).W))
-    val Convolution_Current_OW_Index        = (UInt(log2Ceil(ConvolutionDIM_Max).W))
-    val Convolution_Current_KH_Index        = (UInt(log2Ceil(KernelSizeMax).W))
-    val Convolution_Current_KW_Index        = (UInt(log2Ceil(KernelSizeMax).W))
-
     val Conherent                           = (Bool())      //是否需要coherent
 
     val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
@@ -881,13 +668,10 @@ class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 }
 
 class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
-        val ApplicationTensor_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
-        val BlockTensor_B_BaseVaddr         = (UInt(MMUAddrWidth.W))
-        val ApplicationTensor_B_Stride_N    = (UInt(MMUAddrWidth.W))//下一个N需要增加多少的地址偏移量
-        // val Convolution_OC_DIM_Length       = (UInt(ConvolutionApplicationConfigDataWidth.W))
-        val Convolution_KH_DIM_Length       = (UInt(ConvolutionApplicationConfigDataWidth.W))
-        val Convolution_KW_DIM_Length       = (UInt(ConvolutionApplicationConfigDataWidth.W))
-        val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    val ApplicationTensor_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
+    val BlockTensor_B_BaseVaddr         = (UInt(MMUAddrWidth.W))
+    val ApplicationTensor_B_Stride_N    = (UInt(MMUAddrWidth.W))//下一个N需要增加多少的地址偏移量
+    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
 }
 
 class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -897,10 +681,6 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
-
-    //知道卷积核的位置，确认kernel的具体BlockTensor_B_BaseVaddr，那这个不需要传进来，TaskCtrl算完送进来就行了。
-    // val Convolution_Current_KH_Index        = (UInt(ConvolutionApplicationConfigDataWidth.W))
-    // val Convolution_Current_KW_Index        = (UInt(ConvolutionApplicationConfigDataWidth.W))
 
     val Conherent                           = (Bool())      //是否需要coherent
 
@@ -968,59 +748,6 @@ class MRegControlInfo()(implicit p: Parameters) extends CuteBundle{
     val AML_MReg_ID = UInt(ABMatrixRegIdWidth.W)
     val BML_MReg_ID = UInt(ABMatrixRegIdWidth.W)
     val CML_MReg_ID = UInt(CMatrixRegIdWidth.W)
-}
-
-
-
-
-class ConfigInfoIO()(implicit p: Parameters) extends CuteBundle{
-
-    val MMUConfig = Flipped(new MMUConfigIO)
-    val ApplicationTensor_A = (new Bundle{
-        val ApplicationTensor_A_BaseVaddr = (UInt(MMUAddrWidth.W))
-        val BlockTensor_A_BaseVaddr       = (UInt(MMUAddrWidth.W))
-        val MemoryOrder                   = (UInt(MemoryOrderType.MemoryOrderTypeBitWidth.W))
-        val Conherent                     = (Bool())
-    })
-
-    val ApplicationTensor_B = (new Bundle{
-        val ApplicationTensor_B_BaseVaddr = (UInt(MMUAddrWidth.W))
-        val BlockTensor_B_BaseVaddr       = (UInt(MMUAddrWidth.W))
-        val MemoryOrder                   = (UInt(MemoryOrderType.MemoryOrderTypeBitWidth.W))
-        val Conherent                     = (Bool())
-    })
-    
-    val ApplicationTensor_C = (new Bundle{
-        val ApplicationTensor_C_BaseVaddr = (UInt(MMUAddrWidth.W))
-        val BlockTensor_C_BaseVaddr       = (UInt(MMUAddrWidth.W))
-        val MemoryOrder                   = (UInt(MemoryOrderType.MemoryOrderTypeBitWidth.W))
-        val Conherent                     = (Bool())
-    })
-    val ApplicationTensor_D = (new Bundle{
-        val ApplicationTensor_D_BaseVaddr = (UInt(MMUAddrWidth.W))
-        val BlockTensor_D_BaseVaddr       = (UInt(MMUAddrWidth.W))
-        val MemoryOrder                   = (UInt(MemoryOrderType.MemoryOrderTypeBitWidth.W))
-        val Conherent                     = (Bool())
-    })
-    val ApplicationTensor_M = (UInt(ApplicationMaxTensorSizeBitSize.W))
-    val ApplicationTensor_N = (UInt(ApplicationMaxTensorSizeBitSize.W))
-    val ApplicationTensor_K = (UInt(ApplicationMaxTensorSizeBitSize.W))
-
-    val MatrixRegTensor_M = (UInt(MatrixRegMaxTensorDimBitSize.W)) //MatrixReg当前处理的矩阵乘的M
-    val MatrixRegTensor_N = (UInt(MatrixRegMaxTensorDimBitSize.W)) //MatrixReg当前处理的矩阵乘的N
-    val MatrixRegTensor_K = (UInt(MatrixRegMaxTensorDimBitSize.W)) //MatrixReg当前处理的矩阵乘的K
-
-    val ComputeGo = (Bool())
-
-
-    val dataType = (UInt(ElementDataType.DataTypeBitWidth.W)) //0-矩阵乘，1-卷积
-    val taskType = (UInt(CUTETaskType.CUTETaskBitWidth.W)) //1-32位，2-16位， 4-32位
-    // val ExternalReduceSize = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val CMemoryLoaderConfig = (new Bundle{
-        val MemoryOrder = (UInt(MemoryOrderType.MemoryOrderTypeBitWidth.W))
-        val TaskType = (UInt(CMemoryLoaderTaskType.TypeBitWidth.W))
-    })
-
 }
 
 //从MatrixReg中取数，要明确是从哪个bank里，取第几行的数据，然后完成数据拼接返回
@@ -1125,36 +852,6 @@ class MMU2TLIO(implicit p: Parameters) extends CuteBundle{
         val ReseponseSourceID = UInt(SoureceMaxNumBitSize.W)
     })
 }
-
-class CTRLCounter(implicit p: Parameters) extends CuteBundle{
-    val ALoad = Bool()
-    val BLoad = Bool() //是否是B的Load任务 
-    val CLoad = Bool() //是否是C的Load任务
-    val DStore = Bool() //是否是D的Store任务
-    val InstQueueEmpty = Bool() //指令队列是否为空
-    val getConfigured = Bool() //是否已经开始配置
-    val AOPBusy = Bool() //是否有后操作任务在执行
-    val computeInstQueueEmpty = Bool() //计算指令队列是否为空
-    val computeInstCanIssue = Bool() //计算指令是否可以发出
-    val InstCanDecode = Bool() //指令是否可以解码
-}
-
-class CUTECounter(implicit p: Parameters) extends CuteBundle{
-    val computeBusy = Bool() //计算是否忙
-    val ALoad = Bool() //是否是A的Load任务
-    val BLoad = Bool() //是否是B的Load任务
-    val CLoad = Bool() //是否是C的Load任务
-    val DStore = Bool() //是否是D的Store任务
-    val InstQueueEmpty = Bool() //指令队列是否为空
-    val getConfigured = Bool() //是否已经开始配置
-    val AOPBusy = Bool() //是否有后操作任务在执行
-    val computeInstQueueEmpty = Bool() //计算指令队列是否为空
-    val computeInstCanIssue = Bool() //计算指令是否可以发出
-    val InstCanDecode = Bool() //指令是否可以解码
-    val mmu_req_valid = Bool()
-    val mmu_req_ready = Bool()
-}
-
 
 class FReducePEDataType(dataType: UInt){
 //0:Int8, 1:FP16, 2:BF16, 3:TF32, 4:I8 * UI8, 5:UI8 * I8, 6:UI8 * UI8

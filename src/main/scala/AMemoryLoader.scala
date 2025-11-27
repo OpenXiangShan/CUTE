@@ -99,8 +99,6 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     //知道卷积核的位置和当前的OHOW，确认是否需要padding进行0填充
     val Convolution_Current_OH_Index        = RegInit(0.U(log2Ceil(ConvolutionDIM_Max).W))
     val Convolution_Current_OW_Index        = RegInit(0.U(log2Ceil(ConvolutionDIM_Max).W))
-    val Init_Convolution_Current_OH_Index   = RegInit(0.U(log2Ceil(ConvolutionDIM_Max).W))
-    val Init_Convolution_Current_OW_Index   = RegInit(0.U(log2Ceil(ConvolutionDIM_Max).W))
     val Convolution_Current_KH_Index        = RegInit(0.U(log2Ceil(KernelSizeMax).W))
     val Convolution_Current_KW_Index        = RegInit(0.U(log2Ceil(KernelSizeMax).W))
 
@@ -118,8 +116,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     val Conherent = RegInit(true.B) //是否一致性访存的标志位，由TaskController提供
 
-    val Convolution_IW_DIM_Length = Convolution_OW_DIM_Length * Convolution_Stride_W//可以提前算，存成Reg
-    val Convolution_IH_DIM_Length = Convolution_OH_DIM_Length * Convolution_Stride_H//可以提前算，存成Reg
+    val Convolution_IW_DIM_Length = Convolution_OW_DIM_Length //可以提前算，存成Reg
+    val Convolution_IH_DIM_Length = Convolution_OH_DIM_Length //可以提前算，存成Reg
 
     //允许每个bank最多1个nack，这样保证只要有bank空闲我们都能写入数据，同时保证了Load请求的译码不停顿。
     val NACK_ZeroFill_Hloding_Reg = RegInit((VecInit(Seq.fill(ABMatrixRegNBanks)(0.U((new ASourceIdSearch).getWidth.W)))))//每个bank的NACK值
@@ -145,22 +143,20 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             // Conherent := io.ConfigInfo.bits.ApplicationTensor_A.Conherent
 
             ApplicationTensor_A_Stride_M := ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M
-            Convolution_OH_DIM_Length := ConfigInfo.ApplicationTensor_A.Convolution_OH_DIM_Length
-            Convolution_OW_DIM_Length := ConfigInfo.ApplicationTensor_A.Convolution_OW_DIM_Length
-            Convolution_Stride_H := ConfigInfo.ApplicationTensor_A.Convolution_Stride_H
-            Convolution_Stride_W := ConfigInfo.ApplicationTensor_A.Convolution_Stride_W
-            Convolution_KH_DIM_Length := ConfigInfo.ApplicationTensor_A.Convolution_KH_DIM_Length
-            Convolution_KW_DIM_Length := ConfigInfo.ApplicationTensor_A.Convolution_KW_DIM_Length
+            Convolution_OH_DIM_Length := 1.U
+            Convolution_OW_DIM_Length := 16384.U
+            Convolution_Stride_H := 1.U
+            Convolution_Stride_W := 1.U
+            Convolution_KH_DIM_Length := 1.U
+            Convolution_KW_DIM_Length := 1.U
             dataType := ConfigInfo.ApplicationTensor_A.dataType
 
-            Init_Convolution_Current_OH_Index := ConfigInfo.Convolution_Current_OH_Index
-            Init_Convolution_Current_OW_Index := ConfigInfo.Convolution_Current_OW_Index
-            Convolution_Current_OH_Index := ConfigInfo.Convolution_Current_OH_Index
-            Convolution_Current_OW_Index := ConfigInfo.Convolution_Current_OW_Index
-            Convolution_Current_KH_Index := ConfigInfo.Convolution_Current_KH_Index
-            Convolution_Current_KW_Index := ConfigInfo.Convolution_Current_KW_Index
+            Convolution_Current_OH_Index := 0.U
+            Convolution_Current_OW_Index := 0.U
+            Convolution_Current_KH_Index := 0.U
+            Convolution_Current_KW_Index := 0.U
 
-            IH_Stride :=  ConfigInfo.ApplicationTensor_A.Convolution_Stride_W * ConfigInfo.ApplicationTensor_A.Convolution_OW_DIM_Length * ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M //每移动一次IH，需要增加的地址偏移量
+            IH_Stride :=  16384.U * ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M //每移动一次IH，需要增加的地址偏移量
             IW_Stride :=  ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M //每移动一次IW，需要增加的地址偏移量
             assert(ConfigInfo.MatrixRegTensor_K === ReduceGroupSize.U)
             //
@@ -168,7 +164,11 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             {
                 printf("[AML<%d>]AMemoryLoader Task Start\n",io.DebugInfo.DebugTimeStampe)
                 //输出所有配置项
-                printf("[AML<%d>]MatrixRegTensor_M:%d, MatrixRegTensor_K:%d, Tensor_A_BaseVaddr:%x, ApplicationTensor_A_Stride_M:%x, Convolution_OH_DIM_Length:%d, Convolution_OW_DIM_Length:%d, Convolution_Stride_H:%d, Convolution_Stride_W:%d, Convolution_KH_DIM_Length:%d, Convolution_KW_DIM_Length:%d, dataType:%d, Convolution_Current_OH_Index:%d, Convolution_Current_OW_Index:%d, Convolution_Current_KH_Index:%d, Convolution_Current_KW_Index:%d\n",io.DebugInfo.DebugTimeStampe,ConfigInfo.MatrixRegTensor_M,ConfigInfo.MatrixRegTensor_K,ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr,ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M,ConfigInfo.ApplicationTensor_A.Convolution_OH_DIM_Length,ConfigInfo.ApplicationTensor_A.Convolution_OW_DIM_Length,ConfigInfo.ApplicationTensor_A.Convolution_Stride_H,ConfigInfo.ApplicationTensor_A.Convolution_Stride_W,ConfigInfo.ApplicationTensor_A.Convolution_KH_DIM_Length,ConfigInfo.ApplicationTensor_A.Convolution_KW_DIM_Length,ConfigInfo.ApplicationTensor_A.dataType,ConfigInfo.Convolution_Current_OH_Index,ConfigInfo.Convolution_Current_OW_Index,ConfigInfo.Convolution_Current_KH_Index,ConfigInfo.Convolution_Current_KW_Index)
+                printf("[AML<%d>]MatrixRegTensor_M:%d, MatrixRegTensor_K:%d, Tensor_A_BaseVaddr:%x, ApplicationTensor_A_Stride_M:%x, Convolution_OH_DIM_Length:%d, Convolution_OW_DIM_Length:%d, Convolution_Stride_H:%d, Convolution_Stride_W:%d, Convolution_KH_DIM_Length:%d, Convolution_KW_DIM_Length:%d, dataType:%d, Convolution_Current_OH_Index:%d, Convolution_Current_OW_Index:%d, Convolution_Current_KH_Index:%d, Convolution_Current_KW_Index:%d\n",
+                  io.DebugInfo.DebugTimeStampe,ConfigInfo.MatrixRegTensor_M,ConfigInfo.MatrixRegTensor_K,ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr,ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M,
+                  1.U, 16384.U, 1.U, 1.U,
+                  1.U, 1.U, ConfigInfo.ApplicationTensor_A.dataType,
+                  0.U, 0.U, 0.U, 0.U)
             }
         }
     }
@@ -326,8 +326,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 {
                     CurrentLoaded_BlockTensor_M := 0.U
                     CurrentLoaded_BlockTensor_K := CurrentLoaded_BlockTensor_K + MAX_Fill_Times.U
-                    Convolution_Current_OH_Index := Init_Convolution_Current_OH_Index
-                    Convolution_Current_OW_Index := Init_Convolution_Current_OW_Index
+                    Convolution_Current_OH_Index := 0.U
+                    Convolution_Current_OW_Index := 0.U
                     Current_M_BaseAddr := Init_Current_M_BaseAddr
                 }
 
@@ -448,8 +448,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                         {
                             CurrentLoaded_BlockTensor_M := 0.U
                             CurrentLoaded_BlockTensor_K := CurrentLoaded_BlockTensor_K + MAX_Fill_Times.U
-                            Convolution_Current_OH_Index := Init_Convolution_Current_OH_Index
-                            Convolution_Current_OW_Index := Init_Convolution_Current_OW_Index
+                            Convolution_Current_OH_Index := 0.U
+                            Convolution_Current_OW_Index := 0.U
                             Current_M_BaseAddr := Init_Current_M_BaseAddr
                         }
                     }

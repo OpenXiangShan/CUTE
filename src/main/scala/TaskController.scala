@@ -91,10 +91,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.AML_MicroTask_Config.ApplicationTensor_A := 0.U.asTypeOf(io.AML_MicroTask_Config.ApplicationTensor_A)
   io.AML_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.AML_MicroTask_Config.MatrixRegTensor_K := 0.U
-  io.AML_MicroTask_Config.Convolution_Current_OH_Index := 0.U
-  io.AML_MicroTask_Config.Convolution_Current_OW_Index := 0.U
-  io.AML_MicroTask_Config.Convolution_Current_KH_Index := 0.U
-  io.AML_MicroTask_Config.Convolution_Current_KW_Index := 0.U
   io.AML_MicroTask_Config.Conherent := false.B
   io.AML_MicroTask_Config.MatrixRegId := 0.U
   io.AML_MicroTask_Config.MicroTaskValid := false.B
@@ -585,22 +581,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       
       io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := lsuInfo.baseAddr
       io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := lsuInfo.stride
-      io.AML_MicroTask_Config.ApplicationTensor_A.Convolution_OH_DIM_Length := 1.U
-      io.AML_MicroTask_Config.ApplicationTensor_A.Convolution_OW_DIM_Length := 16384.U
-      io.AML_MicroTask_Config.ApplicationTensor_A.Convolution_KH_DIM_Length := 1.U
-      io.AML_MicroTask_Config.ApplicationTensor_A.Convolution_KW_DIM_Length := 1.U
-      io.AML_MicroTask_Config.ApplicationTensor_A.Convolution_Stride_H := 1.U
-      io.AML_MicroTask_Config.ApplicationTensor_A.Convolution_Stride_W := 1.U
       io.AML_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
       
       io.AML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
       io.AML_MicroTask_Config.MatrixRegTensor_K := lsuInfo.column / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
       io.AML_MicroTask_Config.MatrixRegId := regIdx
-
-      io.AML_MicroTask_Config.Convolution_Current_OH_Index := 0.U
-      io.AML_MicroTask_Config.Convolution_Current_OW_Index := 0.U
-      io.AML_MicroTask_Config.Convolution_Current_KH_Index := 0.U
-      io.AML_MicroTask_Config.Convolution_Current_KW_Index := 0.U
       
       io.AML_MicroTask_Config.Conherent := true.B
 
@@ -616,8 +601,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr := lsuInfo.baseAddr
       io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_Stride_N := lsuInfo.stride
       io.BML_MicroTask_Config.ApplicationTensor_B.BlockTensor_B_BaseVaddr := lsuInfo.baseAddr
-      io.BML_MicroTask_Config.ApplicationTensor_B.Convolution_KH_DIM_Length := 1.U
-      io.BML_MicroTask_Config.ApplicationTensor_B.Convolution_KW_DIM_Length := 1.U
       io.BML_MicroTask_Config.ApplicationTensor_B.dataType := ElementDataType.DataTypeWidth8
       io.BML_MicroTask_Config.MatrixRegTensor_N := lsuInfo.column
       io.BML_MicroTask_Config.MatrixRegTensor_K := lsuInfo.row / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
