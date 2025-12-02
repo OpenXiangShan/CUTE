@@ -103,11 +103,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     CDC.io.ComputeGo := MTE.io.ComputeGo
     
     //后续需要连入CPU的MMU或者IOMMU
-    MMU.io.Config.refillPaddr := 0.U
-    MMU.io.Config.refillVaddr := 0.U
-    MMU.io.Config.refill_v := false.B
-    MMU.io.Config.useVM := false.B
-    MMU.io.Config.useVM_v := false.B
     MMU.io.LastLevelCacheTLIO <> io.mmu2llc
 
     io.ctrl2top <> TaskCtrl.io.ygjkctrl
