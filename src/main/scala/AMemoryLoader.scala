@@ -85,12 +85,6 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val HasScarhpadWrite = WireInit(false.B)
 
     val ApplicationTensor_A_Stride_M    = RegInit(0.U(MMUAddrWidth.W))//下一个M需要增加多少的地址偏移量
-    val Convolution_OH_DIM_Length       = RegInit(0.U(log2Ceil(ConvolutionDIM_Max).W)) //对于卷积来说，OH的值是多少，用于我们进行地址的计算
-    val Convolution_OW_DIM_Length       = RegInit(0.U(log2Ceil(ConvolutionDIM_Max).W)) //对于卷积来说，OW的值是多少，用于我们进行地址的计算
-    val Convolution_Stride_H            = RegInit(0.U(log2Ceil(StrideSizeMax).W)) //对于卷积来说，stride是多少，用于我们进行地址的计算
-    val Convolution_Stride_W            = RegInit(0.U(log2Ceil(StrideSizeMax).W)) //对于卷积来说，stride是多少，用于我们进行地址的计算
-    val Convolution_KH_DIM_Length       = RegInit(0.U(log2Ceil(KernelSizeMax).W)) //对于卷积来说，KH的值是多少，用于我们进行地址的计算
-    val Convolution_KW_DIM_Length       = RegInit(0.U(log2Ceil(KernelSizeMax).W)) //对于卷积来说，KW的值是多少，用于我们进行地址的计算
     val dataType                        = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))  //数据类型
 
     val MatrixRegTensor_M                 = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))//需要加载到MatrixReg的Tensor的M
@@ -99,8 +93,6 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     //知道卷积核的位置和当前的OHOW，确认是否需要padding进行0填充
     val Convolution_Current_OH_Index        = RegInit(0.U(log2Ceil(ConvolutionDIM_Max).W))
     val Convolution_Current_OW_Index        = RegInit(0.U(log2Ceil(ConvolutionDIM_Max).W))
-    val Convolution_Current_KH_Index        = RegInit(0.U(log2Ceil(KernelSizeMax).W))
-    val Convolution_Current_KW_Index        = RegInit(0.U(log2Ceil(KernelSizeMax).W))
 
     //任务状态机,顺序读取所有分块矩阵
     val s_idle :: s_mm_task :: s_end :: Nil = Enum(3)
@@ -115,9 +107,6 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val IW_Stride = RegInit(0.U((MMUAddrWidth).W))
 
     val Conherent = RegInit(true.B) //是否一致性访存的标志位，由TaskController提供
-
-    val Convolution_IW_DIM_Length = Convolution_OW_DIM_Length //可以提前算，存成Reg
-    val Convolution_IH_DIM_Length = Convolution_OH_DIM_Length //可以提前算，存成Reg
 
     //允许每个bank最多1个nack，这样保证只要有bank空闲我们都能写入数据，同时保证了Load请求的译码不停顿。
     val NACK_ZeroFill_Hloding_Reg = RegInit((VecInit(Seq.fill(ABMatrixRegNBanks)(0.U((new ASourceIdSearch).getWidth.W)))))//每个bank的NACK值
@@ -143,18 +132,10 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             // Conherent := io.ConfigInfo.bits.ApplicationTensor_A.Conherent
 
             ApplicationTensor_A_Stride_M := ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M
-            Convolution_OH_DIM_Length := 1.U
-            Convolution_OW_DIM_Length := 16384.U
-            Convolution_Stride_H := 1.U
-            Convolution_Stride_W := 1.U
-            Convolution_KH_DIM_Length := 1.U
-            Convolution_KW_DIM_Length := 1.U
             dataType := ConfigInfo.ApplicationTensor_A.dataType
 
             Convolution_Current_OH_Index := 0.U
             Convolution_Current_OW_Index := 0.U
-            Convolution_Current_KH_Index := 0.U
-            Convolution_Current_KW_Index := 0.U
 
             IH_Stride :=  16384.U * ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M //每移动一次IH，需要增加的地址偏移量
             IW_Stride :=  ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M //每移动一次IW，需要增加的地址偏移量
@@ -164,11 +145,10 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             {
                 printf("[AML<%d>]AMemoryLoader Task Start\n",io.DebugInfo.DebugTimeStampe)
                 //输出所有配置项
-                printf("[AML<%d>]MatrixRegTensor_M:%d, MatrixRegTensor_K:%d, Tensor_A_BaseVaddr:%x, ApplicationTensor_A_Stride_M:%x, Convolution_OH_DIM_Length:%d, Convolution_OW_DIM_Length:%d, Convolution_Stride_H:%d, Convolution_Stride_W:%d, Convolution_KH_DIM_Length:%d, Convolution_KW_DIM_Length:%d, dataType:%d, Convolution_Current_OH_Index:%d, Convolution_Current_OW_Index:%d, Convolution_Current_KH_Index:%d, Convolution_Current_KW_Index:%d\n",
-                  io.DebugInfo.DebugTimeStampe,ConfigInfo.MatrixRegTensor_M,ConfigInfo.MatrixRegTensor_K,ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr,ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M,
-                  1.U, 16384.U, 1.U, 1.U,
-                  1.U, 1.U, ConfigInfo.ApplicationTensor_A.dataType,
-                  0.U, 0.U, 0.U, 0.U)
+                printf("[AML<%d>]MatrixRegTensor_M:%d, MatrixRegTensor_K:%d, Tensor_A_BaseVaddr:%x, ApplicationTensor_A_Stride_M:%x, dataType:%d\n",
+                  io.DebugInfo.DebugTimeStampe,ConfigInfo.MatrixRegTensor_M,ConfigInfo.MatrixRegTensor_K,
+                  ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr,ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M,
+                  ConfigInfo.ApplicationTensor_A.dataType)
             }
         }
     }
@@ -222,19 +202,16 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Current_IW_Index = WireInit(0.S((log2Ceil(ConvolutionDIM_Max)+1).W))
 
     //TODO:这里可能是性能瓶颈，如果这里不满足时序要求，我们可以在这里切流水，提前算好然后喂进AML,我们有一百种方法在这里优化时序:p
-    //    Current_IH_Index := Cat(0.U(1.W),Convolution_Current_OH_Index).asSInt * Cat(0.U(1.W),Convolution_Stride_H).asSInt + Cat(0.U(1.W),Convolution_Current_KH_Index).asSInt - Cat(0.U(1.W),Convolution_KH_DIM_Length/2.U).asSInt
-    Current_IH_Index := Cat(0.U(1.W),Convolution_Current_OH_Index).asSInt * Cat(0.U(1.W),Convolution_Stride_H).asSInt + Cat(0.U(1.W),Convolution_Current_KH_Index).asSInt - Cat(0.U(1.W),Convolution_KH_DIM_Length/2.U).asSInt//这里是计算当前的IH的index的初始值,如果变瓶颈了再改
-    Current_IW_Index := Cat(0.U(1.W),Convolution_Current_OW_Index).asSInt * Cat(0.U(1.W),Convolution_Stride_W).asSInt + Cat(0.U(1.W),Convolution_Current_KW_Index).asSInt - Cat(0.U(1.W),Convolution_KW_DIM_Length/2.U).asSInt//这里是计算当前的IW的index的初始值,如果变瓶颈了再改
+    // 优化：由于Convolution_Stride_H和Convolution_Stride_W始终为1，乘以1等于不乘，直接零扩展即可
+    Current_IH_Index := Cat(0.U(1.W),Convolution_Current_OH_Index).asSInt
+    Current_IW_Index := Cat(0.U(1.W),Convolution_Current_OW_Index).asSInt
     val Current_IH_Index_U = Current_IH_Index(log2Ceil(ConvolutionDIM_Max)-1,0)
     val Current_IW_Index_U = Current_IW_Index(log2Ceil(ConvolutionDIM_Max)-1,0)
-    val Next_IW = Current_IW_Index + Cat(0.U,Convolution_Stride_W).asSInt
-    val Next_IH = Current_IH_Index + Cat(0.U,Convolution_Stride_H).asSInt
-    val Next_IW_U = Next_IW(log2Ceil(ConvolutionDIM_Max)-1,0)
-    val Next_IH_U = Next_IH(log2Ceil(ConvolutionDIM_Max)-1,0)
-    val Init_IW = (Cat(0.U,Convolution_Current_KW_Index) - Cat(0.U,Convolution_KW_DIM_Length/2.U))
-    val Init_IW_U = Init_IW(log2Ceil(KernelSizeMax)-1,0)
+    // 优化：由于Convolution_Stride_W和Convolution_Stride_H始终为1，直接加1即可
+    val Next_IW_U = (Current_IW_Index + 1.S)(log2Ceil(ConvolutionDIM_Max)-1,0)
+    val Next_IH_U = (Current_IH_Index + 1.S)(log2Ceil(ConvolutionDIM_Max)-1,0)
     // 向上补充的M也算作非法来填零
-    val Is_invalid_IH_IW = Current_IH_Index < 0.S || Current_IW_Index < 0.S || Current_IH_Index >= Cat(0.U(1.W),Convolution_IH_DIM_Length).asSInt || Current_IW_Index >= Cat(0.U(1.W),Convolution_IW_DIM_Length).asSInt || (CurrentLoaded_BlockTensor_M >= MatrixRegTensor_M)
+    val Is_invalid_IH_IW = Current_IH_Index < 0.S || Current_IW_Index < 0.S || Current_IW_Index >= 16384.S(17.W) || (CurrentLoaded_BlockTensor_M >= MatrixRegTensor_M)
     val Have_NACK_Need_ZeroFill = NACK_ZeroFill_Hloding_Valid.asUInt.orR
     val Finish_Decode_Load_Request = !(CurrentLoaded_BlockTensor_M < MaxBlockTensor_M_Index && CurrentLoaded_BlockTensor_K < MaxBlockTensor_K_Index)
     val Infight_Load_Request_Num = RegInit(0.U((log2Ceil(SoureceMaxNum)+1).W))//当前正在进行的访存请求的数量
@@ -243,8 +220,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     //Current_M_BaseAddr这个值，需要根据下一次的IH和IW确定
     //IH和IW是否超界，如果超界，需要进行0填充，由Is_invalid_IH_IW根据OW、OH、stride_H、stride_W、KH、KW来判断
     //Current_M_BaseAddr只要在IH和IW不越界的情况下，值是对的即可。
-    //OW达到上限变为0时，OH+1，OW=0，此时IW = kh - kh_dim/2，这个值不能写错！此时IW对application_A的地址偏移贡献为(kh - kh_dim/2)*iw_stride,此时IH对application_A的地址偏移贡献为(oh+1)*Convolution_Stride_H*ih_stride
-
+    //OW达到上限变为0时，OH+1，OW=0，此时IW = kh - kh_dim/2，这个值不能写错！此时IW对application_A的地址偏移贡献为(kh - kh_dim/2)*iw_stride,此时IH对application_A的地址偏移贡献为(oh+1)*ih_stride
 
     Request.valid := false.B
     when(memoryload_state === s_load_init){
@@ -315,12 +291,13 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 CurrentLoaded_BlockTensor_M := CurrentLoaded_BlockTensor_M + 1.U
                 Convolution_Current_OW_Index := Convolution_Current_OW_Index + 1.U
                 Current_M_BaseAddr := IH_Stride * Current_IH_Index_U + IW_Stride * Next_IW_U + Tensor_A_BaseVaddr //下一个M的地址,IW正常增加
-                when(Convolution_Current_OW_Index === Convolution_OW_DIM_Length - 1.U)
+                when(Convolution_Current_OW_Index === 16383.U)
                 {
                     Convolution_Current_OW_Index := 0.U //OW变成0了
                     Convolution_Current_OH_Index := Convolution_Current_OH_Index + 1.U //OH+1
                     //计算这个地址可能是性能瓶颈，如果这里不满足时序要求，我们可以切流水算好地址，然后喂进来。做成一个算地址的FIFO即可，单单多几拍算地址的延迟而已，这里求地址的吞吐不变
-                    Current_M_BaseAddr := IH_Stride * Next_IH_U + Init_IW_U * IW_Stride + Tensor_A_BaseVaddr //下一个M的地址，IH正常增加，这要看kernel的值
+                    // 优化：Init_IW为0，所以Init_IW * IW_Stride = 0，可以直接去掉
+                    Current_M_BaseAddr := IH_Stride * Next_IH_U + Tensor_A_BaseVaddr //下一个M的地址，IH正常增加
                 }
                 when(CurrentLoaded_BlockTensor_M === MaxBlockTensor_M_Index - 1.U)//next_K
                 {
@@ -335,9 +312,9 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 {
                     val debug_Current_M_BaseAddr = WireInit(0.U((MMUAddrWidth).W))
                     debug_Current_M_BaseAddr := IH_Stride * Current_IH_Index_U + IW_Stride * Next_IW_U + Tensor_A_BaseVaddr
-                    when (Convolution_Current_OW_Index === Convolution_OW_DIM_Length - 1.U)
+                    when (Convolution_Current_OW_Index === 16383.U)
                     {
-                        debug_Current_M_BaseAddr := IH_Stride * Next_IH_U + Init_IW_U * IW_Stride + Tensor_A_BaseVaddr
+                        debug_Current_M_BaseAddr := IH_Stride * Next_IH_U + Tensor_A_BaseVaddr
                         printf("[AML<%d>{Current_M_BaseAddr}]Next MMU Request! Convolution_Current_OW_Index === Convolution_OW_DIM_Length - 1.U\n",io.DebugInfo.DebugTimeStampe)
                     }
                     when (CurrentLoaded_BlockTensor_M === MaxBlockTensor_M_Index - 1.U)
@@ -438,11 +415,12 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                         CurrentLoaded_BlockTensor_M := CurrentLoaded_BlockTensor_M + 1.U
                         Convolution_Current_OW_Index := Convolution_Current_OW_Index + 1.U
                         Current_M_BaseAddr := IH_Stride * Current_IH_Index_U + IW_Stride * Next_IW_U + Tensor_A_BaseVaddr //下一个M的地址,IW正常增加
-                        when(Convolution_Current_OW_Index === Convolution_OW_DIM_Length - 1.U)
+                        when(Convolution_Current_OW_Index === 16383.U)
                         {
                             Convolution_Current_OW_Index := 0.U //OW变成0了
                             Convolution_Current_OH_Index := Convolution_Current_OH_Index + 1.U //OH+1
-                            Current_M_BaseAddr := IH_Stride * Next_IH_U + Init_IW_U * IW_Stride + Tensor_A_BaseVaddr //下一个M的地址，IH正常增加，这要看kernel的值
+                            // 优化：Init_IW为0，所以Init_IW * IW_Stride = 0，可以直接去掉
+                            Current_M_BaseAddr := IH_Stride * Next_IH_U + Tensor_A_BaseVaddr //下一个M的地址，IH正常增加
                         }
                         when(CurrentLoaded_BlockTensor_M === MaxBlockTensor_M_Index - 1.U)
                         {
@@ -459,9 +437,9 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                         //输出下一个Current_M_BaseAddr的地址，同时输出计算这个值需要的其他值的数据
                         val debug_Current_M_BaseAddr = WireInit(0.U((MMUAddrWidth).W))
                         debug_Current_M_BaseAddr := IH_Stride * Current_IH_Index_U + IW_Stride * Next_IW_U + Tensor_A_BaseVaddr
-                        when(Convolution_Current_OW_Index === Convolution_OW_DIM_Length - 1.U)
+                        when(Convolution_Current_OW_Index === 16383.U)
                         {
-                            debug_Current_M_BaseAddr := IH_Stride * Next_IH_U + Init_IW_U * IW_Stride + Tensor_A_BaseVaddr
+                            debug_Current_M_BaseAddr := IH_Stride * Next_IH_U + Tensor_A_BaseVaddr
                             printf("[AML<%d>{Current_M_BaseAddr}]No Need Read Request Load! Convolution_Current_OW_Index === Convolution_OW_DIM_Length - 1.U\n",io.DebugInfo.DebugTimeStampe)
                         }
                         when(CurrentLoaded_BlockTensor_M === MaxBlockTensor_M_Index - 1.U)
@@ -664,8 +642,5 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 printf("[AML<%d>]AMemoryLoader Task End\n",io.DebugInfo.DebugTimeStampe)
             }
         }
-    }.otherwise{
-
     }
-
 }
