@@ -16,7 +16,6 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val BML_MicroTask_Config = new BMLMicroTaskConfigIO
   val CML_MicroTask_Config = new CMLMicroTaskConfigIO
   val MTE_MicroTask_Config = new MTEMicroTaskConfigIO
-  val AOP_MicroTask_Config = new AfterOpsMicroTaskConfigIO
   val MReg_CtrlInfo = new MRegControlInfo
   val DebugTimeStampe = Input(UInt(32.W))
 }
@@ -119,19 +118,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.CML_MicroTask_Config.MicroTaskEndReady := false.B
 
   io.MTE_MicroTask_Config.dataType := 0.U
-
-  io.AOP_MicroTask_Config.ApplicationTensor_C.dataType := 0.U
-  io.AOP_MicroTask_Config.ApplicationTensor_D.dataType := 0.U
-  io.AOP_MicroTask_Config.MatrixRegTensor_M := 0.U
-  io.AOP_MicroTask_Config.MatrixRegTensor_N := 0.U
-  io.AOP_MicroTask_Config.MatrixRegTensor_K := 0.U
-  io.AOP_MicroTask_Config.Is_Transpose := false.B
-  io.AOP_MicroTask_Config.Is_Reorder_Only_Ops := false.B
-  io.AOP_MicroTask_Config.Is_EasyScale_Only_Ops := false.B
-  io.AOP_MicroTask_Config.Is_VecFIFO_Ops := false.B
-  io.AOP_MicroTask_Config.MicroTaskValid := false.B
-  io.AOP_MicroTask_Config.MicroTaskEndReady := false.B
-  io.AOP_MicroTask_Config.CUTEuop := 0.U.asTypeOf(io.AOP_MicroTask_Config.CUTEuop)
 
   // Scoreboard实例
   private val scoreboard = Module(new Scoreboard)

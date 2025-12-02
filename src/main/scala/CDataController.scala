@@ -19,7 +19,6 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         val ConfigInfo = Flipped(new CDCMicroTaskConfigIO)
         val Matrix_C = DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W))
         val ResultMatrix_D = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
-        val AfterOpsInterface = (new AfterOpsInterface)
         val ComputeGo = Input(Bool())//由TE发出的计算同步锁步信号，指可以接收新的数据了
         val DebugInfo = Input(new DebugInfoIO)
         val MatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
@@ -33,13 +32,6 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
     io.ConfigInfo.MicroTask_TEComputeEndValid := false.B
-
-    io.AfterOpsInterface.CDCDataToInterface.valid := false.B
-    io.AfterOpsInterface.CDCDataToInterface.bits := 0.U.asTypeOf(io.AfterOpsInterface.CDCDataToInterface.bits)
-    io.AfterOpsInterface.InterfaceToCDCData.ready := false.B
-    io.AfterOpsInterface.VecInstQueueID := 0.U
-
-    
 
     io.FromMatrixRegIO.ReadBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.ReadBankAddr)
 

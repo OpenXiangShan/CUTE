@@ -29,9 +29,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val CDC = Module(new CDataController)
     val CML = Module(new CMemoryLoader)
 
-    val AOp = Module(new AfterOpsModule)
-    val VecSIf = Module(new VectorStreamInterface)
-
     val TaskCtrl: BaseTaskController = Module(new TaskController)
     
     val MTE = Module(new MatrixTE)
@@ -72,7 +69,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     CDC.io.FromMatrixRegIO.ReadWriteResponse := 0.U.asTypeOf(CDC.io.FromMatrixRegIO.ReadWriteResponse)
     CDC.io.ConfigInfo <> TaskCtrl.io.CDC_MicroTask_Config
     CDC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-    CDC.io.AfterOpsInterface<>AOp.io.AfterOpsInterface
 
     //CML的默认输入
     CML.io.ConfigInfo <> TaskCtrl.io.CML_MicroTask_Config
@@ -80,16 +76,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     CML.io.LocalMMUIO <> MMU.io.CLocalMMUIO
     CML.io.ToMatrixRegIO.ReadWriteResponse := 0.U
     CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData := 0.U.asTypeOf(CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData)
-
-    //AOP的默认输入
-    //AOp的要连接到vpu,目前先空接
-    AOp.io.ConfigInfo <> TaskCtrl.io.AOP_MicroTask_Config
-    AOp.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-    AOp.io.VectorInterface <> VecSIf.io.VectorInterface
-
-    //VecSIF应该把VPU的输出输出接出去，但现在先空接
-    val VPUIO = Module(new FakeVPU).io
-    VPUIO.VPUInterface <> VecSIf.io.VPUInterface
 
     //MTE的默认输入
     MTE.io.VectorA <> ADC.io.VectorA
