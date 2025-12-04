@@ -1,9 +1,11 @@
 *~
+.bloop/
+.bsp/
+.idea/
+build/
 out/
 target/
-/.bsp/
-/.idea/
-/test_run_dir/
+test_run_dir/
 *.cmd
 *.in
 *.out

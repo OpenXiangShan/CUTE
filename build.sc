@@ -13,8 +13,9 @@ val projectRoot = os.pwd
 val depsRoot = projectRoot / "coupledL2"
 val defaultScalaVersion = "2.13.15"
 def defaultVersions = Map(
-  "chisel"        -> ivy"org.chipsalliance::chisel:6.6.0",
-  "chisel-plugin" -> ivy"org.chipsalliance:::chisel-plugin:6.6.0"
+  "chisel"        -> ivy"org.chipsalliance::chisel:6.7.0",
+  "chisel-plugin" -> ivy"org.chipsalliance:::chisel-plugin:6.7.0",
+  "chiseltest"    -> ivy"edu.berkeley.cs::chiseltest:6.0.0"
 )
 
 trait HasChisel extends ScalaModule {
@@ -38,7 +39,7 @@ trait HasChisel extends ScalaModule {
 
 object rocketchip extends `rocket-chip`.common.RocketChipModule with HasChisel {
 
-  val rcPath = os.pwd / "rocket-chip"
+  val rcPath = millOuterCtx.millSourcePath / "rocket-chip"
   override def millSourcePath = rcPath
 
   def mainargsIvy = ivy"com.lihaoyi::mainargs:0.7.0"
@@ -66,39 +67,52 @@ object rocketchip extends `rocket-chip`.common.RocketChipModule with HasChisel {
 }
 
 object utility extends SbtModule with HasChisel {
-  override def millSourcePath = os.pwd / "utility"
+  override def millSourcePath = millOuterCtx.millSourcePath / "utility"
 
   override def moduleDeps = super.moduleDeps ++ Seq(rocketchip)
 }
 
 object huancun extends SbtModule with HasChisel {
-  override def millSourcePath = depsRoot / "HuanCun"
+  override def millSourcePath = millOuterCtx.millSourcePath / "coupledL2" / "HuanCun"
   override def moduleDeps = super.moduleDeps ++ Seq(
     rocketchip, utility
   )
 }
 
-object CoupledL2
-  extends coupledL2.common.CoupledL2Module
-    with HasChisel {
+object CoupledL2 extends SbtModule with HasChisel 
+  with coupledL2.common.CoupledL2Module {
 
-  override def millSourcePath = depsRoot
+  override def millSourcePath = millOuterCtx.millSourcePath / "coupledL2"
 
   def rocketModule = rocketchip
 
   def utilityModule = utility
 
   def huancunModule = huancun
+
+  object test extends SbtTests with TestModule.ScalaTest {
+    override def ivyDeps = super.ivyDeps() ++ Agg(
+      defaultVersions("chiseltest"),
+    )
+  }
 }
 
 object CUTE extends SbtModule with HasChisel with $file.common.CUTEModule {
 
-  override def millSourcePath = os.pwd
+  override def millSourcePath = millOuterCtx.millSourcePath
 
-  def rocketModule = rocketchip
+  def rocketModule: ScalaModule = rocketchip
 
-  def utilityModule = utility
+  def utilityModule: ScalaModule = utility
 
-  def coupledL2Module = CoupledL2
+  def coupledL2Module: ScalaModule = CoupledL2
+
+  object test extends SbtTests with TestModule.ScalaTest {
+    override def ivyDeps = super.ivyDeps() ++ Agg(
+      defaultVersions("chiseltest"),
+    )
+  }
+
+  override def scalacOptions = super.scalacOptions() ++ Agg("-deprecation", "-feature")
 }
 
