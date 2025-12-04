@@ -8,7 +8,6 @@ import utility.ChiselDB
 
 class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val ygjkctrl = Flipped(new YGJKControl)
-  val instfifo_release = Output(Bool())
   val ADC_MicroTask_Config = new ADCMicroTaskConfigIO
   val BDC_MicroTask_Config = new BDCMicroTaskConfigIO
   val CDC_MicroTask_Config = new CDCMicroTaskConfigIO
@@ -45,7 +44,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   dontTouch(io)
 
-  io.instfifo_release := false.B
   io.ygjkctrl.mrelease.valid := false.B
   io.ygjkctrl.mrelease.bits := 0.U.asTypeOf(new MreleaseIO)
 
@@ -402,7 +400,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   // 解码后的指令FIFO
-  private val decodedFifo = Module(new Queue(new DecodedAmuCtrlEntry, MarcoInstFIFODepth))
+  private val decodedFifo = Module(new Queue(new DecodedAmuCtrlEntry, DecodedAmuCtrlFIFODepth))
 
   // FIFO出队暂未使用
   decodedFifo.io.deq.ready := false.B

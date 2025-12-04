@@ -10,7 +10,6 @@ import org.chipsalliance.cde.config._
 class CUTETopIO()(implicit p: Parameters) extends CuteBundle{
     val mmu2llc = Flipped(new MMU2TLIO)
     val ctrl2top = Flipped(new YGJKControl)
-    val instfifo_release = Output(Bool())
     val mrelease = Valid(new MreleaseIO)
 }
 class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
@@ -92,7 +91,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     MMU.io.LastLevelCacheTLIO <> io.mmu2llc
 
     io.ctrl2top <> TaskCtrl.io.ygjkctrl
-    io.instfifo_release := TaskCtrl.io.instfifo_release
 
     //给每个 MatrixReg 的输入进行默认赋值
     

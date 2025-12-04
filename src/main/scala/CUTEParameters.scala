@@ -383,8 +383,8 @@ trait CUTEImplParameters{
     def v3config: Cutev3extParams = cuteParams.v3config
     def FPEparams: CuteFPEParams = cuteParams.FPEparams
 
-    val MarcoInstFIFODepth = 4  //宏指令FIFO的深度
-    val MarcoInstFIFODepthBitSize = log2Ceil(MarcoInstFIFODepth) //宏指令FIFO的深度
+    val DecodedAmuCtrlFIFODepth = 8  //解码后的AMU指令FIFO的深度
+    val DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) //解码后的AMU指令FIFO的深度
 
     val ABMatrixRegCount = 8
     val CMatrixRegCount = 8
