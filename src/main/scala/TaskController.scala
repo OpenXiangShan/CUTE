@@ -479,7 +479,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     when(isLoad) {
       scoreboardReqValid := true.B
       val fuType = MuxCase(ScoreboardFuType.AML, Seq(
-        (lsuInfo.isacc || lsuInfo.isC) -> ScoreboardFuType.CML,
+        lsuInfo.isacc -> ScoreboardFuType.CML,
         lsuInfo.isA -> ScoreboardFuType.AML,
         lsuInfo.isB -> ScoreboardFuType.BML
       ))
@@ -528,7 +528,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   val needA = isLoad && lsuInfo.isA
   val needB = isLoad && lsuInfo.isB
-  val needC = isLoad && (lsuInfo.isC || lsuInfo.isacc)
+  val needC = isLoad && lsuInfo.isacc
 
   val loadUnitsReady = (!needA || io.AML_MicroTask_Config.MicroTaskReady) &&
     (!needB || io.BML_MicroTask_Config.MicroTaskReady) &&

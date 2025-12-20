@@ -107,14 +107,13 @@ object Bundles {
     val isacc     = Bool()            // 6
     val isA       = Bool()            // 7
     val isB       = Bool()            // 8
-    val isC       = Bool()            // 9
 
-    val baseAddr  = UInt(48.W)        // 57 : 10
-    val stride    = UInt(48.W)        // 105 : 58
+    val baseAddr  = UInt(48.W)        // 56 : 9
+    val stride    = UInt(48.W)        // 104 : 57
     
-    val row       = Mtilex()          // 114 : 106
-    val column    = Mtilex()          // 123 : 115
-    val widths    = MtypeMSew()       // 126 : 124
+    val row       = Mtilex()          // 113 : 105
+    val column    = Mtilex()          // 122 : 114
+    val widths    = MtypeMSew()       // 125 : 123
   }
 
   object AmuLsuIO {
