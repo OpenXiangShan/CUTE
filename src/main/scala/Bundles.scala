@@ -77,17 +77,17 @@ object Bundles {
   }
 
   class AmuMmaIO extends Bundle {
-    val md       = UInt(4.W) // 3 : 0
-    val sat      = Bool()    // 4
-    val ms1      = UInt(4.W) // 8 : 5
-    val ms2      = UInt(4.W) // 12 : 9
-    val mtilem   = Mtilex()  // 21 : 13
-    val mtilen   = Mtilex()  // 30 : 22
-    val mtilek   = Mtilex()  // 39 : 31
-    val types    = UInt(3.W) // 42 : 40
-    val typed    = UInt(3.W) // 45 : 43
-    val isfp     = Bool()    // 46
-    val issigned = Bool()  // 47
+    val md       = UInt(4.W) // 68 : 65
+    val sat      = Bool()    // 64
+    val ms1      = UInt(4.W) // 63 : 60
+    val ms2      = UInt(4.W) // 59 : 56
+    val mtilem   = Mtilex()  // 55 : 40
+    val mtilen   = Mtilex()  // 39 : 24
+    val mtilek   = Mtilex()  // 23 : 8
+    val types    = UInt(3.W) // 7 : 5
+    val typed    = UInt(3.W) // 4 : 2
+    val isfp     = Bool()    // 1
+    val issigned = Bool()    // 0
   }
 
   object AmuMmaIO {
@@ -98,22 +98,22 @@ object Bundles {
 
   class AmuLsuIO extends Bundle {
     // src/dest matrix register
-    val ms        = UInt(4.W)         // 3 : 0
+    val ms        = UInt(4.W)         // 139 : 136
     // load(0)/store(1)
-    val ls        = Bool()            // 4
+    val ls        = Bool()            // 135
     // whether transposed
-    val transpose = Bool()            // 5
+    val transpose = Bool()            // 134
     // whether accumulation register
-    val isacc     = Bool()            // 6
-    val isA       = Bool()            // 7
-    val isB       = Bool()            // 8
+    val isacc     = Bool()            // 133
+    val isA       = Bool()            // 132
+    val isB       = Bool()            // 131
 
-    val baseAddr  = UInt(48.W)        // 56 : 9
-    val stride    = UInt(48.W)        // 104 : 57
+    val baseAddr  = UInt(48.W)        // 130 : 83
+    val stride    = UInt(48.W)        // 82 : 35
     
-    val row       = Mtilex()          // 113 : 105
-    val column    = Mtilex()          // 122 : 114
-    val widths    = MtypeMSew()       // 125 : 123
+    val row       = Mtilex()          // 34 : 19
+    val column    = Mtilex()          // 18 : 3
+    val widths    = MtypeMSew()       // 2 : 0
   }
 
   object AmuLsuIO {
@@ -133,8 +133,8 @@ object Bundles {
   }
 
   class AmuArithIO extends Bundle {
-    val md     = UInt(4.W) // 3 : 0
-    val opType = UInt(9.W) // 12 : 4
+    val md     = UInt(4.W) // 12 : 9
+    val opType = UInt(9.W) // 8 : 0
   }
 
   object AmuArithIO {
