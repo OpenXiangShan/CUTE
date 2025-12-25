@@ -386,8 +386,8 @@ trait CUTEImplParameters{
     val DecodedAmuCtrlFIFODepth = 8  //解码后的AMU指令FIFO的深度
     val DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) //解码后的AMU指令FIFO的深度
 
-    val ABMatrixRegCount = 8
-    val CMatrixRegCount = 8
+    val ABMatrixRegCount = 4
+    val CMatrixRegCount = 4
     val ABMatrixRegIdWidth = log2Ceil(ABMatrixRegCount)
     val CMatrixRegIdWidth = log2Ceil(CMatrixRegCount)
 
