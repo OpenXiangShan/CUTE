@@ -4,8 +4,9 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
+import utility.sram.SRAMTemplate
 
-// ABMatrixReg，统一的A/B矩阵寄存器
+// ABMatrixReg，使用SRAMTemplate实现的A/B矩阵寄存器
 // 用于暂存A矩阵或B矩阵的数据，供给TE模块使用
 // 在DataController看来是一个只读的矩阵
 // 矩阵需要支持滑动窗口，分Matrix_M个bank是合理的
@@ -55,10 +56,18 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
     // 实例化多个SRAM作为多个bank
     val sram_banks = (0 until ABMatrixRegNBanks) map { i =>
 
-        // 一个SeqMem就是一个SRAM，在一拍内完成读写，结果在下一拍输出
-        // 代码里有s0，s1对不同阶段的流水数据进行分类
-        val bank = SyncReadMem(ABMatrixRegBankNEntrys, Bits(width = (ABMatrixRegEntryByteSize*8).W))
-        bank.suggestName(s"CUTE-AB-MatrixReg-SRAM-${scp_id}")
+        // 使用SRAMTemplate替代SyncReadMem
+        // singlePort=true: 单端口SRAM，支持读写冲突处理
+        // latency=1: 读延迟为1拍
+        val bank = Module(new SRAMTemplate(
+            gen = UInt((ABMatrixRegEntryByteSize*8).W),
+            set = ABMatrixRegBankNEntrys,
+            way = 1,
+            singlePort = true,
+            latency = 1,
+            hasMbist = false,
+            hasSramCtl = false
+        ))
         
         // 第0周期的数据 - 读取
         val s0_bank_read_addr = DataControllerBankAddr(i)
@@ -111,12 +120,19 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
             }
         }
 
-        // Bank的读写控制
-        val Bank_Is_write = s0_final_write_valid
-        val Bank_Enable = s0_final_write_valid || read_go
-        val Bank_addr = Mux(read_go, DataControllerBankAddr(i), s0_final_write_addr)
-        val Bank_wdata = s0_final_write_data
-        s1_bank_read_data := bank.readWrite(Bank_addr, Bank_wdata, Bank_Enable, Bank_Is_write)
+        // 连接SRAMTemplate的读接口
+        // 写优先：如果有写请求，就不允许读
+        val bank_read_valid = s0_bank_read_valid && !s0_final_write_valid
+        bank.io.r.req.valid := bank_read_valid
+        bank.io.r.req.bits.setIdx := s0_bank_read_addr
+        // 读响应在下一拍返回（latency=1）
+        s1_bank_read_data := bank.io.r.resp.data(0)
+        
+        // 连接SRAMTemplate的写接口
+        // 使用apply方法设置写请求，way=1时waymask为None
+        bank.io.w.req.valid := s0_final_write_valid
+        bank.io.w.req.bits.setIdx := s0_final_write_addr
+        bank.io.w.req.bits.data(0) := s0_final_write_data
 
         bank
     }

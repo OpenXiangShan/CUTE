@@ -4,32 +4,29 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
-// import boom.exu.ygjk._
+import utility.sram.SRAMTemplate
 
-    //数据在C MatrixReg中的编排
-    //数据会先排N，再排M
-    //   N 0 1 2 3 4 5 6 7     CMatrixRegData里的排布
-    // M                               {bank    [0]         [1]}
-    // 0   0 1 2 3 4 5 6 7   |addr    0 |    0123,89ab   ghij,opgr 
-    // 1   8 9 a b c d e f   |        1 |    4567,cdef   klmn,stuv 
-    // 2   g h i j k l m n   |        2 |    wxyz,!...   @...,#... 
-    // 3   o p g r s t u v   |        3 |    ....,....   ....,....
-    // 4   w x y z .......   |        4 |    ....,....   ....,.... 
-    // 5   !..............   |        5 |    ....,....   ....,....
-    // 6   @..............   |        6 |    ....,....   ....,....
-    // 7   #..............   |        7 |    ....,....   ....,.... 
-    // 8   $..............   | ....................................
+// CMatrixReg，使用SRAMTemplate实现的C矩阵寄存器
+// 数据在C MatrixReg中的编排
+// 数据会先排N，再排M
+//   N 0 1 2 3 4 5 6 7     CMatrixRegData里的排布
+// M                               {bank    [0]         [1]}
+// 0   0 1 2 3 4 5 6 7   |addr    0 |    0123,89ab   ghij,opgr 
+// 1   8 9 a b c d e f   |        1 |    4567,cdef   klmn,stuv 
+// 2   g h i j k l m n   |        2 |    wxyz,!...   @...,#... 
+// 3   o p g r s t u v   |        3 |    ....,....   ....,....
+// 4   w x y z .......   |        4 |    ....,....   ....,.... 
+// 5   !..............   |        5 |    ....,....   ....,....
+// 6   @..............   |        6 |    ....,....   ....,....
+// 7   #..............   |        7 |    ....,....   ....,.... 
+// 8   $..............   | ....................................
 
+//TODO:这里就是有两个设计选项的
+//矩阵乘结果出来后，如果有逐元素的DSP部件，那就是npu的形状              ---> SOC上的NPU！        ～  ultra --> 不足的L3总带宽+不足的热功耗
+//如果矩阵乘结果出来后，如果没有逐元素的DSP部件，那就是矩阵乘部件的形状    ---> 通用多核/众核AI处理器 ～  dojo --> 充足的L3带宽+冗余的计算能力
 
-    //TODO:这里就是有两个设计选项的
-    //矩阵乘结果出来后，如果有逐元素的DSP部件，那就是npu的形状              ---> SOC上的NPU！        ～  ultra --> 不足的L3总带宽+不足的热功耗
-    //如果矩阵乘结果出来后，如果没有逐元素的DSP部件，那就是矩阵乘部件的形状    ---> 通用多核/众核AI处理器 ～  dojo --> 充足的L3带宽+冗余的计算能力
-    
-
-    //但是这里的reorder部件是一定要有的，方便后续的数据编排和处理，让输入和输出的数据排布一致。
-    //为什么在这里，因为我们的PE计算完后，在这里是第一次全逐个联线，所以这里是最合适的地方。
-
-
+//但是这里的reorder部件是一定要有的，方便后续的数据编排和处理，让输入和输出的数据排布一致。
+//为什么在这里，因为我们的PE计算完后，在这里是第一次全逐个联线，所以这里是最合适的地方。
 
 class CMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val FromDataController = new CDataControlMatrixRegIO
@@ -78,9 +75,18 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
     //实例化多个sram为多个bank
     val sram_banks = (0 until CMatrixRegNBanks) map { i =>
 
-        //一个SeqMem就是一个SRAM，在一拍内完成读写，结果在下一拍输出，所以后头的代码里有s0，s1对不同阶段的流水数据进行分类，好区分每个周期的数据
-        val bank = SyncReadMem(CMatrixRegBankNEntrys, Bits(width = (8*CMatrixRegEntryByteSize).W))
-        bank.suggestName("CUTE-C-MatrixReg-SRAM")
+        //使用SRAMTemplate替代SyncReadMem
+        //singlePort=false: 双端口SRAM，读写可以同时进行
+        //latency=1: 读延迟为1拍
+        val bank = Module(new SRAMTemplate(
+            gen = UInt((8*CMatrixRegEntryByteSize).W),
+            set = CMatrixRegBankNEntrys,
+            way = 1,
+            singlePort = false,
+            latency = 1,
+            hasMbist = false,
+            hasSramCtl = false
+        ))
         
         //第0周期的数据
         val s0_bank_read_addr = read_request_per_bank_addr(i)
@@ -89,26 +95,28 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
         val s1_bank_read_data = WireInit(0.U((8*CMatrixRegEntryByteSize).W))
         val debug_s1_bank_addr = RegNext(s0_bank_read_addr)
 
-
         io.MatrixRegIO.FromDataController.ReadResponseData(i).bits := s1_bank_read_data
         io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(i).bits := s1_bank_read_data
 
         io.MatrixRegIO.FromDataController.ReadResponseData(i).valid := decode_pre_request.IsReadFromDataController && read_request_response_valid(i)
         io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(i).valid := decode_pre_request.IsReadFromMemoryLoader && read_request_response_valid(i)
 
-        //单独的读接口
-        s1_bank_read_data := bank.read(s0_bank_read_addr, s0_bank_read_valid)
+        //连接SRAMTemplate的读接口
+        bank.io.r.req.valid := s0_bank_read_valid
+        bank.io.r.req.bits.setIdx := s0_bank_read_addr
+        //读响应在下一拍返回（latency=1）
+        s1_bank_read_data := bank.io.r.resp.data(0)
         
-        ////单独的写接口
+        //单独的写接口
         val s0_bank_write_addr = write_request_per_bank_addr(i)
         val s0_bank_write_data = write_request_per_bank_data(i)
         val s0_bank_write_valid = write_request_per_bank_valid(i)
 
-        when(s0_bank_write_valid) {
-            bank.write(s0_bank_write_addr, s0_bank_write_data)
-        }
+        bank.io.w.req.valid := s0_bank_write_valid
+        bank.io.w.req.bits.setIdx := s0_bank_write_addr
+        bank.io.w.req.bits.data(0) := s0_bank_write_data
+
+        bank
     }
-
-
 }
 
