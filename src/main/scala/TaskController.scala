@@ -148,7 +148,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val mtilek = UInt(TileDimWidth.W)
     val isMma = Bool()
     val isFp = Bool()
-    val isSigned = Bool()
   }
 
   class StoreEventEntry extends Bundle {
@@ -269,7 +268,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val pendingComputeK = RegInit(0.U(TileDimWidth.W))
   val pendingComputeIsMma = RegInit(false.B)
   val pendingComputeIsFp = RegInit(false.B)
-  val pendingComputeIsSigned = RegInit(false.B)
 
   val pendingStore = RegInit(false.B)
   val pendingStoreReg = RegInit(0.U(2.W))
@@ -357,7 +355,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     computeReadAFinishEvent.mtilek := pendingComputeK
     computeReadAFinishEvent.isMma := pendingComputeIsMma
     computeReadAFinishEvent.isFp := pendingComputeIsFp
-    computeReadAFinishEvent.isSigned := pendingComputeIsSigned
     computeReadAFinishEventEn := true.B
   }
 
@@ -376,7 +373,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     computeReadBFinishEvent.mtilek := pendingComputeK
     computeReadBFinishEvent.isMma := pendingComputeIsMma
     computeReadBFinishEvent.isFp := pendingComputeIsFp
-    computeReadBFinishEvent.isSigned := pendingComputeIsSigned
     computeReadBFinishEventEn := true.B
   }
 
@@ -395,7 +391,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     computeWriteCFinishEvent.mtilek := pendingComputeK
     computeWriteCFinishEvent.isMma := pendingComputeIsMma
     computeWriteCFinishEvent.isFp := pendingComputeIsFp
-    computeWriteCFinishEvent.isSigned := pendingComputeIsSigned
     computeWriteCFinishEventEn := true.B
   }
 
@@ -761,16 +756,28 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CDC_MicroTask_Config.Is_Transpose := false.B
     io.CDC_MicroTask_Config.Is_AfterOps_Tile := false.B
 
-    when (mmaInfo.types === 0.U) {
-      when (mmaInfo.issigned === true.B) {
+    when (mmaInfo.isfp) {
+      when (mmaInfo.types1 === "b001".U && mmaInfo.types2 === "b001".U) {
+        computeDataType := 1.U
+      }.elsewhen (mmaInfo.types1 === "b101".U && mmaInfo.types2 === "b101".U) {
+        computeDataType := 2.U
+      }.elsewhen (mmaInfo.types1 === "b110".U && mmaInfo.types2 === "b110".U) {
+        computeDataType := 3.U
+      }.otherwise {
+        computeDataType := 7.U
+      }
+    }.otherwise { // !mmaInfo.isfp
+      when (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b000".U) {
+        computeDataType := 6.U
+      }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b000".U) {
+        computeDataType := 4.U
+      }.elsewhen (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b100".U) {
+        computeDataType := 5.U
+      }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b100".U) {
         computeDataType := 0.U
       }.otherwise {
-        computeDataType := 6.U
+        computeDataType := 7.U
       }
-    }.elsewhen (mmaInfo.types === 1.U) {
-      computeDataType := 1.U
-    }.elsewhen (mmaInfo.types === 2.U) {
-      computeDataType := 3.U
     }
 
     scoreboard.io.update.compute_issue := true.B
@@ -794,7 +801,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     pendingComputeK := kVal
     pendingComputeIsMma := isMma
     pendingComputeIsFp := Mux(isMma, mmaInfo.isfp, false.B)
-    pendingComputeIsSigned := Mux(isMma, mmaInfo.issigned, false.B)
 
     computeIssueEvent.eventType := 0.U
     computeIssueEvent.aReg := aReg

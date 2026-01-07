@@ -962,8 +962,12 @@ class MatrixRegTaskDecode(MatrixRegTask: UInt) extends Field[UInt]{
 }
 
 case object MatrixRegTaskType extends Field[UInt]{
-    val TaskTypeBitWidth = 4    //对于单个MatrixReg，其并发的数据来源一共用3个，所以用3bit来表示。1.DataController对PE的输入数据的对MatrixReg读请求 2.DataController将PE的输出结果送入MatrixReg写请求 3。MemoryLoader对MatrixReg的写请求
-    //我们不知道MatrixReg的读写端口数量，所以用使能信号表示接受的数据来源
+    val TaskTypeBitWidth = 4
+    // 对于单个MatrixReg，其并发的数据来源一共用3个，所以用3bit来表示。
+    // 1. DataController对PE的输入数据的对MatrixReg读请求
+    // 2. DataController将PE的输出结果送入MatrixReg写请求
+    // 3. MemoryLoader对MatrixReg的写请求
+    // 我们不知道MatrixReg的读写端口数量，所以用使能信号表示接受的数据来源
     val EnableReadFromDataController = 1.U(TaskTypeBitWidth.W)
     val EnableWriteFromDataController = 2.U(TaskTypeBitWidth.W)
     val EnableWriteFromMemoryLoader = 4.U(TaskTypeBitWidth.W)

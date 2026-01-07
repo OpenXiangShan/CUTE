@@ -73,21 +73,22 @@ object Bundles {
 
     // TODO: use a correct width
     // The mlwidth is just a placeholder
-    def width = 16
+    def width = 9
   }
 
   class AmuMmaIO extends Bundle {
-    val md       = UInt(4.W) // 68 : 65
-    val sat      = Bool()    // 64
-    val ms1      = UInt(4.W) // 63 : 60
-    val ms2      = UInt(4.W) // 59 : 56
-    val mtilem   = Mtilex()  // 55 : 40
-    val mtilen   = Mtilex()  // 39 : 24
-    val mtilek   = Mtilex()  // 23 : 8
-    val types    = UInt(3.W) // 7 : 5
-    val typed    = UInt(3.W) // 4 : 2
-    val isfp     = Bool()    // 1
-    val issigned = Bool()    // 0
+    val rm       = UInt(3.W) // 52 : 50
+    val md       = UInt(4.W) // 49 : 46
+    val sat      = Bool()    // 45
+    val ms1      = UInt(4.W) // 44 : 41
+    val ms2      = UInt(4.W) // 40 : 37
+    val mtilem   = Mtilex()  // 36 : 28
+    val mtilen   = Mtilex()  // 27 : 19
+    val mtilek   = Mtilex()  // 18 : 10
+    val types2   = UInt(3.W) // 9 : 8
+    val types1   = UInt(3.W) // 6 : 4
+    val typed    = UInt(3.W) // 3 : 1
+    val isfp     = Bool()    // 0
   }
 
   object AmuMmaIO {
@@ -98,21 +99,21 @@ object Bundles {
 
   class AmuLsuIO extends Bundle {
     // src/dest matrix register
-    val ms        = UInt(4.W)         // 139 : 136
+    val ms        = UInt(4.W)         // 125 : 122
     // load(0)/store(1)
-    val ls        = Bool()            // 135
+    val ls        = Bool()            // 121
     // whether transposed
-    val transpose = Bool()            // 134
+    val transpose = Bool()            // 120
     // whether accumulation register
-    val isacc     = Bool()            // 133
-    val isA       = Bool()            // 132
-    val isB       = Bool()            // 131
+    val isacc     = Bool()            // 119
+    val isA       = Bool()            // 118
+    val isB       = Bool()            // 117
 
-    val baseAddr  = UInt(48.W)        // 130 : 83
-    val stride    = UInt(48.W)        // 82 : 35
+    val baseAddr  = UInt(48.W)        // 116 : 69
+    val stride    = UInt(48.W)        // 68 : 21
     
-    val row       = Mtilex()          // 34 : 19
-    val column    = Mtilex()          // 18 : 3
+    val row       = Mtilex()          // 20 : 12
+    val column    = Mtilex()          // 11 : 3
     val widths    = MtypeMSew()       // 2 : 0
   }
 
