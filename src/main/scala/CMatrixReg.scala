@@ -75,25 +75,46 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
     //实例化多个sram为多个bank
     val sram_banks = (0 until CMatrixRegNBanks) map { i =>
 
-        //使用SRAMTemplate替代SyncReadMem
-        //singlePort=false: 双端口SRAM，读写可以同时进行
-        //latency=1: 读延迟为1拍
-        val bank = Module(new SRAMTemplate(
+        // 两个单口SRAM，奇偶地址各自负责，期望奇偶地址读写错开，奇读偶写，偶读奇写
+        val bankDepthHalf = (CMatrixRegBankNEntrys + 1) / 2
+        val evenBank = Module(new SRAMTemplate(
             gen = UInt((8*CMatrixRegEntryByteSize).W),
-            set = CMatrixRegBankNEntrys,
+            set = bankDepthHalf,
             way = 1,
-            singlePort = false,
+            singlePort = true,
             latency = 1,
             hasMbist = false,
             hasSramCtl = false
         ))
+        evenBank.suggestName("CUTE-C-MatrixReg-Even-SRAM")
+
+        val oddBank = Module(new SRAMTemplate(
+            gen = UInt((8*CMatrixRegEntryByteSize).W),
+            set = bankDepthHalf,
+            way = 1,
+            singlePort = true,
+            latency = 1,
+            hasMbist = false,
+            hasSramCtl = false
+        ))
+        oddBank.suggestName("CUTE-C-MatrixReg-Odd-SRAM")
         
         //第0周期的数据
         val s0_bank_read_addr = read_request_per_bank_addr(i)
         val s0_bank_read_valid = read_request_per_bank_valid(i)
+        val s0_bank_write_addr = write_request_per_bank_addr(i)
+        val s0_bank_write_data = write_request_per_bank_data(i)
+        val s0_bank_write_valid = write_request_per_bank_valid(i)
+
+        val s0_read_is_even = s0_bank_read_addr(0) === 0.U
+        val s0_write_is_even = s0_bank_write_addr(0) === 0.U
+        val s0_read_idx = s0_bank_read_addr >> 1
+        val s0_write_idx = s0_bank_write_addr >> 1
+
         //第1周期的数据
         val s1_bank_read_data = WireInit(0.U((8*CMatrixRegEntryByteSize).W))
         val debug_s1_bank_addr = RegNext(s0_bank_read_addr)
+        val s1_read_is_even = RegNext(s0_read_is_even)
 
         io.MatrixRegIO.FromDataController.ReadResponseData(i).bits := s1_bank_read_data
         io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(i).bits := s1_bank_read_data
@@ -101,22 +122,38 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
         io.MatrixRegIO.FromDataController.ReadResponseData(i).valid := decode_pre_request.IsReadFromDataController && read_request_response_valid(i)
         io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(i).valid := decode_pre_request.IsReadFromMemoryLoader && read_request_response_valid(i)
 
-        //连接SRAMTemplate的读接口
-        bank.io.r.req.valid := s0_bank_read_valid
-        bank.io.r.req.bits.setIdx := s0_bank_read_addr
-        //读响应在下一拍返回（latency=1）
-        s1_bank_read_data := bank.io.r.resp.data(0)
-        
-        //单独的写接口
-        val s0_bank_write_addr = write_request_per_bank_addr(i)
-        val s0_bank_write_data = write_request_per_bank_data(i)
-        val s0_bank_write_valid = write_request_per_bank_valid(i)
+        //单口读路径：奇偶分流
+        // 偶地址SRAM读请求
+        evenBank.io.r.req.valid := s0_bank_read_valid && s0_read_is_even
+        evenBank.io.r.req.bits.setIdx := s0_read_idx
 
-        bank.io.w.req.valid := s0_bank_write_valid
-        bank.io.w.req.bits.setIdx := s0_bank_write_addr
-        bank.io.w.req.bits.data(0) := s0_bank_write_data
+        // 奇地址SRAM读请求
+        oddBank.io.r.req.valid := s0_bank_read_valid && !s0_read_is_even
+        oddBank.io.r.req.bits.setIdx := s0_read_idx
 
-        bank
+        // 读数据在下一拍返回（latency=1）
+        val even_read_data = evenBank.io.r.resp.data(0)
+        val odd_read_data  = oddBank.io.r.resp.data(0)
+        s1_bank_read_data := Mux(s1_read_is_even, even_read_data, odd_read_data)
+
+        //单口写路径：奇偶分流
+        // 偶地址SRAM写请求
+        evenBank.io.w.req.valid := s0_bank_write_valid && s0_write_is_even
+        evenBank.io.w.req.bits.setIdx := s0_write_idx
+        evenBank.io.w.req.bits.data(0) := s0_bank_write_data
+
+        // 奇地址SRAM写请求
+        oddBank.io.w.req.valid := s0_bank_write_valid && !s0_write_is_even
+        oddBank.io.w.req.bits.setIdx := s0_write_idx
+        oddBank.io.w.req.bits.data(0) := s0_bank_write_data
+
+        //单口SRAM读写不能同拍同时有效，分别对奇偶SRAM进行断言
+        val even_conflict = s0_bank_read_valid && s0_read_is_even && s0_bank_write_valid && s0_write_is_even
+        val odd_conflict  = s0_bank_read_valid && !s0_read_is_even && s0_bank_write_valid && !s0_write_is_even
+        assert(!even_conflict, "CMatrixReg: even-address single-port SRAM read & write in same cycle")
+        assert(!odd_conflict,  "CMatrixReg: odd-address single-port SRAM read & write in same cycle")
+
+        (evenBank, oddBank)
     }
 }
 
