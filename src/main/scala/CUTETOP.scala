@@ -79,7 +79,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     //MTE的默认输入
     MTE.io.VectorA <> ADC.io.VectorA
     MTE.io.VectorB <> BDC.io.VectorB
-    MTE.io.MatirxC <> CDC.io.Matrix_C
+    MTE.io.MatrixC <> CDC.io.Matrix_C
     MTE.io.MatrixD <> CDC.io.ResultMatrix_D
     MTE.io.ConfigInfo <> TaskCtrl.io.MTE_MicroTask_Config
     MTE.io.DebugInfo.DebugTimeStampe := DebugTimeStampe

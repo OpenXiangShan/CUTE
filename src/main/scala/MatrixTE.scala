@@ -13,7 +13,7 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val VectorA = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_MN).W)))
         val VectorB = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_MN).W)))
-        val MatirxC = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
+        val MatrixC = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
         val MatrixD = DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W))
         val ConfigInfo = Flipped((new MTEMicroTaskConfigIO))
         val ComputeGo            = Output(Bool())
@@ -33,10 +33,10 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
             Matrix(i)(j).AVector.valid      := io.VectorA.valid
             Matrix(i)(j).BVector.bits       := io.VectorB.bits((j+1)*ReduceWidth-1,(j)*ReduceWidth)
             Matrix(i)(j).BVector.valid      := io.VectorB.valid
-            Matrix(i)(j).CAdd.bits          := io.MatirxC.bits((i*Matrix_MN+j+1)*ResultWidth-1,(i*Matrix_MN+j)*ResultWidth)
-            Matrix(i)(j).CAdd.valid         := io.MatirxC.valid
+            Matrix(i)(j).CAdd.bits          := io.MatrixC.bits((i*Matrix_MN+j+1)*ResultWidth-1,(i*Matrix_MN+j)*ResultWidth)
+            Matrix(i)(j).CAdd.valid         := io.MatrixC.valid
             Matrix(i)(j).opcode             := io.ConfigInfo.dataType
-            when(io.VectorA.valid && io.VectorB.valid && io.MatirxC.valid){
+            when(io.VectorA.valid && io.VectorB.valid && io.MatrixC.valid){
                 // printf("[MatrixTE]: Matrix(%d)(%d) ReduceA:%x ReduceB:%x AddC:%x\n",i.U,j.U,Matrix(i)(j).ReduceA.bits,Matrix(i)(j).ReduceB.bits,Matrix(i)(j).AddC.bits)
             }
         }
@@ -74,7 +74,7 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     val ReducePEInputAllReady = Matrix(0)(0).AVector.ready && Matrix(0)(0).BVector.ready && Matrix(0)(0).CAdd.ready
     io.VectorA.ready := ReducePEInputAllReady
     io.VectorB.ready := ReducePEInputAllReady
-    io.MatirxC.ready := ReducePEInputAllReady
+    io.MatrixC.ready := ReducePEInputAllReady
     
     assert(io.VectorA.fire === io.VectorB.fire, "VectorA and VectorB should be fired at the same time")
 
@@ -88,9 +88,9 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
         {
             printf("[MatrixTE<%d>]: VectorB:%x\n",io.DebugInfo.DebugTimeStampe,io.VectorB.bits)
         }
-        when(io.MatirxC.fire)
+        when(io.MatrixC.fire)
         {
-            printf("[MatrixTE<%d>]: MatirxC:%x\n",io.DebugInfo.DebugTimeStampe,io.MatirxC.bits)
+            printf("[MatrixTE<%d>]: MatrixC:%x\n",io.DebugInfo.DebugTimeStampe,io.MatrixC.bits)
         }
         when(io.MatrixD.fire)
         {
