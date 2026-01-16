@@ -4,8 +4,6 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
-// import boom.exu.ygjk._
-// import boom.v3.util._
 
 //BMemoryLoader，用于加载B矩阵的数据，供给MatrixReg使用
 //从不同的存储介质中加载数据，供给MatrixReg使用
@@ -38,8 +36,6 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     // 对外统一使用 ToMatrixRegIO
 
     io.ToMatrixRegIO.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.BankAddr)
-    io.ToMatrixRegIO.BankId.valid := false.B
-    io.ToMatrixRegIO.BankId.bits := 0.U
     io.ToMatrixRegIO.Data := 0.U.asTypeOf(io.ToMatrixRegIO.Data)
     io.ToMatrixRegIO.ZeroFill := 0.U.asTypeOf(io.ToMatrixRegIO.ZeroFill)  // B矩阵不使用ZeroFill功能，但需要初始化信号
     io.LocalMMUIO.Request.valid := false.B

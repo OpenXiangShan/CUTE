@@ -24,7 +24,7 @@ class BDataController(implicit p: Parameters) extends CuteModule{
 
     //TODO:init
     io.VectorB.valid := false.B
-    io.VectorB.bits := 0.U
+    io.VectorB.bits := io.FromMatrixRegIO.Data.bits.asUInt
     io.ConfigInfo.MicroTaskReady := false.B
     io.ConfigInfo.MicroTaskEndValid := false.B
 
@@ -124,103 +124,106 @@ class BDataController(implicit p: Parameters) extends CuteModule{
 
     //如果是mm_task,且计算状态机是init，那么就开始初始化
     when(state === s_mm_task){
-        when(calculate_state === s_cal_init){
-            //初始化阶段，要将所有的迭代器初始化
-            M_Iterator := 0.U
-            N_Iterator := 0.U
-            K_Iterator := 0.U
-            BVectorCount := 0.U
-            BRequestVectorCount := 0.U
-            MatrixRegDataHoldReg := 0.U
-            MatrixRegDataHoldValid := false.B
-            //阶段1，初始化完成，开始供数任务
-            calculate_state := s_cal_working
-        }.elsewhen(calculate_state === s_cal_working){
-            //阶段2，计算开始，计算对MatrixReg的取数地址
+        switch(calculate_state) {
+            is(s_cal_init) {
+                //初始化阶段，要将所有的迭代器初始化
+                M_Iterator := 0.U
+                N_Iterator := 0.U
+                K_Iterator := 0.U
+                BVectorCount := 0.U
+                BRequestVectorCount := 0.U
+                MatrixRegDataHoldReg := 0.U
+                MatrixRegDataHoldValid := false.B
+                //阶段1，初始化完成，开始供数任务
+                calculate_state := s_cal_working
+            }
+            is(s_cal_working) {
+                //阶段2，计算开始，计算对MatrixReg的取数地址
 
-            // if (YJPBDCDebugEnable)
-            // {
-            //     printf("[BDataController<%d>]BDataController: M_Iterator is %d, N_Iterator is %d, K_Iterator is %d\n",io.DebugInfo.DebugTimeStampe, M_Iterator, N_Iterator, K_Iterator)
-            //     printf("[BDataController<%d>]BDataController: M_IteratorMax is %d, N_IteratorMax is %d, K_IteratorMax is %d\n",io.DebugInfo.DebugTimeStampe, M_IteratorMax, N_IteratorMax, K_IteratorMax)
-            // }
-            //MTE循环的最外层是M，然后是N，最后是K,所以这里在同步信号的ComputeGo的协同下，执行Max_Caculate_Iter次取数
-            val next_addr = Wire(UInt(ABMatrixRegBankNEntrys.W))
-            next_addr := N_Iterator * K_IteratorMax + K_Iterator
-            MatrixRegRequestBankAddr.bits.foreach(_ := next_addr)
-            
-            //只要ComputeGo有效，就表示一定会有一个数据被消耗，我们可以继续取数
-            //但我们有一个周期的读数延迟，所以如果当前拍不能再继续计算，则我们取得数会在NACK，我们将NACK的数据保存在holdreg中
-            //只要等Computgo有效，就可以继续取数，我们会将NACK的数据输出给TE
-            when(io.ComputeGo && BRequestVectorCount < Max_Caculate_Iter){
-                //计算取数地址
-                MatrixRegRequestBankAddr.valid := true.B
-                BRequestVectorCount := BRequestVectorCount + 1.U
-                N_Iterator := N_Iterator + 1.U
-                when(N_Iterator === N_IteratorMax - 1.U){
-                    N_Iterator := 0.U
-                    M_Iterator := M_Iterator + 1.U
-                    when(M_Iterator === M_IteratorMax - 1.U){
-                        M_Iterator := 0.U
-                        K_Iterator := K_Iterator + 1.U
+                // if (YJPBDCDebugEnable)
+                // {
+                //     printf("[BDataController<%d>]BDataController: M_Iterator is %d, N_Iterator is %d, K_Iterator is %d\n",io.DebugInfo.DebugTimeStampe, M_Iterator, N_Iterator, K_Iterator)
+                //     printf("[BDataController<%d>]BDataController: M_IteratorMax is %d, N_IteratorMax is %d, K_IteratorMax is %d\n",io.DebugInfo.DebugTimeStampe, M_IteratorMax, N_IteratorMax, K_IteratorMax)
+                // }
+                //MTE循环的最外层是M，然后是N，最后是K,所以这里在同步信号的ComputeGo的协同下，执行Max_Caculate_Iter次取数
+                val next_addr = Wire(UInt(ABMatrixRegBankNEntrys.W))
+                next_addr := N_Iterator * K_IteratorMax + K_Iterator
+                MatrixRegRequestBankAddr.bits.foreach(_ := next_addr)
+                
+                //只要ComputeGo有效，就表示一定会有一个数据被消耗，我们可以继续取数
+                //但我们有一个周期的读数延迟，所以如果当前拍不能再继续计算，则我们取得数会在NACK，我们将NACK的数据保存在holdreg中
+                //只要等Computgo有效，就可以继续取数，我们会将NACK的数据输出给TE
+                when(io.ComputeGo && BRequestVectorCount < Max_Caculate_Iter){
+                    //计算取数地址
+                    MatrixRegRequestBankAddr.valid := true.B
+                    BRequestVectorCount := BRequestVectorCount + 1.U
+                    N_Iterator := N_Iterator + 1.U
+                    when(N_Iterator === N_IteratorMax - 1.U){
+                        N_Iterator := 0.U
+                        M_Iterator := M_Iterator + 1.U
+                        when(M_Iterator === M_IteratorMax - 1.U){
+                            M_Iterator := 0.U
+                            K_Iterator := K_Iterator + 1.U
+                        }
                     }
+                }.otherwise{
+                    MatrixRegRequestBankAddr.valid := false.B
                 }
-            }.otherwise{
-                MatrixRegRequestBankAddr.valid := false.B
-            }
 
-            //只要MatrixRegData是valid或者holdreg是valid，就可以输出数据
-            when(MatrixRegData.valid || MatrixRegDataHoldValid){
-                io.VectorB.valid := true.B
-                io.VectorB.bits := Mux(MatrixRegDataHoldValid,MatrixRegDataHoldReg, MatrixRegData.bits.asUInt)//优先输出holdreg的数据
-            }
+                //只要MatrixRegData是valid或者holdreg是valid，就可以输出数据
+                when(MatrixRegData.valid || MatrixRegDataHoldValid){
+                    io.VectorB.valid := true.B
+                }
+                when (MatrixRegDataHoldValid) {
+                    io.VectorB.bits := MatrixRegDataHoldReg
+                }
 
-            when(io.VectorB.fire && io.ComputeGo)
-            {
-                //只有当数据被消耗的时候，才会增加AVectorCount
-                BVectorCount := BVectorCount + 1.U
-                MatrixRegDataHoldValid := false.B   //只要数据被消耗，肯定优先消耗holdreg的数据
-                when(BVectorCount === Max_Caculate_Iter - 1.U){//如果数据全部被消耗，那么我们就结束计算
-                    calculate_state := s_cal_end
+                when(io.VectorB.fire && io.ComputeGo)
+                {
+                    //只有当数据被消耗的时候，才会增加AVectorCount
+                    BVectorCount := BVectorCount + 1.U
+                    MatrixRegDataHoldValid := false.B   //只要数据被消耗，肯定优先消耗holdreg的数据
+                    when(BVectorCount === Max_Caculate_Iter - 1.U){//如果数据全部被消耗，那么我们就结束计算
+                        calculate_state := s_cal_end
+                        if (YJPBDCDebugEnable)
+                        {
+                            printf("[BDataController<%d>]BDataController: AVectorCount is %d, we can end this task\n",io.DebugInfo.DebugTimeStampe, BVectorCount)
+                        }
+                    }
+                    //输出AVectorCount，VectorA的信息
                     if (YJPBDCDebugEnable)
                     {
-                        printf("[BDataController<%d>]BDataController: AVectorCount is %d, we can end this task\n",io.DebugInfo.DebugTimeStampe, BVectorCount)
+                        printf("[BDataController<%d>]BDataController: BVectorCount is %d,BVector is %d\n",io.DebugInfo.DebugTimeStampe, BVectorCount,io.VectorB.bits)
+                    }
+                }.elsewhen(io.VectorB.valid && !io.VectorB.ready && !io.ComputeGo && MatrixRegData.valid){
+                    //如果数据没有被消耗，那么我们就要保存MatrixReg的数据
+                    //但我们得看看MatrixReg的数据是不是有效的
+                    MatrixRegDataHoldReg := MatrixRegData.bits.asUInt
+                    MatrixRegDataHoldValid := true.B
+                }.elsewhen(io.VectorB.valid && !io.VectorB.ready && !io.ComputeGo && MatrixRegDataHoldValid)
+                {
+                    //如果数据没有被消耗，且我们HlodReg中有数据，我们就继续Hlod这份数据
+                    MatrixRegDataHoldReg := MatrixRegDataHoldReg
+                    MatrixRegDataHoldValid := true.B
+                }
+            }
+            is(s_cal_end) {
+                //当前计算任务结束，等待TaskCtrl的确认
+                io.ConfigInfo.MicroTaskEndValid := true.B
+                when(io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady){
+                    //TaskCtrl确认后，我们就可以进入下一个任务了
+                    state := s_idle
+                    calculate_state := s_cal_idle
+                    if (YJPBDCDebugEnable)
+                    {
+                        printf("[BDataController<%d>]BDataController: TaskCtrl confirm, we can go to next task\n",io.DebugInfo.DebugTimeStampe)
                     }
                 }
-                //输出AVectorCount，VectorA的信息
-                if (YJPBDCDebugEnable)
-                {
-                    printf("[BDataController<%d>]BDataController: BVectorCount is %d,BVector is %d\n",io.DebugInfo.DebugTimeStampe, BVectorCount,io.VectorB.bits)
-                }
-            }.elsewhen(io.VectorB.valid && !io.VectorB.ready && !io.ComputeGo && MatrixRegData.valid){
-                //如果数据没有被消耗，那么我们就要保存MatrixReg的数据
-                //但我们得看看MatrixReg的数据是不是有效的
-                MatrixRegDataHoldReg := MatrixRegData.bits.asUInt
-                MatrixRegDataHoldValid := true.B
-            }.elsewhen(io.VectorB.valid && !io.VectorB.ready && !io.ComputeGo && MatrixRegDataHoldValid)
-            {
-                //如果数据没有被消耗，且我们HlodReg中有数据，我们就继续Hlod这份数据
-                MatrixRegDataHoldReg := MatrixRegDataHoldReg
-                MatrixRegDataHoldValid := true.B
             }
-        }.elsewhen(calculate_state === s_cal_end){
-            //当前计算任务结束，等待TaskCtrl的确认
-            io.ConfigInfo.MicroTaskEndValid := true.B
-            when(io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady){
-                //TaskCtrl确认后，我们就可以进入下一个任务了
-                state := s_idle
-                calculate_state := s_cal_idle
-                if (YJPBDCDebugEnable)
-                {
-                    printf("[BDataController<%d>]BDataController: TaskCtrl confirm, we can go to next task\n",io.DebugInfo.DebugTimeStampe)
-                }
+            is(s_cal_idle) {
+                //计算状态机空闲
+                //加速器闲闲没事做
             }
-
-        }.elsewhen(calculate_state === s_cal_idle){
-            //计算状态机空闲
-            //加速器闲闲没事做
-        }.otherwise{
-            //未定义状态
-            //加速器闲闲没事做
         }
     }    
 }

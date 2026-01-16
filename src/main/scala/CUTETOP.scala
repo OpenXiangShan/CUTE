@@ -41,7 +41,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     TaskCtrl.io.DebugTimeStampe := DebugTimeStampe
     //ADC的默认输入
     ADC.io.FromMatrixRegIO.Data.valid := false.B
-    ADC.io.FromMatrixRegIO.Data.bits := 0.U.asTypeOf(ADC.io.FromMatrixRegIO.Data.bits)
     ADC.io.FromMatrixRegIO.BankAddr.ready := false.B
     ADC.io.ConfigInfo <> TaskCtrl.io.ADC_MicroTask_Config
     ADC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
@@ -53,7 +52,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     //BDC的默认输入
     BDC.io.FromMatrixRegIO.Data.valid := false.B
-    BDC.io.FromMatrixRegIO.Data.bits := 0.U.asTypeOf(BDC.io.FromMatrixRegIO.Data.bits)
     BDC.io.FromMatrixRegIO.BankAddr.ready := false.B
     BDC.io.ConfigInfo <> TaskCtrl.io.BDC_MicroTask_Config
     BDC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
@@ -101,8 +99,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
         //MemoryLoader的请求
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
-        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.valid := false.B
-        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankId.bits)
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill)
     }
@@ -124,15 +120,12 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     }
 
     def abLoaderActivity(ioPort: ABMemoryLoaderMatrixRegIO): Bool = {
-        ioPort.BankId.valid ||
         ioPort.BankAddr.map(_.valid).reduce(_||_) ||
         ioPort.Data.map(_.valid).reduce(_||_) ||
         ioPort.ZeroFill.map(_.valid).reduce(_||_)
     }
 
     def initABLoaderPort(dest: ABMemoryLoaderMatrixRegIO): Unit = {
-        dest.BankId.valid := false.B
-        dest.BankId.bits := 0.U
         for (b <- 0 until ABMatrixRegNBanks) {
             dest.BankAddr(b).valid := false.B
             dest.BankAddr(b).bits := 0.U
@@ -144,8 +137,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     }
 
     def copyABLoaderPort(dest: ABMemoryLoaderMatrixRegIO, src: ABMemoryLoaderMatrixRegIO): Unit = {
-        dest.BankId.valid := src.BankId.valid
-        dest.BankId.bits := src.BankId.bits
         for (b <- 0 until ABMatrixRegNBanks) {
             dest.BankAddr(b).valid := src.BankAddr(b).valid
             dest.BankAddr(b).bits := src.BankAddr(b).bits

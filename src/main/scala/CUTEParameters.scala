@@ -634,8 +634,6 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val Is_EasyScale_Only_Ops               = (Bool())      //是否只是简单的缩放，不需要额外的后操作计算
     val Is_VecFIFO_Ops                      = (Bool())      //是否真的需要通用VecFIFO的参与
 
-
-
     val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
     val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
     val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
@@ -769,7 +767,6 @@ class ABDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
 // 统一的AB MemoryLoader接口，支持ZeroFill功能
 class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(ABMatrixRegBankNLines)，是输入的需要握手的数据
-    val BankId = Flipped(Valid(UInt(log2Ceil(ABMatrixRegNBanks).W)))
     val BankAddr = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntrys).W))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
     val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))

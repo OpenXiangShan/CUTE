@@ -32,7 +32,6 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
 
     // MemoryLoader端的信号
     val MemoryLoaderBankAddr = io.MatrixRegIO.FromMemoryLoader.BankAddr
-    val MemoryLoaderBankId = io.MatrixRegIO.FromMemoryLoader.BankId.bits
     val MemoryLoaderData = io.MatrixRegIO.FromMemoryLoader.Data
     val MemoryLoaderZeroFill = io.MatrixRegIO.FromMemoryLoader.ZeroFill
     

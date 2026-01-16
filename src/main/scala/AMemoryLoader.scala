@@ -4,10 +4,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
-// import boom.exu.ygjk._
-// import boom.v3.util._
-import freechips.rocketchip.rocket.Instructions.MAX
-import freechips.rocketchip.util.SeqToAugmentedSeq
+
 //AMemoryLoader，用于加载A矩阵的数据，供给MatrixReg使用
 //从不同的存储介质中加载数据，供给MatrixReg使用
 
@@ -57,8 +54,6 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     // 对外统一使用 ToMatrixRegIO
     //TODO:init
     io.ToMatrixRegIO.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.BankAddr)
-    io.ToMatrixRegIO.BankId.valid := false.B
-    io.ToMatrixRegIO.BankId.bits := 0.U
     io.ToMatrixRegIO.Data := 0.U.asTypeOf(io.ToMatrixRegIO.Data)
     io.ToMatrixRegIO.ZeroFill := 0.U.asTypeOf(io.ToMatrixRegIO.ZeroFill)
     io.LocalMMUIO.Request.valid := false.B

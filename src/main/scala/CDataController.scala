@@ -25,7 +25,11 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     })
 
     io.Matrix_C.valid := false.B
-    io.Matrix_C.bits := 0.U
+    val ResponseData = Wire(Vec(CMatrixRegNBanks, UInt(CMatrixRegEntryBitSize.W)))
+    for (i <- 0 until CMatrixRegNBanks) {
+        ResponseData(i) := io.FromMatrixRegIO.ReadResponseData(i).bits
+    }
+    io.Matrix_C.bits := ResponseData.asUInt
     io.ResultMatrix_D.ready := false.B
     io.FromMatrixRegIO.WriteBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.WriteBankAddr)
     io.FromMatrixRegIO.WriteRequestData := 0.U.asTypeOf(io.FromMatrixRegIO.WriteRequestData)
@@ -150,166 +154,163 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
     //如果是mm_task,且计算状态机是init，那么就开始初始化
     when(state === s_mm_task){
-        when(calculate_state === s_cal_init){
-            M_Iterator := 0.U
-            N_Iterator := 0.U
-            K_Iterator := 0.U
-            addr_Iterator := 0.U
-            result_K_Iterator := 0.U
-            Store_M_Iterator := 0.U
-            Store_N_Iterator := 0.U
-            CVectorCount := 0.U
-            DVectorCount := 0.U
-            ReadMatrixRegDataHoldReg := 0.U
-            After_ops_issue_iter := 0.U
-            ReadMatrixRegDataHoldValid := false.B
+        switch(calculate_state) {
+            is(s_cal_init) {
+                M_Iterator := 0.U
+                N_Iterator := 0.U
+                K_Iterator := 0.U
+                addr_Iterator := 0.U
+                result_K_Iterator := 0.U
+                Store_M_Iterator := 0.U
+                Store_N_Iterator := 0.U
+                CVectorCount := 0.U
+                DVectorCount := 0.U
+                ReadMatrixRegDataHoldReg := 0.U
+                After_ops_issue_iter := 0.U
+                ReadMatrixRegDataHoldValid := false.B
 
-            assert(MatrixRegWorkingTensor_N === Tensor_MN.U, "MatrixRegWorkingTensor_N = %d is not Full!", MatrixRegWorkingTensor_N)
-            //阶段1，计算初始化完成，开始工作
-            calculate_state := s_cal_working
+                assert(MatrixRegWorkingTensor_N === Tensor_MN.U, "MatrixRegWorkingTensor_N = %d is not Full!", MatrixRegWorkingTensor_N)
+                //阶段1，计算初始化完成，开始工作
+                calculate_state := s_cal_working
 
-            if (YJPCDCDebugEnable)
-            {
-                //Max_Caculate_Iter
-                //Max_Store_Iter
-                printf("[CDataController<%d>]CDataController: Max_Caculate_Iter is %d, Max_Store_Iter is %d\n",io.DebugInfo.DebugTimeStampe, Max_Caculate_Iter, Max_Store_Iter)
-            }
-
-        }.elsewhen(calculate_state === s_cal_working){
-            //阶段2，计算开始，计算对MatrixReg的取数地址
-
-            //循环的最外层是M，然后是N
-            io.FromMatrixRegIO.ReadBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.ReadBankAddr)
-            val load_addr =  M_Iterator * N_IteratorMax + N_Iterator
-
-            when(io.ComputeGo && CVectorCount < Max_Caculate_Iter){
-                //计算取数地址
-                ReadRequest := true.B
-                io.FromMatrixRegIO.ReadBankAddr.map(_.valid := true.B)
-                io.FromMatrixRegIO.ReadBankAddr.map(_.bits := load_addr)
-                N_Iterator := N_Iterator + 1.U
-                when(N_Iterator === N_IteratorMax - 1.U){
-                    N_Iterator := 0.U
-                    M_Iterator := M_Iterator + 1.U
-                    when(M_Iterator === M_IteratorMax - 1.U){
-                        //如果M迭代器到达最大值，那么我们就结束计算
-                        M_Iterator := 0.U
-                        K_Iterator := K_Iterator + 1.U
-                    }
+                if (YJPCDCDebugEnable)
+                {
+                    //Max_Caculate_Iter
+                    //Max_Store_Iter
+                    printf("[CDataController<%d>]CDataController: Max_Caculate_Iter is %d, Max_Store_Iter is %d\n",io.DebugInfo.DebugTimeStampe, Max_Caculate_Iter, Max_Store_Iter)
                 }
-            }.otherwise{
+            }
+            is(s_cal_working) {
+                //阶段2，计算开始，计算对MatrixReg的取数地址
+
+                //循环的最外层是M，然后是N
                 io.FromMatrixRegIO.ReadBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.ReadBankAddr)
-            }
+                val load_addr =  M_Iterator * N_IteratorMax + N_Iterator
 
-            val Response_valid = MatrixRegReadResponseData.map(_.valid).reduce(_&&_)
-            val Response_data = Wire(Vec(CMatrixRegNBanks, (UInt(CMatrixRegEntryBitSize.W))))
-            for (i <- 0 until CMatrixRegNBanks){
-                Response_data(i) := MatrixRegReadResponseData(i).bits
-            }
-            when(Response_valid|| ReadMatrixRegDataHoldValid){
-                io.Matrix_C.valid := true.B
-                io.Matrix_C.bits := Mux(ReadMatrixRegDataHoldValid,ReadMatrixRegDataHoldReg,Response_data.asUInt) 
-            }
+                when(io.ComputeGo && CVectorCount < Max_Caculate_Iter){
+                    //计算取数地址
+                    ReadRequest := true.B
+                    io.FromMatrixRegIO.ReadBankAddr.map(_.valid := true.B)
+                    io.FromMatrixRegIO.ReadBankAddr.map(_.bits := load_addr)
+                    N_Iterator := N_Iterator + 1.U
+                    when(N_Iterator === N_IteratorMax - 1.U){
+                        N_Iterator := 0.U
+                        M_Iterator := M_Iterator + 1.U
+                        when(M_Iterator === M_IteratorMax - 1.U){
+                            //如果M迭代器到达最大值，那么我们就结束计算
+                            M_Iterator := 0.U
+                            K_Iterator := K_Iterator + 1.U
+                        }
+                    }
+                }.otherwise{
+                    io.FromMatrixRegIO.ReadBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.ReadBankAddr)
+                }
+
+                val Response_valid = MatrixRegReadResponseData.map(_.valid).reduce(_&&_)
+                when(Response_valid|| ReadMatrixRegDataHoldValid){
+                    io.Matrix_C.valid := true.B
+                }
+                when (ReadMatrixRegDataHoldValid) {
+                    io.Matrix_C.bits := ReadMatrixRegDataHoldReg
+                }
 
 
-            when(io.Matrix_C.fire && io.ComputeGo)
-            {
-                //只有当数据被消耗的时候，才会增加AVectorCount
-                CVectorCount := CVectorCount + 1.U
-                ReadMatrixRegDataHoldValid := false.B   //只要数据被消耗，肯定优先消耗holdreg的数据
-                when(CVectorCount === Max_Caculate_Iter - 1.U){//如果数据全部被消耗，那么我们就输出调试的读数完成的信息
+                when(io.Matrix_C.fire && io.ComputeGo)
+                {
+                    //只有当数据被消耗的时候，才会增加AVectorCount
+                    CVectorCount := CVectorCount + 1.U
+                    ReadMatrixRegDataHoldValid := false.B   //只要数据被消耗，肯定优先消耗holdreg的数据
+                    when(CVectorCount === Max_Caculate_Iter - 1.U){//如果数据全部被消耗，那么我们就输出调试的读数完成的信息
+                        if (YJPCDCDebugEnable)
+                        {
+                            printf("[CDataController<%d>]CDataController: CVectorCount is %d, we finish the load work\n",io.DebugInfo.DebugTimeStampe, CVectorCount)
+                        }
+                    }
+                    //输出AVectorCount，VectorA的信息
                     if (YJPCDCDebugEnable)
                     {
-                        printf("[CDataController<%d>]CDataController: CVectorCount is %d, we finish the load work\n",io.DebugInfo.DebugTimeStampe, CVectorCount)
+                        printf("[CDataController<%d>]CDataController: CVectorCount is %d,CMatrix is %x\n",io.DebugInfo.DebugTimeStampe, CVectorCount,io.Matrix_C.bits)
                     }
-                }
-                //输出AVectorCount，VectorA的信息
-                if (YJPCDCDebugEnable)
+                }.elsewhen(io.Matrix_C.valid && !io.Matrix_C.ready && !io.ComputeGo && Response_valid){
+                    //如果数据没有被消耗，那么我们就要保存MatrixReg的数据
+                    //但我们得看看MatrixReg的数据是不是有效的
+                    ReadMatrixRegDataHoldReg := ResponseData.asUInt
+                    ReadMatrixRegDataHoldValid := true.B
+                }.elsewhen(io.Matrix_C.valid && !io.Matrix_C.ready && !io.ComputeGo && ReadMatrixRegDataHoldValid)
                 {
-                    printf("[CDataController<%d>]CDataController: CVectorCount is %d,CMatrix is %x\n",io.DebugInfo.DebugTimeStampe, CVectorCount,io.Matrix_C.bits)
+                    //如果数据没有被消耗，且我们HlodReg中有数据，我们就继续Hlod这份数据
+                    ReadMatrixRegDataHoldReg := ReadMatrixRegDataHoldReg
+                    ReadMatrixRegDataHoldValid := true.B
                 }
-            }.elsewhen(io.Matrix_C.valid && !io.Matrix_C.ready && !io.ComputeGo && Response_valid){
-                //如果数据没有被消耗，那么我们就要保存MatrixReg的数据
-                //但我们得看看MatrixReg的数据是不是有效的
-                ReadMatrixRegDataHoldReg := Response_data.asUInt
-                ReadMatrixRegDataHoldValid := true.B
-            }.elsewhen(io.Matrix_C.valid && !io.Matrix_C.ready && !io.ComputeGo && ReadMatrixRegDataHoldValid)
-            {
-                //如果数据没有被消耗，且我们HlodReg中有数据，我们就继续Hlod这份数据
-                ReadMatrixRegDataHoldReg := ReadMatrixRegDataHoldReg
-                ReadMatrixRegDataHoldValid := true.B
-            }
 
-            when(io.ResultMatrix_D.valid)
-            {
-                
-                io.FromMatrixRegIO.WriteBankAddr.map(_.valid := true.B)
-                io.FromMatrixRegIO.WriteRequestData.map(_.valid := true.B)
-                val MReg_Wrie_data = Wire((Vec(CMatrixRegNBanks, (UInt(CMatrixRegEntryBitSize.W)))))
-                MReg_Wrie_data := io.ResultMatrix_D.bits.asTypeOf(MReg_Wrie_data)
-                val transpose_data = Wire((Vec(CMatrixRegNBanks, Vec(CMatrixRegNBanks, (UInt(ResultWidth.W))))))
-                for (i <- 0 until CMatrixRegNBanks){
-                    for (j <- 0 until CMatrixRegNBanks){
-                        transpose_data(i)(j) := MReg_Wrie_data(j)((i+1)*ResultWidth - 1 , i*ResultWidth)
+                when(io.ResultMatrix_D.valid)
+                {
+                    
+                    io.FromMatrixRegIO.WriteBankAddr.map(_.valid := true.B)
+                    io.FromMatrixRegIO.WriteRequestData.map(_.valid := true.B)
+                    val MReg_Wrie_data = Wire((Vec(CMatrixRegNBanks, (UInt(CMatrixRegEntryBitSize.W)))))
+                    MReg_Wrie_data := io.ResultMatrix_D.bits.asTypeOf(MReg_Wrie_data)
+                    val transpose_data = Wire((Vec(CMatrixRegNBanks, Vec(CMatrixRegNBanks, (UInt(ResultWidth.W))))))
+                    for (i <- 0 until CMatrixRegNBanks){
+                        for (j <- 0 until CMatrixRegNBanks){
+                            transpose_data(i)(j) := MReg_Wrie_data(j)((i+1)*ResultWidth - 1 , i*ResultWidth)
+                        }
+                    }
+                    
+                    for (i <- 0 until CMatrixRegNBanks){
+                        when(Is_Transpose && Is_AfterOps_Tile && result_K_Iterator === K_IteratorMax - 1.U)
+                        {
+                            //如果需要转置，那么我们就转置数据
+                            io.FromMatrixRegIO.WriteRequestData(i).bits := transpose_data(i).asUInt
+                        }.otherwise{
+                            //否则，我们就直接写入数据
+                            io.FromMatrixRegIO.WriteRequestData(i).bits := MReg_Wrie_data(i)
+                        }
+                    }
+                    
+                    
+                    WriteRequset := true.B//此时只要数据有效，就喜欢进行写MReg
+                    io.ResultMatrix_D.ready := true.B
+                    
+                    val store_addr = WireInit(addr_Iterator)
+                    io.FromMatrixRegIO.WriteBankAddr.map(_.bits := store_addr)//写地址就是DVector的计数
+                    when(io.ResultMatrix_D.fire){
+                        addr_Iterator := addr_Iterator + 1.U
+                        when(addr_Iterator === addr_IteratorMax - 1.U){
+                            //如果地址迭代器到达最大值，那么我们就结束计算
+                            addr_Iterator := 0.U
+                            result_K_Iterator := result_K_Iterator + 1.U
+                        }
+                        DVectorCount := DVectorCount + 1.U
+                        if (YJPCDCDebugEnable)
+                        {
+                            printf("[CDataController<%d>]CDataController: DVectorCount is %d,Data is %x,store_addr is %x\n", io.DebugInfo.DebugTimeStampe, DVectorCount, io.ResultMatrix_D.bits,store_addr)
+                        }
+                        when(DVectorCount === Max_Caculate_Iter - 1.U)
+                        {//执行计算时，一直是全精度的数据，所以用Max_Caculate_Iter作为迭代器的结束条件
+                            calculate_state := s_cal_end
+                        }
                     }
                 }
-                
-                for (i <- 0 until CMatrixRegNBanks){
-                    when(Is_Transpose && Is_AfterOps_Tile && result_K_Iterator === K_IteratorMax - 1.U)
-                    {
-                        //如果需要转置，那么我们就转置数据
-                        io.FromMatrixRegIO.WriteRequestData(i).bits := transpose_data(i).asUInt
-                    }.otherwise{
-                        //否则，我们就直接写入数据
-                        io.FromMatrixRegIO.WriteRequestData(i).bits := MReg_Wrie_data(i)
-                    }
-                }
-                
-                
-                WriteRequset := true.B//此时只要数据有效，就喜欢进行写MReg
-                io.ResultMatrix_D.ready := true.B
-                
-                val store_addr = WireInit(addr_Iterator)
-                io.FromMatrixRegIO.WriteBankAddr.map(_.bits := store_addr)//写地址就是DVector的计数
-                when(io.ResultMatrix_D.fire){
-                    addr_Iterator := addr_Iterator + 1.U
-                    when(addr_Iterator === addr_IteratorMax - 1.U){
-                        //如果地址迭代器到达最大值，那么我们就结束计算
-                        addr_Iterator := 0.U
-                        result_K_Iterator := result_K_Iterator + 1.U
-                    }
-                    DVectorCount := DVectorCount + 1.U
+            }
+            is(s_cal_end) {
+                //当前计算任务结束，等待TaskCtrl的确认
+                io.ConfigInfo.MicroTaskEndValid := true.B
+                when(io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady){
+                    //TaskCtrl确认后，我们就可以进入下一个任务了
+                    state := s_idle
+                    calculate_state := s_cal_idle
                     if (YJPCDCDebugEnable)
                     {
-                        printf("[CDataController<%d>]CDataController: DVectorCount is %d,Data is %x,store_addr is %x\n", io.DebugInfo.DebugTimeStampe, DVectorCount, io.ResultMatrix_D.bits,store_addr)
-                    }
-                    when(DVectorCount === Max_Caculate_Iter - 1.U)
-                    {//执行计算时，一直是全精度的数据，所以用Max_Caculate_Iter作为迭代器的结束条件
-                        calculate_state := s_cal_end
+                        printf("[CDataController<%d>]CDataController: TaskCtrl confirm, we can go to next task\n",io.DebugInfo.DebugTimeStampe)
                     }
                 }
             }
-            
-        }.elsewhen(calculate_state === s_cal_end){
-            //当前计算任务结束，等待TaskCtrl的确认
-            io.ConfigInfo.MicroTaskEndValid := true.B
-            when(io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady){
-                //TaskCtrl确认后，我们就可以进入下一个任务了
-                state := s_idle
-                calculate_state := s_cal_idle
-                if (YJPCDCDebugEnable)
-                {
-                    printf("[CDataController<%d>]CDataController: TaskCtrl confirm, we can go to next task\n",io.DebugInfo.DebugTimeStampe)
-                }
+            is(s_cal_idle) {
+                //计算状态机空闲
+                //加速器闲闲没事做
             }
-        }.elsewhen(calculate_state === s_cal_idle){
-            //计算状态机空闲
-            //加速器闲闲没事做
-        }.otherwise{
-            //未定义状态
-            //加速器闲闲没事做
         }
-
     }
     
     //像MatrixReg请求数据的汇总
