@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
 import cute.Bundles._
+import cute.ElementDataType._
 import utility.ChiselDB
 
 class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
@@ -758,23 +759,23 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
     when (mmaInfo.isfp) {
       when (mmaInfo.types1 === "b001".U && mmaInfo.types2 === "b001".U) {
-        computeDataType := 1.U
+        computeDataType := DataTypeF16F16F32
       }.elsewhen (mmaInfo.types1 === "b101".U && mmaInfo.types2 === "b101".U) {
-        computeDataType := 2.U
+        computeDataType := DataTypeBF16BF16F32
       }.elsewhen (mmaInfo.types1 === "b110".U && mmaInfo.types2 === "b110".U) {
-        computeDataType := 3.U
+        computeDataType := DataTypeTF32TF32F32
       }.otherwise {
         computeDataType := 7.U
       }
     }.otherwise { // !mmaInfo.isfp
       when (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b000".U) {
-        computeDataType := 6.U
+        computeDataType := DataTypeU8U8I32
       }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b000".U) {
-        computeDataType := 4.U
+        computeDataType := DataTypeI8U8I32
       }.elsewhen (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b100".U) {
-        computeDataType := 5.U
+        computeDataType := DataTypeU8I8I32
       }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b100".U) {
-        computeDataType := 0.U
+        computeDataType := DataTypeI8I8I32
       }.otherwise {
         computeDataType := 7.U
       }
