@@ -465,7 +465,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   val isLoad = isLsu && headEntry.writeValid(0)
   val isStore = isLsu && !headEntry.writeValid(0) && headEntry.readValid(0)
-  val arithDestIsAcc = arithInfo.opType === "b110_111_1_00".U
+  val arithDestIsAcc = arithInfo.opType === "b110_111_0_00".U
   val isMzeroAcc = isArith && arithDestIsAcc
   val arithUsesCompute = isArith && !isMzeroAcc
 
