@@ -40,13 +40,13 @@ class MreleaseIO extends Bundle{
     val tokenRd = Vec(32, Bool())
 }
 
-class YGJKControl extends Bundle{
+class YGJKControl(implicit p: Parameters) extends CuteBundle{
   val reset = Output(Bool())
   val amuCtrl = Decoupled(new AmuCtrlIO)
   val mrelease = Flipped(Valid(new MreleaseIO))
 }
 
-class YGJKIO extends Bundle {
+class YGJKIO(implicit p: Parameters) extends CuteBundle {
   val cmd     = new YGJKCommand   // 访存请求
   val buffer0  = Valid(new YGJKBuffer)    // 数据返回通道
   val buffer1 = Valid(new YGJKBuffer)
@@ -54,6 +54,6 @@ class YGJKIO extends Bundle {
 }
 
 case object BuildYGAC extends Field[Parameters => MyACCModule]
-abstract class MyACCModule extends Module with YGJKParameters{
+abstract class MyACCModule(implicit p: Parameters) extends CuteModule with YGJKParameters{
    val io = IO(Flipped(new YGJKIO))  
 }

@@ -3,6 +3,7 @@ package cute
 
 import chisel3._
 import chisel3.util._
+import difftest._
 import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
 // import boom.v3.util._
@@ -48,6 +49,29 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val ConfigInfo = io.ConfigInfo
     val CurrentMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
     io.MatrixRegId := CurrentMatrixRegId
+
+    if (EnableDifftest) {
+      val pcReg = RegInit(0.U(64.W))
+        when (io.ConfigInfo.MicroTaskValid) {
+          pcReg := io.ConfigInfo.pc.get
+        }
+        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent, delay = 0, dontCare = true)
+        // 默认值初始化
+        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        difftestAmuFinish.index := 3.U
+        difftestAmuFinish.valid := (io.FromMatrixRegIO.WriteBankAddr.map(_.valid).reduce(_||_)
+          || (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
+        difftestAmuFinish.pc := pcReg
+        for (i <- 0 until ABMatrixRegNBanks) {
+          difftestAmuFinish.bankValid(i) := io.FromMatrixRegIO.WriteBankAddr(i).valid
+          difftestAmuFinish.bankAddr(i) := io.FromMatrixRegIO.WriteBankAddr(i).bits
+          difftestAmuFinish.data(i * 4 + 0) := io.FromMatrixRegIO.WriteRequestData(i).bits(63,0)
+          difftestAmuFinish.data(i * 4 + 1) := io.FromMatrixRegIO.WriteRequestData(i).bits(127,64)
+          difftestAmuFinish.data(i * 4 + 2) := io.FromMatrixRegIO.WriteRequestData(i).bits(191,128)
+          difftestAmuFinish.data(i * 4 + 3) := io.FromMatrixRegIO.WriteRequestData(i).bits(255,192)
+        }
+        difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
+    }
 
     //任务状态机 先来个简单的，顺序遍历所有bank，返回数据
     val s_idle :: s_mm_task :: Nil = Enum(2)

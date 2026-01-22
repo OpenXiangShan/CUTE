@@ -2,6 +2,7 @@ package cute
 
 import chisel3._
 import chisel3.util._
+import difftest._
 import org.chipsalliance.cde.config._
 import freechips.rocketchip.util.SeqToAugmentedSeq
 
@@ -49,6 +50,30 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val ConfigInfo = io.ConfigInfo
     val CurrentMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
     io.MatrixRegId := CurrentMatrixRegId
+
+    // Difftest interface
+    if (EnableDifftest) {
+        val pcReg = RegInit(0.U(64.W))
+        when (io.ConfigInfo.MicroTaskValid) {
+          pcReg := io.ConfigInfo.pc.get
+        }
+        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent, delay = 0, dontCare = true)
+        // 默认值初始化
+        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        difftestAmuFinish.index := 2.U
+        difftestAmuFinish.valid := (io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr.map(_.valid).reduce(_||_)
+          || (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
+        difftestAmuFinish.pc := pcReg
+        for (i <- 0 until ABMatrixRegNBanks) {
+          difftestAmuFinish.bankValid(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).valid
+          difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).bits
+          difftestAmuFinish.data(i * 4 + 0) := io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(i).bits(63,0)
+          difftestAmuFinish.data(i * 4 + 1) := io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(i).bits(127,64)
+          difftestAmuFinish.data(i * 4 + 2) := io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(i).bits(191,128)
+          difftestAmuFinish.data(i * 4 + 3) := io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(i).bits(255,192)
+        }
+        difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
+    }
 
     val MatrixRegTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))

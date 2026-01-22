@@ -2,6 +2,8 @@ package cute
 
 import chisel3._
 import chisel3.util._
+import cute.CuteBundle
+import org.chipsalliance.cde.config._
 
 // TODO: use utilily here
 
@@ -144,7 +146,7 @@ object Bundles {
     }
   }
 
-  class AmuCtrlIO extends Bundle {
+  class AmuCtrlIO(implicit p: Parameters) extends CuteBundle {
     // op: Determine the operation
     // 0: MMA
     // 1: Load/Store
@@ -157,10 +159,13 @@ object Bundles {
     def isArith()   : Bool = op === AmuCtrlIO.arithOp()
     // data: The ctrl signal for op
     val data = UInt(150.W)
+
+    val pc = Option.when(EnableDifftest) (UInt(64.W))
+    val coreid = Option.when(EnableDifftest) (UInt(8.W))
   }
 
   object AmuCtrlIO {
-    def apply(): AmuCtrlIO = {
+    def apply()(implicit p: Parameters): AmuCtrlIO = {
       new AmuCtrlIO()
     }
 

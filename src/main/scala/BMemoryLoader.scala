@@ -3,6 +3,7 @@ package cute
 
 import chisel3._
 import chisel3.util._
+import difftest._
 import org.chipsalliance.cde.config._
 
 //BMemoryLoader，用于加载B矩阵的数据，供给MatrixReg使用
@@ -44,6 +45,28 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
 
+    if (EnableDifftest) {
+      val pcReg = RegInit(0.U(64.W))
+        when (io.ConfigInfo.MicroTaskValid) {
+          pcReg := io.ConfigInfo.pc.get
+        }
+        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent, delay = 0, dontCare = true)
+        // 默认值初始化
+        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        difftestAmuFinish.index := 1.U
+        difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
+          (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
+        difftestAmuFinish.pc := pcReg
+        for (i <- 0 until ABMatrixRegNBanks) {
+          difftestAmuFinish.bankValid(i) := io.ToMatrixRegIO.BankAddr(i).valid
+          difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.BankAddr(i).bits
+          difftestAmuFinish.data(i * 4 + 0) := io.ToMatrixRegIO.Data(i).bits(63,0)
+          difftestAmuFinish.data(i * 4 + 1) := io.ToMatrixRegIO.Data(i).bits(127,64)
+          difftestAmuFinish.data(i * 4 + 2) := io.ToMatrixRegIO.Data(i).bits(191,128)
+          difftestAmuFinish.data(i * 4 + 3) := io.ToMatrixRegIO.Data(i).bits(255,192)
+        }
+        difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
+    }
 
     val MatrixRegBankAddr = io.ToMatrixRegIO.BankAddr
     val MatrixRegData = io.ToMatrixRegIO.Data

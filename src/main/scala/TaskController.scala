@@ -5,6 +5,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config._
 import cute.Bundles._
 import cute.ElementDataType._
+import difftest._
 import utility.ChiselDB
 
 class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
@@ -85,6 +86,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.CDC_MicroTask_Config.MicroTaskValid := false.B
   io.CDC_MicroTask_Config.MicroTaskEndReady := false.B
   io.CDC_MicroTask_Config.MicroTask_TEComputeEndReady := false.B
+  if (EnableDifftest) {
+    io.CDC_MicroTask_Config.pc.get := 0.U
+    io.CDC_MicroTask_Config.coreid.get := 0.U
+  }
 
   io.AML_MicroTask_Config.ApplicationTensor_A := 0.U.asTypeOf(io.AML_MicroTask_Config.ApplicationTensor_A)
   io.AML_MicroTask_Config.MatrixRegTensor_M := 0.U
@@ -93,6 +98,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.AML_MicroTask_Config.MatrixRegId := 0.U
   io.AML_MicroTask_Config.MicroTaskValid := false.B
   io.AML_MicroTask_Config.MicroTaskEndReady := false.B
+  if (EnableDifftest) {
+    io.AML_MicroTask_Config.pc.get := 0.U
+    io.AML_MicroTask_Config.coreid.get := 0.U
+  }
 
   io.BML_MicroTask_Config.ApplicationTensor_B := 0.U.asTypeOf(io.BML_MicroTask_Config.ApplicationTensor_B)
   io.BML_MicroTask_Config.MatrixRegTensor_N := 0.U
@@ -101,6 +110,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.BML_MicroTask_Config.MatrixRegId := 0.U
   io.BML_MicroTask_Config.MicroTaskValid := false.B
   io.BML_MicroTask_Config.MicroTaskEndReady := false.B
+  if (EnableDifftest) {
+    io.BML_MicroTask_Config.pc.get := 0.U
+    io.BML_MicroTask_Config.coreid.get := 0.U
+  }
 
   io.CML_MicroTask_Config.ApplicationTensor_C := 0.U.asTypeOf(io.CML_MicroTask_Config.ApplicationTensor_C)
   io.CML_MicroTask_Config.ApplicationTensor_D := 0.U.asTypeOf(io.CML_MicroTask_Config.ApplicationTensor_D)
@@ -115,6 +128,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.CML_MicroTask_Config.IsStoreMicroTask := false.B
   io.CML_MicroTask_Config.MicroTaskValid := false.B
   io.CML_MicroTask_Config.MicroTaskEndReady := false.B
+  if (EnableDifftest) {
+    io.CML_MicroTask_Config.pc.get := 0.U
+    io.CML_MicroTask_Config.coreid.get := 0.U
+  }
 
   io.MTE_MicroTask_Config.dataType := 0.U
 
@@ -566,7 +583,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.AML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
       io.AML_MicroTask_Config.MatrixRegTensor_K := lsuInfo.column / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
       io.AML_MicroTask_Config.MatrixRegId := regIdx
-      
+      if (EnableDifftest) {
+        io.AML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
+        io.AML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
+      }
+
       io.AML_MicroTask_Config.Conherent := true.B
 
       io.AML_MicroTask_Config.MicroTaskValid := true.B
@@ -585,6 +606,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.BML_MicroTask_Config.MatrixRegTensor_N := lsuInfo.column
       io.BML_MicroTask_Config.MatrixRegTensor_K := lsuInfo.row / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
       io.BML_MicroTask_Config.MatrixRegId := regIdx
+      if (EnableDifftest) {
+        io.BML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
+        io.BML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
+      }
       io.BML_MicroTask_Config.Conherent := true.B
       io.BML_MicroTask_Config.MicroTaskValid := true.B
       pendingLoadB := true.B
@@ -607,6 +632,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.CML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
       io.CML_MicroTask_Config.MatrixRegTensor_N := lsuInfo.column
       io.CML_MicroTask_Config.MatrixRegId := regIdx
+      if (EnableDifftest) {
+        io.CML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
+        io.CML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
+      }
       io.CML_MicroTask_Config.IsLoadMicroTask := true.B
       io.CML_MicroTask_Config.IsStoreMicroTask := false.B
       io.CML_MicroTask_Config.MicroTaskValid := true.B
@@ -672,6 +701,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
     io.CML_MicroTask_Config.Conherent := true.B
     io.CML_MicroTask_Config.Is_Transpose := false.B
+    if (EnableDifftest) {
+      io.CML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
+      io.CML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
+    }
 
     scoreboard.io.update.load_allocate := true.B
     scoreboard.io.update.load_alloc_fifo_idx := loadIdx
@@ -756,6 +789,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CDC_MicroTask_Config.MatrixRegId := cReg
     io.CDC_MicroTask_Config.Is_Transpose := false.B
     io.CDC_MicroTask_Config.Is_AfterOps_Tile := false.B
+    if (EnableDifftest) {
+      io.CDC_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
+      io.CDC_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
+    }
 
     when (mmaInfo.isfp) {
       when (mmaInfo.types1 === "b001".U && mmaInfo.types2 === "b001".U) {
@@ -838,6 +875,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CML_MicroTask_Config.IsStoreMicroTask := true.B
 
     io.CML_MicroTask_Config.MicroTaskValid := true.B
+    if (EnableDifftest) {
+      io.CML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
+      io.CML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
+    }
 
     scoreboard.io.update.store_issue := true.B
     scoreboard.io.update.store_issue_c_reg := regIdx
@@ -868,6 +909,18 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     releaseIssueEvent.eventType := 0.U
     releaseIssueEvent.token := releaseInfo.tokenRd
     releaseIssueEventEn := true.B
+  }
+
+  if (EnableDifftest) {
+    val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent, delay = 0, dontCare = true)
+    difftestAmuFinish.coreid := io.ygjkctrl.amuCtrl.bits.coreid.get
+    difftestAmuFinish.index := 4.U
+    difftestAmuFinish.valid := io.ygjkctrl.mrelease.valid
+    difftestAmuFinish.pc := headEntry.ctrl.pc.get
+    difftestAmuFinish.bankValid.foreach(_ := false.B)
+    difftestAmuFinish.bankAddr.foreach(_ := 0.U)
+    difftestAmuFinish.data.foreach(_ := 0.U)
+    difftestAmuFinish.finish := io.ygjkctrl.mrelease.valid
   }
 
   // ===================== ChiselDB 日志提交 =====================

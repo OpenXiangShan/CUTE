@@ -293,7 +293,7 @@ case class CuteParams(
     val VecTaskInstBufferSize :Int = 8, //VecTask的指令缓冲的数量
     val VecTaskDataBufferDepth :Int = 4, //VecTask的指令缓冲深度掩盖从VecInterface到VPU的数据传输延迟即可
 
-    val EnableAsyncGemm: Boolean = true, //是否使用异步GEMM
+    val EnableDifftest: Boolean = false, //是否启用DiffTest
 
     val Debug : CuteDebugParams = CuteDebugParams.NoDebug, //调试参数
     val MMUParams: CuteMMUParams = CuteMMUParams.baseParams, //MMU的参数
@@ -469,6 +469,7 @@ trait CUTEImplParameters{
     val VecTaskInstBufferSize = cuteParams.VecTaskInstBufferSize
     val VecTaskDataBufferDepth = cuteParams.VecTaskDataBufferDepth
     val ReduceGroupSize = cuteParams.ReduceGroupSize
+    val EnableDifftest = cuteParams.EnableDifftest
 
     val cmptreelayers = FPEparams.cmptreelayers //FPE的计算树层数
     val P3AddNum :Int = FPEparams.P3AddNum //FPE的P3加法器的数量
@@ -640,6 +641,9 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
     val MicroTask_TEComputeEndValid         = Flipped(Bool())//已完成当前的TE的计算任务(但是还没有完成后操作)，但是可以提前释放TE的占用
     val MicroTask_TEComputeEndReady         = (Bool())       //已知晓当前的TE的计算任务完成
+
+    val pc                                = Option.when(EnableDifftest) (UInt(64.W))
+    val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
 class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
@@ -663,6 +667,9 @@ class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
     val MicroTaskEndValid                        = Flipped(Bool())//已完成当前任务
     val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+
+    val pc                                = Option.when(EnableDifftest) (UInt(64.W))
+    val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
 class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
@@ -686,6 +693,9 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
     val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
     val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+
+    val pc                                = Option.when(EnableDifftest) (UInt(64.W))
+    val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
 class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
@@ -733,6 +743,9 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
     val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
     val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+
+    val pc                                = Option.when(EnableDifftest) (UInt(64.W))
+    val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
 class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{

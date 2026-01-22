@@ -54,14 +54,12 @@ class TestTop()(implicit p: Parameters) extends LazyModule {
   lazy val module = new LazyModuleImp(this) {
     val io = IO(new Bundle {
       val ctrl2top = Flipped(new YGJKControl)
-      val mrelease = Valid(new MreleaseIO)
       val matrix_data_in = Flipped(DecoupledIO(new MatrixDataBundle()))
     })
     
     val cute = Module(new CUTEV2Top())
     // Signals to top level
     io.ctrl2top <> cute.io.ctrl2top
-    io.mrelease := cute.io.mrelease
 
     // memory access between CUTE and HBL2
     cute_tl.module.io.mmu <> cute.io.mmu2llc

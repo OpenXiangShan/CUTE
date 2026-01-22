@@ -8,11 +8,14 @@ trait CUTEModule extends ScalaModule {
   def utilityModule: ScalaModule
 
   def coupledL2Module: ScalaModule
+  
+  def difftestModule: ScalaModule
 
   override def moduleDeps = super.moduleDeps ++ Seq(
     rocketModule,
     utilityModule,
-    coupledL2Module
+    coupledL2Module,
+    difftestModule
   )
 }
 

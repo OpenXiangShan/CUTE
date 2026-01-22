@@ -97,6 +97,10 @@ object CoupledL2 extends SbtModule with HasChisel
   }
 }
 
+object difftest extends SbtModule with HasChisel {
+  override def millSourcePath = millOuterCtx.millSourcePath / "difftest"
+}
+
 object CUTE extends SbtModule with HasChisel with $file.common.CUTEModule {
 
   override def millSourcePath = millOuterCtx.millSourcePath
@@ -106,6 +110,8 @@ object CUTE extends SbtModule with HasChisel with $file.common.CUTEModule {
   def utilityModule: ScalaModule = utility
 
   def coupledL2Module: ScalaModule = CoupledL2
+
+  def difftestModule: ScalaModule = difftest
 
   object test extends SbtTests with TestModule.ScalaTest {
     override def ivyDeps = super.ivyDeps() ++ Agg(
