@@ -31,18 +31,19 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     }
     io.Matrix_C.bits := ResponseData.asUInt
     io.ResultMatrix_D.ready := false.B
-    io.FromMatrixRegIO.WriteBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.WriteBankAddr)
-    io.FromMatrixRegIO.WriteRequestData := 0.U.asTypeOf(io.FromMatrixRegIO.WriteRequestData)
+    io.FromMatrixRegIO.WriteBankAddr.map(_.valid := false.B)
+    io.FromMatrixRegIO.WriteBankAddr.map(_.bits := DontCare)
+    io.FromMatrixRegIO.WriteRequestData.map(_.valid := false.B)
+    io.FromMatrixRegIO.WriteRequestData.map(_.bits := DontCare)
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
     io.ConfigInfo.MicroTask_TEComputeEndValid := false.B
 
-    io.FromMatrixRegIO.ReadBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.ReadBankAddr)
+    io.FromMatrixRegIO.ReadBankAddr.map(_.valid := false.B)
+    io.FromMatrixRegIO.ReadBankAddr.map(_.bits := DontCare)
 
     val MatrixRegReadResponseData = io.FromMatrixRegIO.ReadResponseData //1周期的延迟
     // val MatrixRegChosen = io.FromMatrixRegIO.Chosen
-
-    io.FromMatrixRegIO.WriteRequestData := 0.U.asTypeOf(io.FromMatrixRegIO.WriteRequestData)
 
     val ConfigInfo = io.ConfigInfo
     val CurrentMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
@@ -184,7 +185,6 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                 //阶段2，计算开始，计算对MatrixReg的取数地址
 
                 //循环的最外层是M，然后是N
-                io.FromMatrixRegIO.ReadBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.ReadBankAddr)
                 val load_addr =  M_Iterator * N_IteratorMax + N_Iterator
 
                 when(io.ComputeGo && CVectorCount < Max_Caculate_Iter){
@@ -202,8 +202,6 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                             K_Iterator := K_Iterator + 1.U
                         }
                     }
-                }.otherwise{
-                    io.FromMatrixRegIO.ReadBankAddr := 0.U.asTypeOf(io.FromMatrixRegIO.ReadBankAddr)
                 }
 
                 val Response_valid = MatrixRegReadResponseData.map(_.valid).reduce(_&&_)

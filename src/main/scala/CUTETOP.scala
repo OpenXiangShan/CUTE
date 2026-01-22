@@ -10,7 +10,6 @@ import org.chipsalliance.cde.config._
 class CUTETopIO()(implicit p: Parameters) extends CuteBundle{
     val mmu2llc = Flipped(new MMU2TLIO)
     val ctrl2top = Flipped(new YGJKControl)
-    val mrelease = Valid(new MreleaseIO)
 }
 class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val io = IO(new CUTETopIO)
@@ -259,8 +258,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val cdcRwRespChoices = (0 until CMatrixRegCount).map(i => cdcSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteResponse) :+
         (!cdcHasSel -> 0.U.asTypeOf(CMatrixRegs.head.io.MatrixRegIO.FromDataController.ReadWriteResponse))
     CDC.io.FromMatrixRegIO.ReadWriteResponse := Mux1H(cdcRwRespChoices)
-    
-    TaskCtrl.io.ygjkctrl.mrelease <> io.mrelease
 }
 
 

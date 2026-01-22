@@ -166,8 +166,6 @@ class BDataController(implicit p: Parameters) extends CuteModule{
                             K_Iterator := K_Iterator + 1.U
                         }
                     }
-                }.otherwise{
-                    MatrixRegRequestBankAddr.valid := false.B
                 }
 
                 //只要MatrixRegData是valid或者holdreg是valid，就可以输出数据
