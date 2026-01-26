@@ -34,6 +34,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
         val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
+        val running = Output(Bool())
     })
     // 对外统一使用 ToMatrixRegIO
 
@@ -42,9 +43,12 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ToMatrixRegIO.BankId.bits := 0.U
     io.ToMatrixRegIO.Data := 0.U.asTypeOf(io.ToMatrixRegIO.Data)
     io.ToMatrixRegIO.ZeroFill := 0.U.asTypeOf(io.ToMatrixRegIO.ZeroFill)  // B矩阵不使用ZeroFill功能，但需要初始化信号
-    io.LocalMMUIO.Request.valid := false.B
-    io.LocalMMUIO.Request.bits := 0.U.asTypeOf(io.LocalMMUIO.Request.bits)
-    io.LocalMMUIO.Response.ready := false.B
+    // B uses channel 0 only, initialize all channels
+    for (i <- 0 until 8) {
+        io.LocalMMUIO.Request(i).valid := false.B
+        io.LocalMMUIO.Request(i).bits := 0.U.asTypeOf(io.LocalMMUIO.Request(i).bits)
+        io.LocalMMUIO.Response(i).ready := false.B
+    }
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
 
@@ -79,7 +83,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     
     //如果configinfo有效
-
+    io.running := false.B
     when(state === s_idle){
         //idel状态才可以接受新的配置信息
         ConfigInfo.MicroTaskReady := true.B
@@ -103,6 +107,8 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 printf("[BML<%d>]ApplicationTensor_B_Stride_N:%x\n",io.DebugInfo.DebugTimeStampe,io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_Stride_N)
             }
         }
+    }.otherwise {
+        io.running := true.B
     }
 
     //三个张量的虚拟地址，肯定得是连续的，这个可以交给操作系统和编译器来保证
@@ -163,8 +169,9 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         Bank_Fill_Search_FIFO_Empty(i) := Bank_Fill_Search_FIFO_Head(i) === Bank_Fill_Search_FIFO_Tail(i)//这个bank不需要写scp
     }
 
-    
-    val Request = io.LocalMMUIO.Request
+
+    // B uses channel 0 only
+    val Request = io.LocalMMUIO.Request(0)
     Request.valid := false.B
     when(memoryload_state === s_load_init){
         memoryload_state := s_load_working
@@ -177,7 +184,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
 
         //只要Request是ready，我们发出的访存请求就会被MMU送往总线，我们可以发出下一个访存请求
         //不用担心乘法电路延迟，再不济，可以提前几个周期将乘法结果算好，做成fifo送进来
-        Request.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_N * ApplicationTensor_B_Stride_N) + (CurrentLoaded_BlockTensor_K * ReduceWidthByte.U)
+        Request.bits.RequestAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_N * ApplicationTensor_B_Stride_N) + (CurrentLoaded_BlockTensor_K * ReduceWidthByte.U)
         
         val sourceId = Mux(Conherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
         Request.bits.RequestConherent := Conherent
@@ -219,7 +226,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 //输出id和request的信息
                 printf("[BML<%d>]sourceId:%d,MatrixRegBankId:%d,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,sourceId.bits,TableItem.MatrixRegBankId,TableItem.MatrixRegAddr)
                 //输出这次request的信息
-                printf("[BML<%d>]RequestVirtualAddr:%x,RequestConherent:%d,RequestSourceID:%d,RequestType_isWrite:%d\n",io.DebugInfo.DebugTimeStampe,Request.bits.RequestVirtualAddr,Request.bits.RequestConherent,Request.bits.RequestSourceID,Request.bits.RequestType_isWrite)
+                printf("[BML<%d>]RequestAddr:%x,RequestConherent:%d,RequestSourceID:%d,RequestType_isWrite:%d\n",io.DebugInfo.DebugTimeStampe,Request.bits.RequestAddr,Request.bits.RequestConherent,Request.bits.RequestSourceID,Request.bits.RequestType_isWrite)
             }
             when(CurrentLoaded_BlockTensor_N < MaxBlockTensor_N_Index){
                 when(CurrentLoaded_BlockTensor_K + MAX_Fill_Times.U < MaxBlockTensor_K_Index){
@@ -232,9 +239,9 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             }
         }
         val current_fill_fifo_full = WireInit(false.B)
-        when(io.LocalMMUIO.Response.valid)
+        when(io.LocalMMUIO.Response(0).valid)
         {
-            val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+            val sourceId = io.LocalMMUIO.Response(0).bits.ReseponseSourceID
             val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).MatrixRegBankId
             current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(MatrixRegBankId)
         }
@@ -243,18 +250,18 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         //根据response的sourceid，找到对应的MatrixReg的Fill_Table的队伍头的索引，填充到Fill_Table中
         if (ABMLNeedMRegFillTable)
         {
-            io.LocalMMUIO.Response.ready := MReg_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
-        } else 
+            io.LocalMMUIO.Response(0).ready := MReg_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
+        } else
         {
-            io.LocalMMUIO.Response.ready := true.B
+            io.LocalMMUIO.Response(0).ready := true.B
         }
-        when(io.LocalMMUIO.Response.fire){
+        when(io.LocalMMUIO.Response(0).fire){
             //Trick注意这个设计，是doublebuffer的，AB只能是doublebuffer，回数一定是不会堵的，而且我们有时间对数据进行压缩解压缩～
             //如果要做release设计，要么数据位宽翻倍，腾出周期来使得有空泡能给写任务进行，要么就是数据位宽不变，将读写端口变成独立的读和独立的写端口
-            val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+            val sourceId = io.LocalMMUIO.Response(0).bits.ReseponseSourceID
             val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).MatrixRegBankId
             val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).MatrixRegAddr
-            val ResponseData = io.LocalMMUIO.Response.bits.ReseponseData
+            val ResponseData = io.LocalMMUIO.Response(0).bits.ReseponseData
             val FIFOIndex = Bank_Fill_Search_FIFO_Head(MatrixRegBankId)//该bank的fill_fifo_index，标注了它当前在fillfifo的哪个位置，我们一共有bank个fill_fifo
 
             if (!ABMLNeedMRegFillTable)

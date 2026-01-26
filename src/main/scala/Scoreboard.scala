@@ -518,8 +518,16 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
   }
 
   if (YJPDebugEnable) {
-    printf("[NewScoreboard] AB Busy: [%d,%d,%d,%d], C Busy: [%d,%d]\n",
-      abRegStatus(0).busy, abRegStatus(1).busy, abRegStatus(2).busy, abRegStatus(3).busy,
-      cRegStatus(0).busy, cRegStatus(1).busy)
+    val any_busy = abRegStatus.map(_.busy).reduce(_ || _) || cRegStatus.map(_.busy).reduce(_ || _)
+    val any_busy_prev_cycle = RegNext(any_busy)
+    when(any_busy) {
+      printf("[NewScoreboard] AB Busy: [%d,%d,%d,%d], C Busy: [%d,%d]\n",
+        abRegStatus(0).busy, abRegStatus(1).busy, abRegStatus(2).busy, abRegStatus(3).busy,
+        cRegStatus(0).busy, cRegStatus(1).busy)
+    }
+    
+    when (!any_busy && any_busy_prev_cycle) {
+      printf("[NewScoreboard] matrix regs go non-busy\n")
+    }
   }
 }

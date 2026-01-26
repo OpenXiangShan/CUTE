@@ -12,141 +12,181 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         val LastLevelCacheTLIO = Flipped(new MMU2TLIO)
     })
 
-    //比较低的性能方式，轮询的方式，但是doublebuffer是可以的
-    //访存流的设计，可以通过设计一些标志位来实现～！
-    //设计当前访存流处于哪种优先级。通过一些参数可以控制这个访存流。
+    //8通道并行访存：同时处理所有8个通道的请求
+    //每个通道独立处理，不需要仲裁
 
-    val FirstRequestIndex = RegInit(0.U(log2Ceil(LocalMMUTaskType.TaskTypeMax).W))//只有3个请求来源，2位就够用了
-    FirstRequestIndex := WrapInc(FirstRequestIndex, LocalMMUTaskType.TaskTypeMax)
-    // //printf(p"FirstRequestIndex ${FirstRequestIndex}\n")
-    //选择一个离FirstRequestIndex最近的请求
-    val FirstIndex = FirstRequestIndex
-    val SecIndex = WrapInc(FirstRequestIndex, LocalMMUTaskType.TaskTypeMax)
-    val ThirdIndex = WrapInc(SecIndex, LocalMMUTaskType.TaskTypeMax)
-    // val ForthIndex = WrapInc(ThirdIndex, LocalMMUTaskType.TaskTypeMax)
-
-    //假设目前只有一个LLC的访存端口。所以只能选择一个LLC的访存请求，进行服务。
-    //循环服务和连续顺序服务，要考虑Cache连续读和Memory连续读的性能啊！！
-    //如果这样循环发出请求，可能会导致访存性能下降了，尤其是Memory，他是有bank切换和line切换的代价的！！
-    //这里先写一个循环的，后面再修改成局部连续的
-    val AllRequestValid = Cat(io.CLocalMMUIO.Request.valid, io.BLocalMMUIO.Request.valid, io.ALocalMMUIO.Request.valid)
-    val HasRequest = AllRequestValid.orR
-    val ChoseIndex_0 = Mux(AllRequestValid(FirstIndex), FirstIndex,
-                        Mux(AllRequestValid(SecIndex), SecIndex,
-                        Mux(AllRequestValid(ThirdIndex), ThirdIndex,LocalMMUTaskType.TaskTypeMax.U)))
+    // 统一处理 ABC 三类 MMUIO 的 Request/Response
+    val abcs = Seq(io.ALocalMMUIO, io.BLocalMMUIO, io.CLocalMMUIO)
     
-    //如果是AFirst，就服务A，如果是B，就服务B，如果是C，就服务C
-
-    //这里的设计是，只有一个LLC的访存端口，所以只能选择一个访存请求，进行服务。
-    //如果有多个访存端口，就可以同时服务多个访存请求。
-
-    io.ALocalMMUIO.Request.ready := false.B
-    io.BLocalMMUIO.Request.ready := false.B
-    io.CLocalMMUIO.Request.ready := false.B
-    io.ALocalMMUIO.ConherentRequsetSourceID.valid := false.B
-    io.BLocalMMUIO.ConherentRequsetSourceID.valid := false.B
-    io.CLocalMMUIO.ConherentRequsetSourceID.valid := false.B
-    io.ALocalMMUIO.ConherentRequsetSourceID.bits := 0.U
-    io.BLocalMMUIO.ConherentRequsetSourceID.bits := 0.U
-    io.CLocalMMUIO.ConherentRequsetSourceID.bits := 0.U
-    io.ALocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
-    io.BLocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
-    io.CLocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
-    io.ALocalMMUIO.nonConherentRequsetSourceID.valid := false.B
-    io.BLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
-    io.CLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
-    io.LastLevelCacheTLIO.Request.bits.RequestConherent := false.B
-    io.LastLevelCacheTLIO.Request.bits.RequestSourceID := 0.U
-    // io.DLocalMMUIO.Request.ready := false.B
-    //如果sourceid是valid，则LLC可以接受这个请求，开始送入到LLC的访存端口
-    //这里得到谁先服务，送入LLC的访存端口，如果这里需要切流水也简单,提前锁定sourceid即可，将TLnode内的sourceid锁定的逻辑放到这里来写
-    // val sourceid2port = VecInit(Seq.fill(LLCSourceMaxNum)(RegInit(0.U(log2Ceil(LocalMMUTaskType.TaskTypeMax).W))))
-    val sourceid2port = RegInit(VecInit(Seq.fill(LLCSourceMaxNum)(0.U(log2Ceil(LocalMMUTaskType.TaskTypeMax).W))))
-    //输出一下sourceid2port的数据类型
-    println("[LocalMMU] sourceid2port: " + sourceid2port)
-
-    io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := 0.U
-    io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := false.B
-    io.LastLevelCacheTLIO.Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W)) //MMU的Mask，默认全1
-    io.LastLevelCacheTLIO.Request.bits.RequestData := 0.U
-    io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
-    io.LastLevelCacheTLIO.Request.valid := false.B
-    io.LastLevelCacheTLIO.Response.ready := false.B
-    // //输出ABC的信息和valid和hasrequest
-    // printf(p"ALocalMMUIO ${io.ALocalMMUIO.Request.bits} request_valid ${io.ALocalMMUIO.Request.valid} ${io.ALocalMMUIO.Request.ready} ${io.ALocalMMUIO.Response}\n")
-    // printf(p"BLocalMMUIO ${io.BLocalMMUIO.Request.bits} request_valid ${io.BLocalMMUIO.Request.valid} ${io.BLocalMMUIO.Request.ready} ${io.BLocalMMUIO.Response}\n")
-    // printf(p"CLocalMMUIO ${io.CLocalMMUIO.Request.bits} request_valid ${io.CLocalMMUIO.Request.valid} ${io.CLocalMMUIO.Request.ready} ${io.CLocalMMUIO.Response}\n")
-    // //输出io.LastLevelCacheTLIO.ConherentRequsetSourceID
-    // printf(p"ConherentRequsetSourceID ${io.LastLevelCacheTLIO.ConherentRequsetSourceID}\n")
-    // printf(p"HasRequest ${HasRequest}\n")
-    // printf(p"ChoseIndex_0 ${ChoseIndex_0}\n")
-    // val last_sourceid = RegInit(0.U(LLCSourceMaxNumBitSize.W))
-    
-
-    //如果HasRequest，输出其他两个信息
-    when(HasRequest)
-    {
-        //输出io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid
-        //输出io.LastLevelCacheTLIO.Request.ready
-        // printf(p"[localmmu]io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid ${io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid} io.LastLevelCacheTLIO.Request.ready ${io.LastLevelCacheTLIO.Request.ready}\n")
+    // Initialize all channels to false.B
+    for (mmuio <- abcs; i <- 0 until ABMatrixRegNBanks) {
+        mmuio.Request(i).ready := false.B
+        mmuio.Response(i).valid := false.B
+        mmuio.Response(i).bits := 0.U.asTypeOf(mmuio.Response(i).bits)
+        mmuio.ConherentRequsetSourceID.valid := false.B
+        mmuio.ConherentRequsetSourceID.bits := 0.U
+        mmuio.nonConherentRequsetSourceID.valid := false.B
+        mmuio.nonConherentRequsetSourceID.bits := 0.U
     }
 
-    when(io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid && HasRequest)
-    {
-        // printf(p"last_sourceid ${last_sourceid} last_sourceid2port ${sourceid2port(last_sourceid)}\n")
-        // last_sourceid := io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits
-        when(ChoseIndex_0 === LocalMMUTaskType.AFirst){
-            io.ALocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
+    // Initialize LLC IO
+    for (i <- 0 until ABMatrixRegNBanks) {
+        io.LastLevelCacheTLIO.Request(i).valid := false.B
+        io.LastLevelCacheTLIO.Request(i).bits := 0.U.asTypeOf(io.LastLevelCacheTLIO.Request(i).bits)
+        // 默认拉低：仅在选择 A 矩阵时置位
+        io.LastLevelCacheTLIO.Request(i).bits.isA := false.B
+        io.LastLevelCacheTLIO.Response(i).ready := false.B
+    }
+
+    // SourceId 编码配置：低 2bit 作为来源标签
+    // encodedId = (origId << 2) | sourceTag
+    val SourceTagWidth = 2
+    val AReadTag  = 0.U(SourceTagWidth.W) // A 读
+    val BReadTag  = 1.U(SourceTagWidth.W) // B 读
+    val CReadTag  = 2.U(SourceTagWidth.W) // C 读（与 CUTE2YGJK 中 CReadTag 保持一致）
+    val CWriteTag = 3.U(SourceTagWidth.W) // C 写（与 CUTE2YGJK 中 CWriteTag 保持一致）
+
+    def encodeSourceId(origId: UInt, tag: UInt): UInt = {
+        (origId << SourceTagWidth) | tag
+    }
+
+    //8通道并行请求处理：为每个通道选择优先级最高的矩阵请求
+    //优先级：A读 > B读 > C读 > C写
+    for (i <- 0 until ABMatrixRegNBanks) {
+        val aReq = io.ALocalMMUIO.Request(i)
+        val bReq = io.BLocalMMUIO.Request(i)
+        val cReq = io.CLocalMMUIO.Request(i)
+
+        // A/B 目前只有读请求，但这里仍按读写拆分，便于扩展
+        val aReadValid = aReq.valid && !aReq.bits.RequestType_isWrite
+        val bReadValid = bReq.valid && !bReq.bits.RequestType_isWrite
+        val cReadValid = cReq.valid && !cReq.bits.RequestType_isWrite
+        val cWriteValid = cReq.valid && cReq.bits.RequestType_isWrite
+
+        val aValid = aReadValid
+        val bValid = bReadValid
+        val cValid = cReadValid || cWriteValid
+
+        // 优先级调整：C读 > A读 > B读 > C写
+        val choseMatrix = Mux(cReadValid,  LocalMMUTaskType.CFirst,
+                          Mux(aValid,      LocalMMUTaskType.AFirst,
+                          Mux(bValid,      LocalMMUTaskType.BFirst,
+                          Mux(cWriteValid, LocalMMUTaskType.CFirst,
+                                           LocalMMUTaskType.TaskTypeMax.U))))
+
+        val llcReq = io.LastLevelCacheTLIO.Request(i)
+
+        when(choseMatrix === LocalMMUTaskType.AFirst) {
+            // A：8 通道并行读，来源标签 AReadTag
+            aReq.ready := llcReq.ready
+            // T7: 修复 - AML 通道应该发送到对应的 TL 通道，而不是都发送到通道 0
+            llcReq.valid := true.B
+            llcReq.bits := aReq.bits
+            llcReq.bits.MatrixIsAcc := false.B // A matrix is tile matrix register
+            llcReq.bits.isA := true.B
+
+            val origId = aReq.bits.RequestSourceID
+            llcReq.bits.RequestSourceID := encodeSourceId(origId, AReadTag)
+
+            // A 实际不会用这个 ID 分配，但保持接线一致
             io.ALocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
-            //输出sourceid的信息
-            // printf(p"[localmmu]ALocalMMUIO.ConherentRequsetSourceID ${io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits}\n")
-            io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.ALocalMMUIO.Request.bits.RequestVirtualAddr
-            sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.AFirst
-            io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // A matrix is tile matrix register
-        }.elsewhen(ChoseIndex_0 === LocalMMUTaskType.BFirst){
-            io.BLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
+
+            when(llcReq.fire) {
+                if (YJPDebugEnable) {
+                    printf(cf"[LocalMMU] Channel[$i] AReq fire: origId=${origId}, encoded=${llcReq.bits.RequestSourceID}\n")
+                }
+            }
+        }.elsewhen(choseMatrix === LocalMMUTaskType.BFirst) {
+            // B：8 通道并行读，来源标签 BReadTag
+            bReq.ready := llcReq.ready
+            llcReq.valid := true.B
+            llcReq.bits := bReq.bits
+            llcReq.bits.MatrixIsAcc := false.B // B matrix is tile matrix register
+            llcReq.bits.isA := false.B
+
+            val origId = bReq.bits.RequestSourceID
+            llcReq.bits.RequestSourceID := encodeSourceId(origId, BReadTag)
+
             io.BLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
-            // printf(p"[localmmu]BLocalMMUIO.ConherentRequsetSourceID ${io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits}\n")
-            io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.BLocalMMUIO.Request.bits.RequestVirtualAddr
-            sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.BFirst
-            //输出LocalMMUTaskType.BFirst
-            // printf(p"[localmmu]LocalMMUTaskType.BFirst ${LocalMMUTaskType.BFirst}\n")
-            io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // B matrix is tile matrix register
-        }.elsewhen(ChoseIndex_0 === LocalMMUTaskType.CFirst){
-            io.CLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
+
+            when(llcReq.fire) {
+                if (YJPDebugEnable) {
+                    printf(cf"[LocalMMU] Channel[$i] BReq fire: origId=${origId}, encoded=${llcReq.bits.RequestSourceID}\n")
+                }
+            }
+        }.elsewhen(choseMatrix === LocalMMUTaskType.CFirst) {
+            // C：单通道（C MemoryLoader 只使用 Request(0)），但从 LLC 角度看仍是按 bank 口号分散
+            cReq.ready := llcReq.ready
+            llcReq.valid := true.B
+            llcReq.bits := cReq.bits
+            llcReq.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
+            llcReq.bits.isA := false.B
+
+            val origId = cReq.bits.RequestSourceID // = Cute2TL 分配的 id
+            val isWrite = cReq.bits.RequestType_isWrite
+            val tag = Mux(isWrite, CWriteTag, CReadTag)
+            llcReq.bits.RequestSourceID := encodeSourceId(origId, tag)
+
             io.CLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
-            // printf(p"[localmmu]CLocalMMUIO.ConherentRequsetSourceID ${io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits}\n")
-            io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.CLocalMMUIO.Request.bits.RequestVirtualAddr
-            io.LastLevelCacheTLIO.Request.bits.RequestData := io.CLocalMMUIO.Request.bits.RequestData
-            io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.CLocalMMUIO.Request.bits.RequestType_isWrite
-            sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.CFirst
-            io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
+
+            when(llcReq.fire) {
+                if (YJPDebugEnable) {
+                    printf(cf"[LocalMMU] Channel[$i] CReq fire: origId=${origId}, conherentId=${io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits}(valid=${io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid}), encoded=${llcReq.bits.RequestSourceID}, isWrite=${isWrite}\n")
+                }
+            }
         }
 
-        io.LastLevelCacheTLIO.Request.bits.RequestConherent := true.B
-        io.LastLevelCacheTLIO.Request.bits.RequestSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits
-        io.LastLevelCacheTLIO.Request.valid := true.B
+        // 握手监控日志：请求侧
+        when(io.LastLevelCacheTLIO.Request(i).fire) {
+            printf(cf"[LocalMMU] Channel[$i] Request fired! encoded SourceID: ${io.LastLevelCacheTLIO.Request(i).bits.RequestSourceID}, Addr: ${Hexadecimal(io.LastLevelCacheTLIO.Request(i).bits.RequestAddr)}\n")
+        }
     }
 
-    io.ALocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
-    io.BLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
-    io.CLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
-    io.ALocalMMUIO.Response.valid := false.B
-    io.BLocalMMUIO.Response.valid := false.B
-    io.CLocalMMUIO.Response.valid := false.B
+    // C 通道单口响应仲裁：基于低位标签路由
 
-    when(sourceid2port(io.LastLevelCacheTLIO.Response.bits.ReseponseSourceID) === LocalMMUTaskType.AFirst){
-        io.ALocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
-        io.LastLevelCacheTLIO.Response.ready := io.ALocalMMUIO.Response.ready
-    }.elsewhen(sourceid2port(io.LastLevelCacheTLIO.Response.bits.ReseponseSourceID) === LocalMMUTaskType.BFirst){
-        io.BLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
-        io.LastLevelCacheTLIO.Response.ready := io.BLocalMMUIO.Response.ready
-    }.elsewhen(sourceid2port(io.LastLevelCacheTLIO.Response.bits.ReseponseSourceID) === LocalMMUTaskType.CFirst){
-        io.CLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
-        io.LastLevelCacheTLIO.Response.ready := io.CLocalMMUIO.Response.ready
+    //8通道并行响应处理：按 encodedId 低位标签路由到对应的 MMU IO
+    for (i <- 0 until ABMatrixRegNBanks) {
+        val llc_response = io.LastLevelCacheTLIO.Response(i)
+        val a_mmu_response = io.ALocalMMUIO.Response(i)
+        val b_mmu_response = io.BLocalMMUIO.Response(i)
+        val c_mmu_response = io.CLocalMMUIO.Response(i)
+
+        val encodedId = llc_response.bits.ReseponseSourceID
+        val tag = encodedId(SourceTagWidth - 1, 0)
+        val origId = encodedId >> SourceTagWidth
+        val data = llc_response.bits.ReseponseData
+
+        // 默认保持 ready 低电平，后续根据路由目的端覆盖
+        llc_response.ready := false.B
+
+        when(llc_response.valid) {
+            when(tag === AReadTag) {
+                a_mmu_response.valid := true.B
+                a_mmu_response.bits := llc_response.bits
+                // 上游 AMemoryLoader 看到的是未经编码的 origId（一般为 bank 内地址）
+                a_mmu_response.bits.ReseponseSourceID := origId
+                llc_response.ready := a_mmu_response.ready
+            }.elsewhen(tag === BReadTag) {
+                b_mmu_response.valid := true.B
+                b_mmu_response.bits := llc_response.bits
+                b_mmu_response.bits.ReseponseSourceID := origId
+                llc_response.ready := b_mmu_response.ready
+            }.elsewhen(tag === CReadTag || tag === CWriteTag) {
+                c_mmu_response.valid := true.B
+                c_mmu_response.bits := llc_response.bits
+                c_mmu_response.bits.ReseponseSourceID := origId
+                llc_response.ready := c_mmu_response.ready
+            }
+        }
+
+        // 握手监控日志：响应侧
+        when(io.LastLevelCacheTLIO.Response(i).fire) {
+            printf(cf"[LocalMMU] Channel[$i] Response fired! encoded SourceID: ${io.LastLevelCacheTLIO.Response(i).bits.ReseponseSourceID}, origId: ${origId}, tag: ${tag}, data: ${data}%x\n")
+        }
     }
 
-    //输出每次的请求
+    
+    //输出每次的请求统计（原逻辑保持不变）
     if (YJPDebugEnable)
     {
         val AML_Read_Request_times = RegInit(0.U(64.W))
@@ -156,40 +196,48 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         val CML_Read_Request_times = RegInit(0.U(64.W))
         val CML_Write_Request_times = RegInit(0.U(64.W))
 
-        when(io.ALocalMMUIO.Request.valid && io.ALocalMMUIO.Request.ready)
-        {
-            when(io.ALocalMMUIO.Request.bits.RequestType_isWrite)
+        // 统计所有通道的请求
+        for (i <- 0 until ABMatrixRegNBanks) {
+            when(io.ALocalMMUIO.Request(i).valid && io.ALocalMMUIO.Request(i).ready)
             {
-                AML_Write_Request_times := AML_Write_Request_times + 1.U
-            }.otherwise{
-                AML_Read_Request_times := AML_Read_Request_times + 1.U
+                when(io.ALocalMMUIO.Request(i).bits.RequestType_isWrite)
+                {
+                    AML_Write_Request_times := AML_Write_Request_times + 1.U
+                }.otherwise{
+                    AML_Read_Request_times := AML_Read_Request_times + 1.U
+                }
+            }
+
+            when(io.BLocalMMUIO.Request(i).valid && io.BLocalMMUIO.Request(i).ready)
+            {
+                when(io.BLocalMMUIO.Request(i).bits.RequestType_isWrite)
+                {
+                    BML_Write_Request_times := BML_Write_Request_times + 1.U
+                }.otherwise{
+                    BML_Read_Request_times := BML_Read_Request_times + 1.U
+                }
+            }
+
+            when(io.CLocalMMUIO.Request(i).valid && io.CLocalMMUIO.Request(i).ready)
+            {
+                when(io.CLocalMMUIO.Request(i).bits.RequestType_isWrite)
+                {
+                    CML_Write_Request_times := CML_Write_Request_times + 1.U
+                }.otherwise{
+                    CML_Read_Request_times := CML_Read_Request_times + 1.U
+                }
             }
         }
 
-        when(io.BLocalMMUIO.Request.valid && io.BLocalMMUIO.Request.ready)
+        //每次请求发出时，输出统计
+        val anyFire = (0 until ABMatrixRegNBanks).map(i =>
+            io.ALocalMMUIO.Request(i).fire ||
+            io.BLocalMMUIO.Request(i).fire ||
+            io.CLocalMMUIO.Request(i).fire
+        ).reduce(_ || _)
+        when(anyFire)
         {
-            when(io.BLocalMMUIO.Request.bits.RequestType_isWrite)
-            {
-                BML_Write_Request_times := BML_Write_Request_times + 1.U
-            }.otherwise{
-                BML_Read_Request_times := BML_Read_Request_times + 1.U
-            }
-        }
-
-        when(io.CLocalMMUIO.Request.valid && io.CLocalMMUIO.Request.ready)
-        {
-            when(io.CLocalMMUIO.Request.bits.RequestType_isWrite)
-            {
-                CML_Write_Request_times := CML_Write_Request_times + 1.U
-            }.otherwise{
-                CML_Read_Request_times := CML_Read_Request_times + 1.U
-            }
-        }
-
-        //每次请求发出时，输出一下
-        when(io.ALocalMMUIO.Request.fire || io.BLocalMMUIO.Request.fire || io.CLocalMMUIO.Request.fire)
-        {
-            printf(p"[LocalMMU] AML_Read_Request_times ${AML_Read_Request_times} AML_Write_Request_times ${AML_Write_Request_times} BML_Read_Request_times ${BML_Read_Request_times} BML_Write_Request_times ${BML_Write_Request_times} CML_Read_Request_times ${CML_Read_Request_times} CML_Write_Request_times ${CML_Write_Request_times}\n")
+            printf(p"[LocalMMU] Stats: AML_Read=${AML_Read_Request_times} AML_Write=${AML_Write_Request_times} BML_Read=${BML_Read_Request_times} BML_Write=${BML_Write_Request_times} CML_Read=${CML_Read_Request_times} CML_Write=${CML_Write_Request_times}\n")
         }
     }
 }

@@ -565,10 +565,13 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.AML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
       io.AML_MicroTask_Config.MatrixRegTensor_K := lsuInfo.column / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
       io.AML_MicroTask_Config.MatrixRegId := regIdx
-      
+
       io.AML_MicroTask_Config.Conherent := true.B
 
       io.AML_MicroTask_Config.MicroTaskValid := true.B
+
+      // T7: 添加调试日志
+      printf(cf"[TaskController] AML Config: regIdx=$regIdx, row=${lsuInfo.row}, column=${lsuInfo.column}, MatrixRegTensor_M=${io.AML_MicroTask_Config.MatrixRegTensor_M}, MatrixRegTensor_K=${io.AML_MicroTask_Config.MatrixRegTensor_K}\n")
       
       pendingLoadA := true.B
       pendingLoadAReg := regIdx

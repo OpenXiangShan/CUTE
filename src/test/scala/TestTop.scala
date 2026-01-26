@@ -55,9 +55,9 @@ class TestTop()(implicit p: Parameters) extends LazyModule {
     val io = IO(new Bundle {
       val ctrl2top = Flipped(new YGJKControl)
       val mrelease = Valid(new MreleaseIO)
-      val matrix_data_in = Flipped(DecoupledIO(new MatrixDataBundle()))
+      val matrix_data_in = Flipped(Vec(8, DecoupledIO(new MatrixDataBundle())))
     })
-    
+
     val cute = Module(new CUTEV2Top())
     // Signals to top level
     io.ctrl2top <> cute.io.ctrl2top
@@ -65,13 +65,15 @@ class TestTop()(implicit p: Parameters) extends LazyModule {
 
     // memory access between CUTE and HBL2
     cute_tl.module.io.mmu <> cute.io.mmu2llc
-    val tl_data_in = cute_tl.module.io.matrix_data_in
-    tl_data_in.valid := io.matrix_data_in.valid
-    tl_data_in.bits := 0.U.asTypeOf(tl_data_in.bits)
-    tl_data_in.bits.opcode := TLMessages.AccessAckData
-    tl_data_in.bits.source := io.matrix_data_in.bits.sourceId
-    tl_data_in.bits.data := io.matrix_data_in.bits.data.data
-    io.matrix_data_in.ready := tl_data_in.ready
+
+    // Connect 8-channel matrix_data_in (currently only channel 0 is used in CUTE2TLImp)
+    for (i <- 0 until 8) {
+      val tl_data_in = cute_tl.module.io.matrix_data_in(i)
+      tl_data_in.valid := io.matrix_data_in(i).valid
+      tl_data_in.bits.source := io.matrix_data_in(i).bits.sourceId
+      tl_data_in.bits.data := io.matrix_data_in(i).bits.data.data
+      io.matrix_data_in(i).ready := tl_data_in.ready
+    }
 
     val timer = WireDefault(0.U(64.W))
     val logEnable = WireDefault(false.B)

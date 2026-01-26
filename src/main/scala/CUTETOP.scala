@@ -22,7 +22,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val ADC = Module(new ADataController)
     val AML = Module(new AMemoryLoader)
     val BDC = Module(new BDataController)
-    val BML = Module(new BMemoryLoader)
+    val BML = Module(new AMemoryLoader)
 
     val CMatrixRegs = Seq.tabulate(CMatrixRegCount)(i => Module(new CMatrixReg(i))).toVector
     val CDC = Module(new CDataController)
@@ -59,7 +59,24 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     BDC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
 
     //BML的默认输入
-    BML.io.ConfigInfo <> TaskCtrl.io.BML_MicroTask_Config
+    val BtoA_Config = Wire(new AMLMicroTaskConfigIO)
+    BtoA_Config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := TaskCtrl.io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr
+    assert(
+        TaskCtrl.io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr === 
+        TaskCtrl.io.BML_MicroTask_Config.ApplicationTensor_B.BlockTensor_B_BaseVaddr,
+        "BML app addr and block tensor addr must be equal"
+    )
+    BtoA_Config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := TaskCtrl.io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_Stride_N
+    BtoA_Config.ApplicationTensor_A.dataType := TaskCtrl.io.BML_MicroTask_Config.ApplicationTensor_B.dataType
+    BtoA_Config.MatrixRegTensor_M := TaskCtrl.io.BML_MicroTask_Config.MatrixRegTensor_N
+    BtoA_Config.MatrixRegTensor_K := TaskCtrl.io.BML_MicroTask_Config.MatrixRegTensor_K
+    BtoA_Config.Conherent := TaskCtrl.io.BML_MicroTask_Config.Conherent
+    BtoA_Config.MatrixRegId := TaskCtrl.io.BML_MicroTask_Config.MatrixRegId
+    BtoA_Config.MicroTaskValid := TaskCtrl.io.BML_MicroTask_Config.MicroTaskValid
+    BtoA_Config.MicroTaskEndReady := TaskCtrl.io.BML_MicroTask_Config.MicroTaskEndReady
+    TaskCtrl.io.BML_MicroTask_Config.MicroTaskReady := BtoA_Config.MicroTaskReady
+    TaskCtrl.io.BML_MicroTask_Config.MicroTaskEndValid := BtoA_Config.MicroTaskEndValid
+    BML.io.ConfigInfo <> BtoA_Config
     BML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     BML.io.LocalMMUIO <> MMU.io.BLocalMMUIO
 
