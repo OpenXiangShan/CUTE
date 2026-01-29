@@ -104,34 +104,23 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     // C MatrixReg
     for (i <- 0 until CMatrixRegCount){
-        //C MatrixReg
-        //CDC的请求
-        CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadBankAddr := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadBankAddr)
-        CMatrixRegs(i).io.MatrixRegIO.FromDataController.WriteBankAddr := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromDataController.WriteBankAddr)
-        CMatrixRegs(i).io.MatrixRegIO.FromDataController.WriteRequestData := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromDataController.WriteRequestData)
-        //CML的请求
-        CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr)
-        CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.BankAddr := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.BankAddr)
-        CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.Data := 0.U.asTypeOf(CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.Data)
-        //多个请求的仲裁器输入
         CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteRequest := 0.U
         CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadWriteRequest := 0.U
     }
 
     def abLoaderActivity(ioPort: ABMemoryLoaderMatrixRegIO): Bool = {
         ioPort.BankAddr.map(_.valid).reduce(_||_) ||
-        ioPort.Data.map(_.valid).reduce(_||_) ||
         ioPort.ZeroFill.map(_.valid).reduce(_||_)
     }
 
-    def initABLoaderPort(dest: ABMemoryLoaderMatrixRegIO): Unit = {
+    def disableABLoaderPort(dest: ABMemoryLoaderMatrixRegIO): Unit = {
         for (b <- 0 until ABMatrixRegNBanks) {
             dest.BankAddr(b).valid := false.B
-            dest.BankAddr(b).bits := 0.U
+            dest.BankAddr(b).bits := DontCare
             dest.Data(b).valid := false.B
-            dest.Data(b).bits := 0.U
+            dest.Data(b).bits := DontCare
             dest.ZeroFill(b).valid := false.B
-            dest.ZeroFill(b).bits := 0.U
+            dest.ZeroFill(b).bits := DontCare
         }
     }
 
@@ -145,10 +134,9 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             dest.ZeroFill(b).bits := src.ZeroFill(b).bits
         }
     }
-
+    
     for (regIdx <- 0 until ABMatrixRegCount) {
         val dest = ABMatrixRegs(regIdx).io.MatrixRegIO.FromMemoryLoader
-        initABLoaderPort(dest)
         val amlSel = AML.io.MatrixRegId === regIdx.U
         val bmlSel = BML.io.MatrixRegId === regIdx.U
         val amlActive = abLoaderActivity(AML.io.ToMatrixRegIO)
@@ -160,6 +148,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             copyABLoaderPort(dest, AML.io.ToMatrixRegIO)
         }.elsewhen(bmlSel && bmlActive) {
             copyABLoaderPort(dest, BML.io.ToMatrixRegIO)
+        }.otherwise {
+            disableABLoaderPort(dest)
         }
     }
 
@@ -180,6 +170,9 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         }.elsewhen(bdcSel) {
             dest.BankAddr.valid := BDC.io.FromMatrixRegIO.BankAddr.valid
             dest.BankAddr.bits := BDC.io.FromMatrixRegIO.BankAddr.bits
+        }.otherwise {
+            dest.BankAddr.valid := false.B
+            dest.BankAddr.bits := DontCare
         }
     }
 
@@ -192,8 +185,9 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         (!adcHasSel -> false.B)
     ADC.io.FromMatrixRegIO.Data.valid := Mux1H(adcDataValidChoices)
     for (bank <- 0 until ABMatrixRegNBanks) {
-        val adcDataBitsChoices = (0 until ABMatrixRegCount).map(i => adcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.Data.bits(bank)) :+
-            (!adcHasSel -> 0.U(ABMatrixRegEntryBitSize.W))
+        val adcDataBitsChoices = (0 until ABMatrixRegCount).map(i =>
+            adcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.Data.bits(bank)
+        )
         ADC.io.FromMatrixRegIO.Data.bits(bank) := Mux1H(adcDataBitsChoices)
     }
 
@@ -206,28 +200,46 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         (!bdcHasSel -> false.B)
     BDC.io.FromMatrixRegIO.Data.valid := Mux1H(bdcDataValidChoices)
     for (bank <- 0 until ABMatrixRegNBanks) {
-        val bdcDataBitsChoices = (0 until ABMatrixRegCount).map(i => bdcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.Data.bits(bank)) :+
-            (!bdcHasSel -> 0.U(ABMatrixRegEntryBitSize.W))
+        val bdcDataBitsChoices = (0 until ABMatrixRegCount).map(i =>
+            bdcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.Data.bits(bank)
+        )
         BDC.io.FromMatrixRegIO.Data.bits(bank) := Mux1H(bdcDataBitsChoices)
     }
 
     for (regIdx <- 0 until CMatrixRegCount) {
         val dest = CMatrixRegs(regIdx).io.MatrixRegIO.FromMemoryLoader
+        
         when(CML.io.MatrixRegId === regIdx.U) {
-            dest.ReadRequestToMatrixReg.BankAddr := CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr
-            dest.WriteRequestToMatrixReg.BankAddr := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr
-            dest.WriteRequestToMatrixReg.Data := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.Data
+            for (bank <- 0 until CMatrixRegNBanks) {
+                dest.ReadRequestToMatrixReg.BankAddr(bank).valid := CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).valid
+                dest.WriteRequestToMatrixReg.BankAddr(bank).valid := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(bank).valid
+                dest.WriteRequestToMatrixReg.Data(bank).valid := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(bank).valid
+            }
             dest.ReadWriteRequest := CML.io.ToMatrixRegIO.ReadWriteRequest
+        }.otherwise {
+            for (bank <- 0 until CMatrixRegNBanks) {
+                dest.ReadRequestToMatrixReg.BankAddr(bank).valid := false.B
+                dest.WriteRequestToMatrixReg.BankAddr(bank).valid := false.B
+                dest.WriteRequestToMatrixReg.Data(bank).valid := false.B
+            }
+        }
+
+        for (bank <- 0 until CMatrixRegNBanks) {
+            dest.ReadRequestToMatrixReg.BankAddr(bank).bits := CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).bits
+            dest.WriteRequestToMatrixReg.BankAddr(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(bank).bits
+            dest.WriteRequestToMatrixReg.Data(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(bank).bits
         }
     }
 
     val cmlSelVec = VecInit((0 until CMatrixRegCount).map(i => CML.io.MatrixRegId === i.U))
     val cmlHasSel = cmlSelVec.asUInt.orR
     for (bank <- 0 until CMatrixRegNBanks) {
-        val readRespValidChoices = (0 until CMatrixRegCount).map(i => cmlSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank).valid) :+
-            (!cmlHasSel -> false.B)
-        val readRespBitsChoices = (0 until CMatrixRegCount).map(i => cmlSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank).bits) :+
-            (!cmlHasSel -> 0.U(CMatrixRegEntryBitSize.W))
+        val readRespValidChoices = (0 until CMatrixRegCount).map(i =>
+            cmlSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank).valid
+        ) :+ (!cmlHasSel -> false.B)
+        val readRespBitsChoices = (0 until CMatrixRegCount).map(i =>
+            cmlSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank).bits
+        )
         CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid := Mux1H(readRespValidChoices)
         CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits := Mux1H(readRespBitsChoices)
     }
@@ -237,26 +249,46 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     for (regIdx <- 0 until CMatrixRegCount) {
         val dest = CMatrixRegs(regIdx).io.MatrixRegIO.FromDataController
+        
         when(CDC.io.MatrixRegId === regIdx.U) {
-            dest.ReadBankAddr := CDC.io.FromMatrixRegIO.ReadBankAddr
-            dest.WriteBankAddr := CDC.io.FromMatrixRegIO.WriteBankAddr
-            dest.WriteRequestData := CDC.io.FromMatrixRegIO.WriteRequestData
+            for (bank <- 0 until CMatrixRegNBanks) {
+                dest.ReadBankAddr(bank).valid := CDC.io.FromMatrixRegIO.ReadBankAddr(bank).valid
+                dest.WriteBankAddr(bank).valid := CDC.io.FromMatrixRegIO.WriteBankAddr(bank).valid
+                dest.WriteRequestData(bank).valid := CDC.io.FromMatrixRegIO.WriteRequestData(bank).valid
+            }
             dest.ReadWriteRequest := CDC.io.FromMatrixRegIO.ReadWriteRequest
+        }.otherwise {
+            for (bank <- 0 until CMatrixRegNBanks) {
+                dest.ReadBankAddr(bank).valid := false.B
+                dest.WriteBankAddr(bank).valid := false.B
+                dest.WriteRequestData(bank).valid := false.B
+            }
+        }
+
+        for (bank <- 0 until CMatrixRegNBanks) {
+            dest.ReadBankAddr(bank).bits := CDC.io.FromMatrixRegIO.ReadBankAddr(bank).bits
+            dest.WriteBankAddr(bank).bits := CDC.io.FromMatrixRegIO.WriteBankAddr(bank).bits
+            dest.WriteRequestData(bank).bits := CDC.io.FromMatrixRegIO.WriteRequestData(bank).bits
         }
     }
 
     val cdcSelVec = VecInit((0 until CMatrixRegCount).map(i => CDC.io.MatrixRegId === i.U))
     val cdcHasSel = cdcSelVec.asUInt.orR
     for (bank <- 0 until CMatrixRegNBanks) {
-        val cdcReadRespValidChoices = (0 until CMatrixRegCount).map(i => cdcSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadResponseData(bank).valid) :+
-            (!cdcHasSel -> false.B)
-        val cdcReadRespBitsChoices = (0 until CMatrixRegCount).map(i => cdcSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadResponseData(bank).bits) :+
-            (!cdcHasSel -> 0.U(CMatrixRegEntryBitSize.W))
+        val cdcReadRespValidChoices = (0 until CMatrixRegCount).map(i => cdcSelVec(i) ->
+            CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadResponseData(bank).valid
+        ) :+ (!cdcHasSel -> false.B)
+        val cdcReadRespBitsChoices = (0 until CMatrixRegCount).map(i => cdcSelVec(i) ->
+            CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadResponseData(bank).bits
+        )
         CDC.io.FromMatrixRegIO.ReadResponseData(bank).valid := Mux1H(cdcReadRespValidChoices)
         CDC.io.FromMatrixRegIO.ReadResponseData(bank).bits := Mux1H(cdcReadRespBitsChoices)
     }
-    val cdcRwRespChoices = (0 until CMatrixRegCount).map(i => cdcSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteResponse) :+
-        (!cdcHasSel -> 0.U.asTypeOf(CMatrixRegs.head.io.MatrixRegIO.FromDataController.ReadWriteResponse))
+    val cdcRwRespChoices = (0 until CMatrixRegCount).map(i =>
+          cdcSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteResponse
+      ) :+ (
+          !cdcHasSel -> 0.U.asTypeOf(CMatrixRegs.head.io.MatrixRegIO.FromDataController.ReadWriteResponse)
+      )
     CDC.io.FromMatrixRegIO.ReadWriteResponse := Mux1H(cdcRwRespChoices)
 }
 

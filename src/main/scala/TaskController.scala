@@ -92,6 +92,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   io.AML_MicroTask_Config.ApplicationTensor_A := 0.U.asTypeOf(io.AML_MicroTask_Config.ApplicationTensor_A)
+  io.AML_MicroTask_Config.LoadTaskInfo := 0.U.asTypeOf(io.AML_MicroTask_Config.LoadTaskInfo)
   io.AML_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.AML_MicroTask_Config.MatrixRegTensor_K := 0.U
   io.AML_MicroTask_Config.Conherent := false.B
@@ -447,7 +448,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     entry.readValid(2) := true.B
     entry.writeRegs(0) := mma.md
     entry.writeValid(0) := true.B
-  }.elsewhen(amuCtrlBits.isMls()) {
+  }
+  when(amuCtrlBits.isMls()) {
     val lsu = amuCtrlBits.data.asTypeOf(new AmuLsuIO)
     when(lsu.ls === 0.U) { // Load: 写寄存器
       entry.writeRegs(0) := lsu.ms
@@ -456,7 +458,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       entry.readRegs(0) := lsu.ms
       entry.readValid(0) := true.B
     }
-  }.elsewhen(amuCtrlBits.isArith()) {
+  }
+  when(amuCtrlBits.isArith()) {
     val arith = amuCtrlBits.data.asTypeOf(new AmuArithIO)
     entry.readRegs(0) := arith.md
     entry.readValid(0) := true.B
@@ -482,9 +485,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   val isLoad = isLsu && headEntry.writeValid(0)
   val isStore = isLsu && !headEntry.writeValid(0) && headEntry.readValid(0)
-  val arithDestIsAcc = arithInfo.opType === "b110_111_0_00".U
+  val arithDestIsAcc = arithInfo.md(2) === 1.U
   val isMzeroAcc = isArith && arithDestIsAcc
-  val arithUsesCompute = isArith && !isMzeroAcc
+  val isMzeroTr = isArith && !arithDestIsAcc
 
   val scoreboardReq = WireInit(0.U.asTypeOf(new QueryReq))
   val scoreboardReqValid = WireInit(false.B)
@@ -500,7 +503,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       scoreboardReq.dest.valid := true.B
       scoreboardReq.dest.bits.is_acc := lsuInfo.isacc
       scoreboardReq.dest.bits.regIdx := lsuInfo.ms(ScoreboardConsts.RegIdxWidth - 1, 0)
-    }.elsewhen(isMma) {
+    }
+    when(isMma) {
       scoreboardReqValid := true.B
       scoreboardReq.fuType := ScoreboardFuType.Compute
       scoreboardReq.dest.valid := true.B
@@ -515,13 +519,15 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       scoreboardReq.src3.valid := true.B
       scoreboardReq.src3.bits.is_acc := true.B
       scoreboardReq.src3.bits.regIdx := mmaInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
-    }.elsewhen(isArith) {
+    }
+    when(isArith) {
       scoreboardReqValid := true.B
-      scoreboardReq.fuType := Mux(isMzeroAcc, ScoreboardFuType.CML, ScoreboardFuType.Compute)
+      scoreboardReq.fuType := Mux(arithDestIsAcc, ScoreboardFuType.CML, ScoreboardFuType.AML)
       scoreboardReq.dest.valid := true.B
       scoreboardReq.dest.bits.is_acc := arithDestIsAcc
       scoreboardReq.dest.bits.regIdx := arithInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
-    }.elsewhen(isStore) {
+    }
+    when(isStore) {
       scoreboardReqValid := true.B
       scoreboardReq.fuType := ScoreboardFuType.CML
       scoreboardReq.src1.valid := true.B
@@ -533,11 +539,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   scoreboard.io.query.req.valid := scoreboardReqValid
   scoreboard.io.query.req.bits := scoreboardReq
 
-  val computeUnitsReady = io.ADC_MicroTask_Config.MicroTaskReady &&
+  val mmaUnitsReady = io.ADC_MicroTask_Config.MicroTaskReady &&
     io.BDC_MicroTask_Config.MicroTaskReady &&
     io.CDC_MicroTask_Config.MicroTaskReady
   val storeUnitsReady = io.CML_MicroTask_Config.MicroTaskReady
-  val zeroUnitsReady = storeUnitsReady
+  val zeroAccUnitsReady = io.CML_MicroTask_Config.MicroTaskReady
+  val zeroTrUnitsReady = io.AML_MicroTask_Config.MicroTaskReady
 
   val needA = isLoad && lsuInfo.isA
   val needB = isLoad && lsuInfo.isB
@@ -555,8 +562,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val headReady = MuxCase(true.B, Seq(
     (isLoad) -> (scoreboardReqReady && loadUnitsReady),
     (isStore) -> (scoreboardReqReady && storeUnitsReady),
-    (isMma || arithUsesCompute) -> (scoreboardReqReady && computeUnitsReady),
-    (isMzeroAcc) -> (scoreboardReqReady && zeroUnitsReady),
+    (isMma) -> (scoreboardReqReady && mmaUnitsReady),
+    (isMzeroAcc) -> (scoreboardReqReady && zeroAccUnitsReady),
+    (isMzeroTr) -> (scoreboardReqReady && zeroTrUnitsReady),
     (isRelease) -> releaseReady
   ))
 
@@ -565,8 +573,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val issueFire = decodedFifo.io.deq.fire
   val issueLoad = issueFire && isLoad
   val issueStore = issueFire && isStore
-  val issueCompute = issueFire && (isMma || arithUsesCompute)
+  val issueMma = issueFire && isMma
   val issueZeroAcc = issueFire && isMzeroAcc
+  val issueZeroTr = issueFire && isMzeroTr
   val issueRelease = issueFire && isRelease
 
   when(issueLoad) {
@@ -579,7 +588,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := lsuInfo.baseAddr
       io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := lsuInfo.stride
       io.AML_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
-      
+      io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
+      io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
+      io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
       io.AML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
       io.AML_MicroTask_Config.MatrixRegTensor_K := lsuInfo.column / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
       io.AML_MicroTask_Config.MatrixRegId := regIdx
@@ -620,7 +631,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       mRegCtrlInfo.CML_MReg_ID := regIdx
       mRegCtrlInfo.CDC_MReg_ID := regIdx
       
-      io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
       io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := lsuInfo.baseAddr
       io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_Stride_M := lsuInfo.stride
       io.CML_MicroTask_Config.ApplicationTensor_C.BlockTensor_C_BaseVaddr := lsuInfo.baseAddr
@@ -639,6 +649,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.CML_MicroTask_Config.IsLoadMicroTask := true.B
       io.CML_MicroTask_Config.IsStoreMicroTask := false.B
       io.CML_MicroTask_Config.MicroTaskValid := true.B
+      io.CML_MicroTask_Config.Is_Transpose := lsuInfo.transpose
       
       pendingLoadC := true.B
       pendingLoadCReg := regIdx
@@ -745,10 +756,70 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     loadIssueEventEn := true.B
   }
 
-  val computeDataType = RegInit(0.U(3.W))
-  io.MTE_MicroTask_Config.dataType := computeDataType
+  when(issueZeroTr) {
+    val regIdx = arithInfo.md(1, 0)
+    val loadIdx = loadAllocIdx
 
-  when(issueCompute) {
+    mRegCtrlInfo.CML_MReg_ID := regIdx
+    mRegCtrlInfo.CDC_MReg_ID := regIdx
+
+    io.AML_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
+    io.AML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
+    io.AML_MicroTask_Config.MatrixRegTensor_K := cuteParams.Tensor_K.U / ReduceWidthByte.U
+    io.AML_MicroTask_Config.MatrixRegId := regIdx
+    io.AML_MicroTask_Config.MicroTaskValid := true.B
+    io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
+    io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
+    io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
+    io.AML_MicroTask_Config.Conherent := true.B
+    if (EnableDifftest) {
+      io.AML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
+      io.AML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
+    }
+
+    scoreboard.io.update.load_allocate := true.B
+    scoreboard.io.update.load_alloc_fifo_idx := loadIdx
+    scoreboard.io.update.load_alloc_a_reg := 0.U
+    scoreboard.io.update.load_alloc_b_reg := 0.U
+    scoreboard.io.update.load_alloc_c_reg := regIdx
+    scoreboard.io.update.load_alloc_has_a := false.B
+    scoreboard.io.update.load_alloc_has_b := false.B
+    scoreboard.io.update.load_alloc_has_c := true.B
+    loadAllocIdx := loadAllocIdx + 1.U
+
+    pendingLoadC := false.B
+    pendingLoadCReg := regIdx
+    pendingLoadCFifoIdx := loadIdx
+    pendingLoadRow := 0.U
+    pendingLoadColumn := 0.U
+    pendingLoadTranspose := false.B
+    pendingLoadIsAcc := false.B
+
+    loadAllocateEvent.eventType := 0.U
+    loadAllocateEvent.regId := regIdx
+    loadAllocateEvent.fifoIdx := loadIdx
+    loadAllocateEvent.needMask := "b100".U
+    loadAllocateEvent.row := 0.U
+    loadAllocateEvent.column := 0.U
+    loadAllocateEvent.transpose := false.B
+    loadAllocateEvent.isAcc := false.B
+    loadAllocateEventEn := true.B
+
+    loadIssueEvent.eventType := 1.U
+    loadIssueEvent.regId := regIdx
+    loadIssueEvent.fifoIdx := loadIdx
+    loadIssueEvent.needMask := "b100".U
+    loadIssueEvent.row := 0.U
+    loadIssueEvent.column := 0.U
+    loadIssueEvent.transpose := false.B
+    loadIssueEvent.isAcc := false.B
+    loadIssueEventEn := true.B
+  }
+
+  val mmaDataType = RegInit(0.U(3.W))
+  io.MTE_MicroTask_Config.dataType := mmaDataType
+
+  when(issueMma) {
     val aReg = Mux(isMma, mmaInfo.ms1(1, 0), arithInfo.md(1, 0))
     val bReg = Mux(isMma, mmaInfo.ms2(1, 0), arithInfo.md(1, 0))
     val cReg = Mux(isMma, mmaInfo.md(1, 0), arithInfo.md(1, 0))
@@ -796,25 +867,25 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
     when (mmaInfo.isfp) {
       when (mmaInfo.types1 === "b001".U && mmaInfo.types2 === "b001".U) {
-        computeDataType := DataTypeF16F16F32
+        mmaDataType := DataTypeF16F16F32
       }.elsewhen (mmaInfo.types1 === "b101".U && mmaInfo.types2 === "b101".U) {
-        computeDataType := DataTypeBF16BF16F32
+        mmaDataType := DataTypeBF16BF16F32
       }.elsewhen (mmaInfo.types1 === "b110".U && mmaInfo.types2 === "b110".U) {
-        computeDataType := DataTypeTF32TF32F32
+        mmaDataType := DataTypeTF32TF32F32
       }.otherwise {
-        computeDataType := 7.U
+        mmaDataType := 7.U
       }
     }.otherwise { // !mmaInfo.isfp
       when (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b000".U) {
-        computeDataType := DataTypeU8U8I32
+        mmaDataType := DataTypeU8U8I32
       }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b000".U) {
-        computeDataType := DataTypeI8U8I32
+        mmaDataType := DataTypeI8U8I32
       }.elsewhen (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b100".U) {
-        computeDataType := DataTypeU8I8I32
+        mmaDataType := DataTypeU8I8I32
       }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b100".U) {
-        computeDataType := DataTypeI8I8I32
+        mmaDataType := DataTypeI8I8I32
       }.otherwise {
-        computeDataType := 7.U
+        mmaDataType := 7.U
       }
     }
 

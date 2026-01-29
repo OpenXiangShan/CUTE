@@ -656,6 +656,8 @@ class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
 class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val ApplicationTensor_A = new ApplicationTensor_A_Info
+    
+    val LoadTaskInfo = (new LoadTask_Info)
 
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))

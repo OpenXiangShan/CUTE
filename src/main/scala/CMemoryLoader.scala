@@ -37,8 +37,6 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr)
     io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr)
     io.ToMatrixRegIO.WriteRequestToMatrixReg.Data := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.Data)
-    // io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr.bits := 0.U
-    // io.ToMatrixRegIO.WriteRequestToMatrixReg.Data.bits := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.Data.bits)
     io.LocalMMUIO.Request.bits.RequestConherent := false.B
     io.LocalMMUIO.Request.bits.RequestData := 0.U
     io.LocalMMUIO.Request.bits.RequestSourceID := 0.U
@@ -121,7 +119,11 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         when(io.ConfigInfo.MicroTaskReady && io.ConfigInfo.MicroTaskValid){
             state := s_mm_task
             CurrentMatrixRegId := io.ConfigInfo.MatrixRegId
-            when(io.ConfigInfo.IsLoadMicroTask === true.B && io.ConfigInfo.IsStoreMicroTask === false.B){
+            assert(
+              !(io.ConfigInfo.IsLoadMicroTask === true.B && io.ConfigInfo.IsStoreMicroTask === true.B),
+              "CMemoryLoader: Load and Store MicroTask cannot be enabled at the same time"
+            )
+            when(io.ConfigInfo.IsLoadMicroTask === true.B){
                 memoryload_state := s_load_init
                 Tensor_Block_BaseAddr := io.ConfigInfo.ApplicationTensor_C.BlockTensor_C_BaseVaddr
                 ApplicationTensor_C_Stride_M := io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_Stride_M
@@ -137,7 +139,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                     printf("[CMemoryLoader_Load<%d>]Load C Tensor Start, Tensor_Block_BaseAddr: %x, ApplicationTensor_C_Stride_M: %x, IsConherent: %x,MatrixRegTensor_M: %x,MatrixRegTensor_N: %x,C_DataType(zero,full,repeatrow) :(%d,%d,%d)\n", io.DebugInfo.DebugTimeStampe, io.ConfigInfo.ApplicationTensor_C.BlockTensor_C_BaseVaddr, io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_Stride_M, io.ConfigInfo.Conherent,io.ConfigInfo.MatrixRegTensor_M,io.ConfigInfo.MatrixRegTensor_N,io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad.asUInt,io.ConfigInfo.LoadTaskInfo.Is_FullLoad.asUInt,io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad.asUInt)
                 }
 
-            }.elsewhen(io.ConfigInfo.IsLoadMicroTask === false.B && io.ConfigInfo.IsStoreMicroTask === true.B){
+            }
+            when(io.ConfigInfo.IsStoreMicroTask === true.B){
                 memorystore_state := s_store_init
                 Tensor_Block_BaseAddr := io.ConfigInfo.ApplicationTensor_D.BlockTensor_D_BaseVaddr
                 IsConherent := io.ConfigInfo.Conherent
@@ -150,8 +153,6 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                     printf("[CMemoryLoader_Start<%d>]Store D Tensor Start, Tensor_Block_BaseAddr: %x, ApplicationTensor_D_Stride_M: %x, IsConherent: %x, Is_Transpose: %x,MatrixRegTensor_M: %x,MatrixRegTensor_N: %x\n", io.DebugInfo.DebugTimeStampe, io.ConfigInfo.ApplicationTensor_D.BlockTensor_D_BaseVaddr, io.ConfigInfo.ApplicationTensor_D.ApplicationTensor_D_Stride_M, io.ConfigInfo.Conherent, io.ConfigInfo.Is_Transpose,io.ConfigInfo.MatrixRegTensor_M,io.ConfigInfo.MatrixRegTensor_N)
                 }
 
-            }.otherwise{
-                //闲闲没事做
             }
             MatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_M
             MatrixRegTensor_N := io.ConfigInfo.MatrixRegTensor_N
@@ -235,400 +236,402 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     //读数请求
     val ReadRequest = io.LocalMMUIO.Request
     ReadRequest.valid := false.B
-    when(memoryload_state === s_load_init){
-        memoryload_state := s_load_working
-        TotalLoadSize := 0.U
-        TotalRequestSize := 0.U
-        CurrentLoaded_BlockTensor_M_Iter := 0.U
-        CurrentLoaded_BlockTensor_N_Iter := 0.U
-        MaxRequestIter := MatrixRegTensor_M * MatrixRegTensor_N * ResultWidthByte.U / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
-        Bank_Fill_Search_FIFO := 0.U.asTypeOf(Bank_Fill_Search_FIFO)
-        Bank_Fill_Search_FIFO_Head := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Head)
-        Bank_Fill_Search_FIFO_Tail := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Tail)
-        MReg_Fill_Table := 0.U.asTypeOf(MReg_Fill_Table)
-        MReg_Fill_Table_MReg_Addr := 0.U.asTypeOf(MReg_Fill_Table_MReg_Addr)
-        MReg_Fill_Table_Time := 0.U.asTypeOf(MReg_Fill_Table_Time)
-        Request_M_Iter_Time := 0.U
-        MReg_Fill_Table_Head := 0.U
-        MReg_Fill_Table_Tail := 0.U
-        Repeat_Fill_Times := 0.U
-        Repeat_Fill_Group_Times := 0.U
-        Repeat_Fill_Request_Infight := 0.U
-        Repeat_Fill_Is_Working := false.B
-    }.elsewhen(memoryload_state === s_load_working){
-        //根据不同的MemoryOrder，执行不同的访存模式
-        //只要Request是ready，我们发出的访存请求就会被MMU送往总线，我们可以发出下一个访存请求
-        //担心乘法电路延迟，可以提前几个周期将乘法结果算好
-        //TODO:注意这里的分块逻辑/地址拼接的逻辑，我们在设计MemoryOrderType分块的逻辑时，要考虑到这里的求地址的电路逻辑，是可以减少这部分的乘法电路的逻辑的
-        //注意MatrixReg内的存数的状态
+    switch(memoryload_state) {
+        is(s_load_init) {
+            memoryload_state := s_load_working
+            TotalLoadSize := 0.U
+            TotalRequestSize := 0.U
+            CurrentLoaded_BlockTensor_M_Iter := 0.U
+            CurrentLoaded_BlockTensor_N_Iter := 0.U
+            MaxRequestIter := MatrixRegTensor_M * MatrixRegTensor_N * ResultWidthByte.U / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
+            Bank_Fill_Search_FIFO := 0.U.asTypeOf(Bank_Fill_Search_FIFO)
+            Bank_Fill_Search_FIFO_Head := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Head)
+            Bank_Fill_Search_FIFO_Tail := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Tail)
+            MReg_Fill_Table := 0.U.asTypeOf(MReg_Fill_Table)
+            MReg_Fill_Table_MReg_Addr := 0.U.asTypeOf(MReg_Fill_Table_MReg_Addr)
+            MReg_Fill_Table_Time := 0.U.asTypeOf(MReg_Fill_Table_Time)
+            Request_M_Iter_Time := 0.U
+            MReg_Fill_Table_Head := 0.U
+            MReg_Fill_Table_Tail := 0.U
+            Repeat_Fill_Times := 0.U
+            Repeat_Fill_Group_Times := 0.U
+            Repeat_Fill_Request_Infight := 0.U
+            Repeat_Fill_Is_Working := false.B
+        }
+        is(s_load_working) {
+            //根据不同的MemoryOrder，执行不同的访存模式
+            //只要Request是ready，我们发出的访存请求就会被MMU送往总线，我们可以发出下一个访存请求
+            //担心乘法电路延迟，可以提前几个周期将乘法结果算好
+            //TODO:注意这里的分块逻辑/地址拼接的逻辑，我们在设计MemoryOrderType分块的逻辑时，要考虑到这里的求地址的电路逻辑，是可以减少这部分的乘法电路的逻辑的
+            //注意MatrixReg内的存数的状态
 
-        //数据在C MatrixReg中的编排
-        //数据会先排N，再排M,这里每个都是4byte的数据，是一个全精度的数据，是一个element，和AML、BML里的不是一个概念
-        //   N 0 1 2 3 4 5 6 7     CMatrixRegData里的排布
-        // M                               {bank  [0] [1]     [2] [3] }
-        // 0   0 1 2 3 4 5 6 7   |addr    0 |    0123 89ab   ghij opgr 
-        // 1   8 9 a b c d e f   |        1 |    4567 cdef   klmn stuv 
-        // 2   g h i j k l m n   |        2 |    wxyz !...   @... #... 
-        // 3   o p g r s t u v   |        3 |    .... ....   .... ....
-        // 4   w x y z .......   |        4 |    .... ....   .... .... 
-        // 5   !..............   |        5 |    .... ....   .... ....
-        // 6   @..............   |        6 |    .... ....   .... ....
-        // 7   #..............   |        7 |    .... ....   .... .... 
-        // 8   $..............   | ....................................
+            //数据在C MatrixReg中的编排
+            //数据会先排N，再排M,这里每个都是4byte的数据，是一个全精度的数据，是一个element，和AML、BML里的不是一个概念
+            //   N 0 1 2 3 4 5 6 7     CMatrixRegData里的排布
+            // M                               {bank  [0] [1]     [2] [3] }
+            // 0   0 1 2 3 4 5 6 7   |addr    0 |    0123 89ab   ghij opgr 
+            // 1   8 9 a b c d e f   |        1 |    4567 cdef   klmn stuv 
+            // 2   g h i j k l m n   |        2 |    wxyz !...   @... #... 
+            // 3   o p g r s t u v   |        3 |    .... ....   .... ....
+            // 4   w x y z .......   |        4 |    .... ....   .... .... 
+            // 5   !..............   |        5 |    .... ....   .... ....
+            // 6   @..............   |        6 |    .... ....   .... ....
+            // 7   #..............   |        7 |    .... ....   .... .... 
+            // 8   $..............   | ....................................
 
-        //向量的访存顺序
-        //01,89,gh,op,23,ab,ij,gr,45,cd,kl,st,67,ef,mn,uv,打散bank去填数据
-        //   N 0 1 2 3 4 5 6 7     CMatrixRegData里的排布
-        // M                               {bank  [0] [1]     [2] [3] }
-        // 0   0 1 2 3 4 5 6 7   |addr    0 |      0   8       g   o 
-        // 1   8 9 a b c d e f   |        1 |      1   9       h   p 
-        // 2   g h i j k l m n   |        2 |      2   a       i   q
-        // 3   o p g r s t u v   |        3 |    ...沙莉花园. ....   .... ....
-        // 4   w x y z .......   |        4 |    .... ....   .... .... 
-        // 5   !..............   |        5 |    .... ....   .... ....
-        // 6   @..............   |        6 |    .... ....   .... ....
-        // 7   #..............   |        7 |    .... ....   .... .... 
-        // 8   $..............   | ....................................
-        //
+            //向量的访存顺序
+            //01,89,gh,op,23,ab,ij,gr,45,cd,kl,st,67,ef,mn,uv,打散bank去填数据
+            //   N 0 1 2 3 4 5 6 7     CMatrixRegData里的排布
+            // M                               {bank  [0] [1]     [2] [3] }
+            // 0   0 1 2 3 4 5 6 7   |addr    0 |      0   8       g   o 
+            // 1   8 9 a b c d e f   |        1 |      1   9       h   p 
+            // 2   g h i j k l m n   |        2 |      2   a       i   q
+            // 3   o p g r s t u v   |        3 |    ...沙莉花园. ....   .... ....
+            // 4   w x y z .......   |        4 |    .... ....   .... .... 
+            // 5   !..............   |        5 |    .... ....   .... ....
+            // 6   @..............   |        6 |    .... ....   .... ....
+            // 7   #..............   |        7 |    .... ....   .... .... 
+            // 8   $..............   | ....................................
+            //
 
-        when(Is_FullLoad)
-        {
-            val RequestMatrixRegBankId = (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) % CMatrixRegNBanks.U //访存请求落在哪个MatrixRegBank上
-            val RequestMatrixRegAddr = (CurrentLoaded_BlockTensor_M_Iter / CMatrixRegNBanks.U * MatrixRegTensor_N / Matrix_MN.U) + (CurrentLoaded_BlockTensor_N_Iter / Matrix_MN.U) //该访存请求的第零号数据，落在哪个MatrixRegBank的哪个地址上
-            
-            ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_C_Stride_M + CurrentLoaded_BlockTensor_N_Iter * C_DataType
-            
-            // val CurrentBankID = RequestMatrixRegBankId
-            // val CurrentFIFOIndex = FromMemoryLoaderReadFIFOHead
+            // 断言：保证三者中至多只有一个为 true
+            assert(PopCount(Cat(Is_ZeroLoad, Is_FullLoad, Is_RepeatRowLoad)) === 1.U, 
+                   "Error! Load Task Type: Exactly one of Is_ZeroLoad, Is_FullLoad, Is_RepeatRowLoad should be true!")
 
-            val sourceId = Mux(IsConherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
-            
+            when(Is_FullLoad)
+            {
+                val RequestMatrixRegBankId = (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) % CMatrixRegNBanks.U //访存请求落在哪个MatrixRegBank上
+                val RequestMatrixRegAddr = (CurrentLoaded_BlockTensor_M_Iter / CMatrixRegNBanks.U * MatrixRegTensor_N / Matrix_MN.U) + (CurrentLoaded_BlockTensor_N_Iter / Matrix_MN.U) //该访存请求的第零号数据，落在哪个MatrixRegBank的哪个地址上
+                
+                ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_C_Stride_M + CurrentLoaded_BlockTensor_N_Iter * C_DataType
+                
+                // val CurrentBankID = RequestMatrixRegBankId
+                // val CurrentFIFOIndex = FromMemoryLoaderReadFIFOHead
 
-            ReadRequest.bits.RequestConherent := IsConherent
-            ReadRequest.bits.RequestSourceID := sourceId.bits
-            ReadRequest.bits.RequestType_isWrite := false.B
-            ReadRequest.valid := (TotalRequestSize < MaxRequestIter)
+                val sourceId = Mux(IsConherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
+                
 
-            //确定这个访存请求一定会发出
-            when(ReadRequest.fire){
-                val TableItem = Wire(new CSourceIdSearch)
-                TableItem.MatrixRegBankId := RequestMatrixRegBankId
-                TableItem.MatrixRegAddr := RequestMatrixRegAddr
-                SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
+                ReadRequest.bits.RequestConherent := IsConherent
+                ReadRequest.bits.RequestSourceID := sourceId.bits
+                ReadRequest.bits.RequestType_isWrite := false.B
+                ReadRequest.valid := (TotalRequestSize < MaxRequestIter)
 
-                Request_M_Iter_Time := Request_M_Iter_Time + 1.U//连续的跨bank去访存
-                when(Request_M_Iter_Time === (Matrix_MN - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === MatrixRegTensor_M - 1.U){
-                    Request_M_Iter_Time := 0.U
-                    CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType
-                    when(CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType === MatrixRegTensor_N){
-                        CurrentLoaded_BlockTensor_N_Iter := 0.U
-                        CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_MN.U
+                //确定这个访存请求一定会发出
+                when(ReadRequest.fire){
+                    val TableItem = Wire(new CSourceIdSearch)
+                    TableItem.MatrixRegBankId := RequestMatrixRegBankId
+                    TableItem.MatrixRegAddr := RequestMatrixRegAddr
+                    SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
+
+                    Request_M_Iter_Time := Request_M_Iter_Time + 1.U//连续的跨bank去访存
+                    when(Request_M_Iter_Time === (Matrix_MN - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === MatrixRegTensor_M - 1.U){
+                        Request_M_Iter_Time := 0.U
+                        CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType
+                        when(CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType === MatrixRegTensor_N){
+                            CurrentLoaded_BlockTensor_N_Iter := 0.U
+                            CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_MN.U
+                        }
+                    }
+                    //输出发出的访存请求
+                    // printf("[CMemoryLoader]RequestVirtualAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x\n", ReadRequest.bits.RequestVirtualAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite)
+                    //输出这次请求的TableItem
+                    // printf("[CMemoryLoader]TableItem: %x, %x, %x\n", TableItem.MatrixRegBankId, TableItem.MatrixRegAddr, TableItem.FIFOIndex)
+
+                    //只要这条取数指令可以被发出，就计算下一个访存请求的地址
+                    //TODO:这里数据读取量定死了，需要为了支持边界情况，改一改
+                    //不过我们保证了数据是256bit对齐的～剩下的就是Tensor_M和Tensor_K不满足的情况思考好就行了
+                    //输出request的次数
+                    if (YJPCMLDebugEnable)
+                    {
+                        printf("[CMemoryLoader_Load<%d>]RequestMatrixRegAddr: %x,RequestMatrixRegBankId: %x,CurrentLoaded_BlockTensor_N_Iter: %x,CurrentLoaded_BlockTensor_M_Iter: %x,Request_M_Iter_Time: %x,RequestVirtualAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x, RequestTimes: %d\n", io.DebugInfo.DebugTimeStampe, RequestMatrixRegAddr,RequestMatrixRegBankId,CurrentLoaded_BlockTensor_N_Iter,CurrentLoaded_BlockTensor_M_Iter,Request_M_Iter_Time,ReadRequest.bits.RequestVirtualAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite, TotalRequestSize)
+                    }
+                    when(TotalRequestSize === MaxRequestIter){
+                        //assert!
+                        //error!
+                    }.otherwise{
+                        TotalRequestSize := TotalRequestSize + 1.U
                     }
                 }
-                //输出发出的访存请求
-                // printf("[CMemoryLoader]RequestVirtualAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x\n", ReadRequest.bits.RequestVirtualAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite)
-                //输出这次请求的TableItem
-                // printf("[CMemoryLoader]TableItem: %x, %x, %x\n", TableItem.MatrixRegBankId, TableItem.MatrixRegAddr, TableItem.FIFOIndex)
+                
+                val current_fill_fifo_full = WireInit(false.B)
+                when(io.LocalMMUIO.Response.valid)
+                {
+                    val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+                    val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegBankId
+                    current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(MatrixRegBankId)
+                }
 
-                //只要这条取数指令可以被发出，就计算下一个访存请求的地址
-                //TODO:这里数据读取量定死了，需要为了支持边界情况，改一改
-                //不过我们保证了数据是256bit对齐的～剩下的就是Tensor_M和Tensor_K不满足的情况思考好就行了
-                //输出request的次数
+                io.LocalMMUIO.Response.ready := MReg_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
+                //接受访存的返回值
+                //一个cam来存储访存请求的source_id对应的MatrixReg的地址和bank号
+                //根据response的sourceid，找到对应的MatrixReg的地址和bank号，回填数据
+                when(io.LocalMMUIO.Response.fire){
+                    val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+                    val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegBankId
+                    val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegAddr
+                    val ResponseData = io.LocalMMUIO.Response.bits.ReseponseData
+                    val FIFOIndex = Bank_Fill_Search_FIFO_Head(MatrixRegBankId)//该bank的fill_fifo_index，标注了它当前在fillfifo的哪个位置，我们一共有bank个fill_fifo
+
+                    MReg_Fill_Table(MReg_Fill_Table_Insert_Index) := ResponseData
+                    MReg_Fill_Table_MReg_Addr(MReg_Fill_Table_Insert_Index) := MatrixRegAddr
+                    MReg_Fill_Table_Time(MReg_Fill_Table_Insert_Index) := MAX_Fill_Times.U
+
+                    Bank_Fill_Search_FIFO(MatrixRegBankId)(FIFOIndex) := MReg_Fill_Table_Insert_Index
+                    Bank_Fill_Search_FIFO_Head(MatrixRegBankId) := WrapInc(Bank_Fill_Search_FIFO_Head(MatrixRegBankId), CMemoryLoaderReadFromMemoryFIFODepth)
+
+                    //输出回填的数据
+                    if (YJPCMLDebugEnable)
+                    {
+                        printf("[CMemoryLoader_Load<%d>]ResponseData: %x, MatrixRegBankId: %x, MatrixRegAddr: %x, FIFOIndex: %x\n",io.DebugInfo.DebugTimeStampe, ResponseData, MatrixRegBankId, MatrixRegAddr, FIFOIndex)
+                    }
+                }
+
+                //检查每个bank是否有数据需要回填
+                HasScarhpadWrite := Have_Bank_Fill
+                val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(1.W))))
+                for (i <- 0 until CMatrixRegNBanks){
+                    when(Bank_Fill_Search_FIFO_Empty(i) === false.B){
+                        val CurrentFIFOIndex = Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Tail(i))
+                        when(io.ToMatrixRegIO.ReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex) === true.B)
+                        {
+                            Current_Fill_MReg_Time(i) := 1.U
+                            val MatrixRegWriteRequest = io.ToMatrixRegIO.WriteRequestToMatrixReg
+                            val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*CMatrixRegEntryByteSize).W)))))
+                            FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
+                            MatrixRegWriteRequest.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + (MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
+                            MatrixRegWriteRequest.BankAddr(i).valid := true.B
+                            MatrixRegWriteRequest.Data(i).bits := FIFOData(MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
+                            MatrixRegWriteRequest.Data(i).valid := true.B
+
+                            MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - 1.U
+                            when(MReg_Fill_Table_Time(CurrentFIFOIndex) === 1.U){
+                                Bank_Fill_Search_FIFO_Tail(i) := WrapInc(Bank_Fill_Search_FIFO_Tail(i), CMemoryLoaderReadFromMemoryFIFODepth)
+                            }
+
+                            if (YJPCMLDebugEnable)
+                            {
+                                //输出fill_time 和 fifoindex
+                                printf("[CMemoryLoader_Load<%d>]bankid: %d,CurrentFIFOIndex %d,ScartchPadAddr: %x, MReg_Fill_Table_Time(CurrentFIFOIndex): %d\n", io.DebugInfo.DebugTimeStampe,i.U, CurrentFIFOIndex, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), MReg_Fill_Table_Time(CurrentFIFOIndex))
+                                printf("[CMemoryLoader_Load<%d>]bankid: %d,ScartchPadAddr: %x, BankAddr: %x, Data: %x\n", io.DebugInfo.DebugTimeStampe,i.U, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), MatrixRegWriteRequest.BankAddr(i).bits, MatrixRegWriteRequest.Data(i).bits)
+                            }
+                        }.otherwise
+                        {
+                            if (YJPCMLDebugEnable)
+                            {
+                                printf("[CMemoryLoader_Load<%d>]bankid: %d no authority\n", io.DebugInfo.DebugTimeStampe,i.U)
+                            }
+                        }
+                    }
+                }
+
+                val Current_Load_Fill_Size = WireInit(0.U((log2Ceil(CMatrixRegNBanks)+1).W))
+                Current_Load_Fill_Size := PopCount(Current_Fill_MReg_Time.asUInt)
+
+                TotalLoadSize := TotalLoadSize + Current_Load_Fill_Size
+
                 if (YJPCMLDebugEnable)
                 {
-                    printf("[CMemoryLoader_Load<%d>]RequestMatrixRegAddr: %x,RequestMatrixRegBankId: %x,CurrentLoaded_BlockTensor_N_Iter: %x,CurrentLoaded_BlockTensor_M_Iter: %x,Request_M_Iter_Time: %x,RequestVirtualAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x, RequestTimes: %d\n", io.DebugInfo.DebugTimeStampe, RequestMatrixRegAddr,RequestMatrixRegBankId,CurrentLoaded_BlockTensor_N_Iter,CurrentLoaded_BlockTensor_M_Iter,Request_M_Iter_Time,ReadRequest.bits.RequestVirtualAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite, TotalRequestSize)
+                    when(Current_Load_Fill_Size =/= 0.U)
+                    {
+                        printf("[CMemoryLoader_Load<%d>]Current_Load_Fill_Size: %d, TotalLoadSize: %d, MaxLoadSize: %d\n",io.DebugInfo.DebugTimeStampe, Current_Load_Fill_Size, TotalLoadSize, MaxRequestIter * MAX_Fill_Times.U)
+                    }
                 }
-                when(TotalRequestSize === MaxRequestIter){
-                    //assert!
-                    //error!
-                }.otherwise{
-                    TotalRequestSize := TotalRequestSize + 1.U
+                //状态机切换
+                when(TotalLoadSize === (MaxRequestIter * MAX_Fill_Times.U)){
+                    memoryload_state := s_load_end
+                    if (YJPCMLDebugEnable)
+                    {
+                        printf("[CMemoryLoader_Load<%d>]LoadEnd\n",io.DebugInfo.DebugTimeStampe)
+                    }
                 }
             }
-            
-            val current_fill_fifo_full = WireInit(false.B)
-            when(io.LocalMMUIO.Response.valid)
+
+            when(Is_ZeroLoad)
             {
-                val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
-                val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegBankId
-                current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(MatrixRegBankId)
-            }
-
-            io.LocalMMUIO.Response.ready := MReg_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
-            //接受访存的返回值
-            //一个cam来存储访存请求的source_id对应的MatrixReg的地址和bank号
-            //根据response的sourceid，找到对应的MatrixReg的地址和bank号，回填数据
-            when(io.LocalMMUIO.Response.fire){
-                val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
-                val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegBankId
-                val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegAddr
-                val ResponseData = io.LocalMMUIO.Response.bits.ReseponseData
-                val FIFOIndex = Bank_Fill_Search_FIFO_Head(MatrixRegBankId)//该bank的fill_fifo_index，标注了它当前在fillfifo的哪个位置，我们一共有bank个fill_fifo
-
-                MReg_Fill_Table(MReg_Fill_Table_Insert_Index) := ResponseData
-                MReg_Fill_Table_MReg_Addr(MReg_Fill_Table_Insert_Index) := MatrixRegAddr
-                MReg_Fill_Table_Time(MReg_Fill_Table_Insert_Index) := MAX_Fill_Times.U
-
-                Bank_Fill_Search_FIFO(MatrixRegBankId)(FIFOIndex) := MReg_Fill_Table_Insert_Index
-                Bank_Fill_Search_FIFO_Head(MatrixRegBankId) := WrapInc(Bank_Fill_Search_FIFO_Head(MatrixRegBankId), CMemoryLoaderReadFromMemoryFIFODepth)
-
-                //输出回填的数据
-                if (YJPCMLDebugEnable)
+                //给所有的bank发出写0的请求
+                HasScarhpadWrite := true.B
+                //每次写所有bank的一个entry，总共要写CMatrixRegBankNEntrys次
+                val Max_ZeroLoad_Write_Times = CMatrixRegBankNEntrys
+                for (i <- 0 until CMatrixRegNBanks)
                 {
-                    printf("[CMemoryLoader_Load<%d>]ResponseData: %x, MatrixRegBankId: %x, MatrixRegAddr: %x, FIFOIndex: %x\n",io.DebugInfo.DebugTimeStampe, ResponseData, MatrixRegBankId, MatrixRegAddr, FIFOIndex)
+                    io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).bits := TotalLoadSize
+                    io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).valid := true.B
+                    io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(i).bits := 0.U
+                    io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(i).valid := true.B
+                }
+
+                when(io.ToMatrixRegIO.ReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex) === true.B)
+                {
+                    TotalLoadSize := TotalLoadSize + 1.U
+                    if (YJPCMLDebugEnable)
+                    {
+                        printf("[CMemoryLoader_Load<%d>]ZeroLoad, TotalLoadSize: %d\n",io.DebugInfo.DebugTimeStampe, TotalLoadSize)
+                    }
+                    when(TotalLoadSize === (Max_ZeroLoad_Write_Times-1).U)
+                    {
+                        memoryload_state := s_load_end
+                        if (YJPCMLDebugEnable)
+                        {
+                            printf("[CMemoryLoader_Load<%d>]ZeroLoadEnd\n",io.DebugInfo.DebugTimeStampe)
+                        }
+                    }
                 }
             }
 
-            //检查每个bank是否有数据需要回填
-            HasScarhpadWrite := Have_Bank_Fill
-            val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(1.W))))
-            for (i <- 0 until CMatrixRegNBanks){
-                when(Bank_Fill_Search_FIFO_Empty(i) === false.B){
-                    val CurrentFIFOIndex = Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Tail(i))
+            when(Is_RepeatRowLoad)
+            {
+                //由于RepeatRowLoad的特殊性，我们一次Load需要写MReg很多次,导致我们的FIFO在被写满时，会导致长时间的TL无法握手。
+                //故，我们针对这样的情况，我们需要为每一个发出的访存请求预留一个FIFO的空位，这样就可以保证TL握手成功，从而不浪费访存带宽，这样可能会导致整体延迟增加(但不会低到阻碍吞吐)，但我们的访存带宽利用率一定不会低
+                //获取整个Row的数据，然后重复填充，Row的总数据量为Tensor_N*C_DataType
+                val sourceId = Mux(IsConherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
+                val Max_RepeatRowLoad_Memory_Load_Times = Tensor_MN.U * C_DataType / outsideDataWidthByte.U //总共要发出的访存请求的次数
+                val Max_MReg_Write_Times = Tensor_MN*Tensor_MN*ResultWidthByte/CMatrixReg_Total_Bandwidth //总共要写入MReg的次数
+                ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr +  CurrentLoaded_BlockTensor_N_Iter * C_DataType
+                ReadRequest.bits.RequestConherent := IsConherent
+                ReadRequest.bits.RequestSourceID := sourceId.bits
+                ReadRequest.bits.RequestType_isWrite := false.B
+                ReadRequest.valid := (TotalRequestSize < Max_RepeatRowLoad_Memory_Load_Times) && (Repeat_Fill_Request_Infight < (CMemoryLoaderReadFromMemoryFIFODepth-1).U)
+
+
+                val Per_Load_Fill_MReg_Times = (Tensor_MN/Matrix_MN) * (outsideDataWidthByte/CMatrixRegEntryByteSize)
+                val Per_Data_Repeat_Times = (Tensor_MN/Matrix_MN) //每组数据要重复写MReg这么多次
+                val Per_Memory_Load_Have_Data_Write_Group = (outsideDataWidthByte/CMatrixRegEntryByteSize)//每次Memory的load，有几组数据要写回
+                val Per_Write_MReg_Addr_Add = (Tensor_MN / Matrix_MN).U //一组数据Per_Data_Repeat_Times迭代中，下一次写入的scp地址的增量
+
+                // val Load_Time = CurrentLoaded_BlockTensor_N_Iter / (outsideDataWidthByte.U/C_DataType)
+
+                //向量的访存顺序
+                //01,23,45,67.....
+                //   N 0 1 2 3 4 5 6 7     CMatrixRegData里的排布
+                // M                               {bank  [0] [1]     [2] [3] }
+                // 0   0 1 2 3 4 5 6 7   |addr    0 |      0   0       0   0 
+                //                       |        1 |      1   1       1   1 
+                //                       |        2 |      2   2       2   2
+                //                       |        . |    .... ....   .... ....
+                //                       |        . |    .... ....   .... .... 
+                //                       |       15 |     15   15     15   15  
+                //                       |       16 |      0   0       0   0  
+                //                       |       17 |    .... ....   .... ....
+                //                       | ....................................
+                //
+                //MReg的写回顺序
+                //0,16,32,48.....每次加Per_Write_MReg_Addr_Add，一共写Per_Data_Repeat_Times次
+                //1,17,33,49.....每次加Per_Write_MReg_Addr_Add，一共写Per_Data_Repeat_Times次
+                //一次Memory的load，有Per_Memory_Load_Have_Data_Write_Group组数据，每组数据写回Per_Data_Repeat_Times次
+
+                //确定这个访存请求一定会发出
+                when(ReadRequest.fire){
+
+                    val TableItem = Wire(new CSourceIdSearch)
+                    TableItem.MatrixRegBankId := 0.U
+                    TableItem.MatrixRegAddr := TotalRequestSize * Per_Memory_Load_Have_Data_Write_Group.U//这个数据的第一个数据，落在哪个MatrixRegBank的哪个地址上
+                    SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
+
+                    CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType
+                    Repeat_Fill_Request_Infight := Repeat_Fill_Request_Infight + 1.U
+                    if (YJPCMLDebugEnable)
+                    {
+                        printf("[CMemoryLoader_Load<%d>]RepeatRowLoad,CurrentLoaded_BlockTensor_N_Iter: %x, RequestVirtualAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x\n", io.DebugInfo.DebugTimeStampe, CurrentLoaded_BlockTensor_N_Iter, ReadRequest.bits.RequestVirtualAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite)
+                    }
+                    when(TotalRequestSize === Max_RepeatRowLoad_Memory_Load_Times){
+                        //assert!
+                        //error!
+                    }.otherwise{
+                        TotalRequestSize := TotalRequestSize + 1.U
+                    }
+                }
+
+                io.LocalMMUIO.Response.ready := true.B
+                when(io.LocalMMUIO.Response.fire){
+                    val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+                    val ResponseData = io.LocalMMUIO.Response.bits.ReseponseData
+                    val FIFOIndex = MReg_Fill_Table_Insert_Index
+                    MReg_Fill_Table(FIFOIndex) := ResponseData
+                    MReg_Fill_Table_MReg_Addr(FIFOIndex) := SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegAddr
+                    MReg_Fill_Table_Time(FIFOIndex) := 1.U//当valid用
+
+                    if (YJPCMLDebugEnable)
+                    {
+                        printf("[CMemoryLoader_Load<%d>]RepeatRowLoad, ResponseData: %x, FIFOIndex: %x\n", io.DebugInfo.DebugTimeStampe, ResponseData, FIFOIndex)
+                    }
+                }
+
+                
+                when(MReg_Fill_Table_Not_Empty && Repeat_Fill_Is_Working === false.B)
+                {
+                    Repeat_Fill_Is_Working := true.B
+                    Repeat_Fill_Table_Index := MReg_Fill_Table_Valid_Index
+                    Repeat_Fill_Times := 0.U
+                    Repeat_Fill_Group_Times := 0.U
+                }
+
+                when(Repeat_Fill_Is_Working)
+                {
+                    val CurrentFIFOData = MReg_Fill_Table(Repeat_Fill_Table_Index)
+                    val All_Group_Data = WireInit((VecInit(Seq.fill(Per_Memory_Load_Have_Data_Write_Group)(0.U(CMatrixRegEntryBitSize.W)))))
+                    All_Group_Data := CurrentFIFOData.asTypeOf(All_Group_Data)
+                    val MReg_Write_Addr = MReg_Fill_Table_MReg_Addr(Repeat_Fill_Table_Index) + Repeat_Fill_Times * Per_Write_MReg_Addr_Add + Repeat_Fill_Group_Times
+
+                    val MatrixRegWriteRequest = io.ToMatrixRegIO.WriteRequestToMatrixReg
+                    
+                    for (i <- 0 until CMatrixRegNBanks)
+                    {
+                        MatrixRegWriteRequest.BankAddr(i).bits := MReg_Write_Addr
+                        MatrixRegWriteRequest.BankAddr(i).valid := true.B
+                        MatrixRegWriteRequest.Data(i).bits := All_Group_Data(Repeat_Fill_Group_Times)
+                        MatrixRegWriteRequest.Data(i).valid := true.B
+                    }
+
+                    HasScarhpadWrite := true.B
+
                     when(io.ToMatrixRegIO.ReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex) === true.B)
                     {
-                        Current_Fill_MReg_Time(i) := 1.U
-                        val MatrixRegWriteRequest = io.ToMatrixRegIO.WriteRequestToMatrixReg
-                        val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*CMatrixRegEntryByteSize).W)))))
-                        FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
-                        MatrixRegWriteRequest.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + (MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
-                        MatrixRegWriteRequest.BankAddr(i).valid := true.B
-                        MatrixRegWriteRequest.Data(i).bits := FIFOData(MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
-                        MatrixRegWriteRequest.Data(i).valid := true.B
-
-                        MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - 1.U
-                        when(MReg_Fill_Table_Time(CurrentFIFOIndex) === 1.U){
-                            Bank_Fill_Search_FIFO_Tail(i) := WrapInc(Bank_Fill_Search_FIFO_Tail(i), CMemoryLoaderReadFromMemoryFIFODepth)
+                        Repeat_Fill_Times := Repeat_Fill_Times + 1.U
+                        TotalLoadSize := TotalLoadSize + 1.U
+                        when(Repeat_Fill_Times === (Per_Data_Repeat_Times - 1).U)
+                        {
+                            Repeat_Fill_Times := 0.U
+                            Repeat_Fill_Group_Times := Repeat_Fill_Group_Times + 1.U
+                            when(Repeat_Fill_Group_Times === (Per_Memory_Load_Have_Data_Write_Group - 1).U)
+                            {
+                                Repeat_Fill_Group_Times := 0.U
+                                Repeat_Fill_Is_Working := false.B
+                                Repeat_Fill_Request_Infight := Repeat_Fill_Request_Infight - 1.U
+                                when(ReadRequest.fire)
+                                {
+                                    Repeat_Fill_Request_Infight := Repeat_Fill_Request_Infight
+                                }
+                                MReg_Fill_Table_Time(Repeat_Fill_Table_Index) := 0.U
+                            }
                         }
-
                         if (YJPCMLDebugEnable)
                         {
-                            //输出fill_time 和 fifoindex
-                            printf("[CMemoryLoader_Load<%d>]bankid: %d,CurrentFIFOIndex %d,ScartchPadAddr: %x, MReg_Fill_Table_Time(CurrentFIFOIndex): %d\n", io.DebugInfo.DebugTimeStampe,i.U, CurrentFIFOIndex, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), MReg_Fill_Table_Time(CurrentFIFOIndex))
-                            printf("[CMemoryLoader_Load<%d>]bankid: %d,ScartchPadAddr: %x, BankAddr: %x, Data: %x\n", io.DebugInfo.DebugTimeStampe,i.U, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), MatrixRegWriteRequest.BankAddr(i).bits, MatrixRegWriteRequest.Data(i).bits)
-                        }
-                    }.otherwise
-                    {
-                        if (YJPCMLDebugEnable)
-                        {
-                            printf("[CMemoryLoader_Load<%d>]bankid: %d no authority\n", io.DebugInfo.DebugTimeStampe,i.U)
+                            printf("[CMemoryLoader_Load<%d>]RepeatRowLoad,Repeat_Fill_Times:  %d,TotalLoadSize:  %d,Repeat_Fill_Group_Times:  %d, MReg_Write_Addr: %x, Data: %x\n", io.DebugInfo.DebugTimeStampe,Repeat_Fill_Times,TotalLoadSize,Repeat_Fill_Group_Times, MReg_Write_Addr, All_Group_Data(Repeat_Fill_Group_Times))
                         }
                     }
                 }
-            }
 
-            val Current_Load_Fill_Size = WireInit(0.U((log2Ceil(CMatrixRegNBanks)+1).W))
-            Current_Load_Fill_Size := PopCount(Current_Fill_MReg_Time.asUInt)
-
-            TotalLoadSize := TotalLoadSize + Current_Load_Fill_Size
-
-            if (YJPCMLDebugEnable)
-            {
-                when(Current_Load_Fill_Size =/= 0.U)
-                {
-                    printf("[CMemoryLoader_Load<%d>]Current_Load_Fill_Size: %d, TotalLoadSize: %d, MaxLoadSize: %d\n",io.DebugInfo.DebugTimeStampe, Current_Load_Fill_Size, TotalLoadSize, MaxRequestIter * MAX_Fill_Times.U)
-                }
-            }
-            //状态机切换
-            when(TotalLoadSize === (MaxRequestIter * MAX_Fill_Times.U)){
-                memoryload_state := s_load_end
-                if (YJPCMLDebugEnable)
-                {
-                    printf("[CMemoryLoader_Load<%d>]LoadEnd\n",io.DebugInfo.DebugTimeStampe)
-                }
-            }
-        }.elsewhen(Is_ZeroLoad)
-        {
-            //给所有的bank发出写0的请求
-            HasScarhpadWrite := true.B
-            //每次写所有bank的一个entry，总共要写CMatrixRegBankNEntrys次
-            val Max_ZeroLoad_Write_Times = CMatrixRegBankNEntrys
-            for (i <- 0 until CMatrixRegNBanks)
-            {
-                io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).bits := TotalLoadSize
-                io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).valid := true.B
-                io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(i).bits := 0.U
-                io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(i).valid := true.B
-            }
-
-            when(io.ToMatrixRegIO.ReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex) === true.B)
-            {
-                TotalLoadSize := TotalLoadSize + 1.U
-                if (YJPCMLDebugEnable)
-                {
-                    printf("[CMemoryLoader_Load<%d>]ZeroLoad, TotalLoadSize: %d\n",io.DebugInfo.DebugTimeStampe, TotalLoadSize)
-                }
-                when(TotalLoadSize === (Max_ZeroLoad_Write_Times-1).U)
+                when(TotalLoadSize === (Max_MReg_Write_Times).U)
                 {
                     memoryload_state := s_load_end
                     if (YJPCMLDebugEnable)
                     {
-                        printf("[CMemoryLoader_Load<%d>]ZeroLoadEnd\n",io.DebugInfo.DebugTimeStampe)
+                        printf("[CMemoryLoader_Load<%d>]RepeatRowLoadEnd\n", io.DebugInfo.DebugTimeStampe)
                     }
                 }
-            }
-
-        }.elsewhen(Is_RepeatRowLoad)
-        {
-            //由于RepeatRowLoad的特殊性，我们一次Load需要写MReg很多次,导致我们的FIFO在被写满时，会导致长时间的TL无法握手。
-            //故，我们针对这样的情况，我们需要为每一个发出的访存请求预留一个FIFO的空位，这样就可以保证TL握手成功，从而不浪费访存带宽，这样可能会导致整体延迟增加(但不会低到阻碍吞吐)，但我们的访存带宽利用率一定不会低
-            //获取整个Row的数据，然后重复填充，Row的总数据量为Tensor_N*C_DataType
-            val sourceId = Mux(IsConherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
-            val Max_RepeatRowLoad_Memory_Load_Times = Tensor_MN.U * C_DataType / outsideDataWidthByte.U //总共要发出的访存请求的次数
-            val Max_MReg_Write_Times = Tensor_MN*Tensor_MN*ResultWidthByte/CMatrixReg_Total_Bandwidth //总共要写入MReg的次数
-            ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr +  CurrentLoaded_BlockTensor_N_Iter * C_DataType
-            ReadRequest.bits.RequestConherent := IsConherent
-            ReadRequest.bits.RequestSourceID := sourceId.bits
-            ReadRequest.bits.RequestType_isWrite := false.B
-            ReadRequest.valid := (TotalRequestSize < Max_RepeatRowLoad_Memory_Load_Times) && (Repeat_Fill_Request_Infight < (CMemoryLoaderReadFromMemoryFIFODepth-1).U)
-
-
-            val Per_Load_Fill_MReg_Times = (Tensor_MN/Matrix_MN) * (outsideDataWidthByte/CMatrixRegEntryByteSize)
-            val Per_Data_Repeat_Times = (Tensor_MN/Matrix_MN) //每组数据要重复写MReg这么多次
-            val Per_Memory_Load_Have_Data_Write_Group = (outsideDataWidthByte/CMatrixRegEntryByteSize)//每次Memory的load，有几组数据要写回
-            val Per_Write_MReg_Addr_Add = (Tensor_MN / Matrix_MN).U //一组数据Per_Data_Repeat_Times迭代中，下一次写入的scp地址的增量
-
-            // val Load_Time = CurrentLoaded_BlockTensor_N_Iter / (outsideDataWidthByte.U/C_DataType)
-
-            //向量的访存顺序
-            //01,23,45,67.....
-            //   N 0 1 2 3 4 5 6 7     CMatrixRegData里的排布
-            // M                               {bank  [0] [1]     [2] [3] }
-            // 0   0 1 2 3 4 5 6 7   |addr    0 |      0   0       0   0 
-            //                       |        1 |      1   1       1   1 
-            //                       |        2 |      2   2       2   2
-            //                       |        . |    .... ....   .... ....
-            //                       |        . |    .... ....   .... .... 
-            //                       |       15 |     15   15     15   15  
-            //                       |       16 |      0   0       0   0  
-            //                       |       17 |    .... ....   .... ....
-            //                       | ....................................
-            //
-            //MReg的写回顺序
-            //0,16,32,48.....每次加Per_Write_MReg_Addr_Add，一共写Per_Data_Repeat_Times次
-            //1,17,33,49.....每次加Per_Write_MReg_Addr_Add，一共写Per_Data_Repeat_Times次
-            //一次Memory的load，有Per_Memory_Load_Have_Data_Write_Group组数据，每组数据写回Per_Data_Repeat_Times次
-
-            //确定这个访存请求一定会发出
-            when(ReadRequest.fire){
-
-                val TableItem = Wire(new CSourceIdSearch)
-                TableItem.MatrixRegBankId := 0.U
-                TableItem.MatrixRegAddr := TotalRequestSize * Per_Memory_Load_Have_Data_Write_Group.U//这个数据的第一个数据，落在哪个MatrixRegBank的哪个地址上
-                SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
-
-                CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType
-                Repeat_Fill_Request_Infight := Repeat_Fill_Request_Infight + 1.U
-                if (YJPCMLDebugEnable)
-                {
-                    printf("[CMemoryLoader_Load<%d>]RepeatRowLoad,CurrentLoaded_BlockTensor_N_Iter: %x, RequestVirtualAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x\n", io.DebugInfo.DebugTimeStampe, CurrentLoaded_BlockTensor_N_Iter, ReadRequest.bits.RequestVirtualAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite)
-                }
-                when(TotalRequestSize === Max_RepeatRowLoad_Memory_Load_Times){
-                    //assert!
-                    //error!
-                }.otherwise{
-                    TotalRequestSize := TotalRequestSize + 1.U
-                }
-            }
-
-            io.LocalMMUIO.Response.ready := true.B
-            when(io.LocalMMUIO.Response.fire){
-                val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
-                val ResponseData = io.LocalMMUIO.Response.bits.ReseponseData
-                val FIFOIndex = MReg_Fill_Table_Insert_Index
-                MReg_Fill_Table(FIFOIndex) := ResponseData
-                MReg_Fill_Table_MReg_Addr(FIFOIndex) := SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegAddr
-                MReg_Fill_Table_Time(FIFOIndex) := 1.U//当valid用
-
-                if (YJPCMLDebugEnable)
-                {
-                    printf("[CMemoryLoader_Load<%d>]RepeatRowLoad, ResponseData: %x, FIFOIndex: %x\n", io.DebugInfo.DebugTimeStampe, ResponseData, FIFOIndex)
-                }
-            }
-
-            
-            when(MReg_Fill_Table_Not_Empty && Repeat_Fill_Is_Working === false.B)
-            {
-                Repeat_Fill_Is_Working := true.B
-                Repeat_Fill_Table_Index := MReg_Fill_Table_Valid_Index
-                Repeat_Fill_Times := 0.U
-                Repeat_Fill_Group_Times := 0.U
-            }
-
-            when(Repeat_Fill_Is_Working)
-            {
-                val CurrentFIFOData = MReg_Fill_Table(Repeat_Fill_Table_Index)
-                val All_Group_Data = WireInit((VecInit(Seq.fill(Per_Memory_Load_Have_Data_Write_Group)(0.U(CMatrixRegEntryBitSize.W)))))
-                All_Group_Data := CurrentFIFOData.asTypeOf(All_Group_Data)
-                val MReg_Write_Addr = MReg_Fill_Table_MReg_Addr(Repeat_Fill_Table_Index) + Repeat_Fill_Times * Per_Write_MReg_Addr_Add + Repeat_Fill_Group_Times
-
-                val MatrixRegWriteRequest = io.ToMatrixRegIO.WriteRequestToMatrixReg
-                
-                for (i <- 0 until CMatrixRegNBanks)
-                {
-                    MatrixRegWriteRequest.BankAddr(i).bits := MReg_Write_Addr
-                    MatrixRegWriteRequest.BankAddr(i).valid := true.B
-                    MatrixRegWriteRequest.Data(i).bits := All_Group_Data(Repeat_Fill_Group_Times)
-                    MatrixRegWriteRequest.Data(i).valid := true.B
-                }
-
-                HasScarhpadWrite := true.B
-
-                when(io.ToMatrixRegIO.ReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex) === true.B)
-                {
-                    Repeat_Fill_Times := Repeat_Fill_Times + 1.U
-                    TotalLoadSize := TotalLoadSize + 1.U
-                    when(Repeat_Fill_Times === (Per_Data_Repeat_Times - 1).U)
-                    {
-                        Repeat_Fill_Times := 0.U
-                        Repeat_Fill_Group_Times := Repeat_Fill_Group_Times + 1.U
-                        when(Repeat_Fill_Group_Times === (Per_Memory_Load_Have_Data_Write_Group - 1).U)
-                        {
-                            Repeat_Fill_Group_Times := 0.U
-                            Repeat_Fill_Is_Working := false.B
-                            Repeat_Fill_Request_Infight := Repeat_Fill_Request_Infight - 1.U
-                            when(ReadRequest.fire)
-                            {
-                                Repeat_Fill_Request_Infight := Repeat_Fill_Request_Infight
-                            }
-                            MReg_Fill_Table_Time(Repeat_Fill_Table_Index) := 0.U
-                        }
-                    }
-                    if (YJPCMLDebugEnable)
-                    {
-                        printf("[CMemoryLoader_Load<%d>]RepeatRowLoad,Repeat_Fill_Times:  %d,TotalLoadSize:  %d,Repeat_Fill_Group_Times:  %d, MReg_Write_Addr: %x, Data: %x\n", io.DebugInfo.DebugTimeStampe,Repeat_Fill_Times,TotalLoadSize,Repeat_Fill_Group_Times, MReg_Write_Addr, All_Group_Data(Repeat_Fill_Group_Times))
-                    }
-                }
-            }
-
-            when(TotalLoadSize === (Max_MReg_Write_Times).U)
-            {
-                memoryload_state := s_load_end
-                if (YJPCMLDebugEnable)
-                {
-                    printf("[CMemoryLoader_Load<%d>]RepeatRowLoadEnd\n", io.DebugInfo.DebugTimeStampe)
-                }
-            }
-        }.otherwise
-        {
-            //error!
-            assert(false.B, "Error! Load Task Type Error!")
-        }
-        
-
-
-    }.elsewhen(memoryload_state === s_load_end){
-        io.ConfigInfo.MicroTaskEndValid := true.B
-        when(io.ConfigInfo.MicroTaskEndReady && io.ConfigInfo.MicroTaskEndValid){
-            memoryload_state := s_load_idle
-            state := s_idle
-            if (YJPCMLDebugEnable)
-            {
-                printf("[CMemoryLoader_Load<%d>]Load Finish\n",io.DebugInfo.DebugTimeStampe)
             }
         }
-    }.otherwise{
-        //闲闲没事做
+        is(s_load_end) {
+            io.ConfigInfo.MicroTaskEndValid := true.B
+            when(io.ConfigInfo.MicroTaskEndReady && io.ConfigInfo.MicroTaskEndValid){
+                memoryload_state := s_load_idle
+                state := s_idle
+                if (YJPCMLDebugEnable)
+                {
+                    printf("[CMemoryLoader_Load<%d>]Load Finish\n",io.DebugInfo.DebugTimeStampe)
+                }
+            }
+        }
     }
 
 
@@ -658,7 +661,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Write_Mem_Wait_Table = RegInit(VecInit(Seq.fill(SoureceMaxNum)(false.B))) //存储每个访存请求的等待状态
 
     //CMemoryLoaderReadFromMatrixRegFIFODepth深度的fifo
-    val FromMatrixRegReadFIFO = RegInit(VecInit(Seq.fill(CMemoryLoaderReadFromMatrixRegFIFODepth)(0.U(CMatrixReg_Total_Bandwidth_Bit.W))))
+    val FromMatrixRegReadFIFO = Reg(Vec(CMemoryLoaderReadFromMatrixRegFIFODepth, UInt(CMatrixReg_Total_Bandwidth_Bit.W)))
     val FromMatrixRegReadFIFOHead = RegInit(0.U(log2Ceil(CMemoryLoaderReadFromMatrixRegFIFODepth).W))
     val FromMatrixRegReadFIFOTail = RegInit(0.U(log2Ceil(CMemoryLoaderReadFromMatrixRegFIFODepth).W))
     val FromMatrixRegReadFIFOFull = FromMatrixRegReadFIFOTail === WrapInc(FromMatrixRegReadFIFOHead, CMemoryLoaderReadFromMatrixRegFIFODepth)
@@ -700,227 +703,222 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Send_LLC_Iter = RegInit(0.U(log2Ceil(Matrix_MN).W))
     val Send_LLC_Max_Iter = Matrix_MN
 
-    when(memorystore_state === s_store_init){
-        memorystore_state := s_store_working
+    switch(memorystore_state) {
+        is(s_store_init) {
+            memorystore_state := s_store_working
 
-        Reorder_ToLLC_Reg := 0.U.asTypeOf(Reorder_ToLLC_Reg)
-        Reorder_ToLLC_Reg_Valid := 0.U.asTypeOf(Reorder_ToLLC_Reg_Valid) 
-        Reorder_ToLLC_Reg_Get_Index := 0.U
+            Reorder_ToLLC_Reg := 0.U.asTypeOf(Reorder_ToLLC_Reg)
+            Reorder_ToLLC_Reg_Valid := 0.U.asTypeOf(Reorder_ToLLC_Reg_Valid) 
+            Reorder_ToLLC_Reg_Get_Index := 0.U
 
-        Fill_LLC_Iter := 0.U
+            Fill_LLC_Iter := 0.U
 
-        TotalStoreSize := 0.U
-        TotalStoreRequestSize := 0.U
-        CurrentStore_BlockTensor_Major_DIM_Iter := 0.U
-        CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
-        FromMatrixRegReadFIFO := 0.U.asTypeOf(FromMatrixRegReadFIFO)
-        FromMatrixRegReadFIFOHead := 0.U
-        FromMatrixRegReadFIFOTail := 0.U
-        Max_Load_MReg_Time := MatrixRegTensor_M * MatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U//总共要发对SCAP的访存次数
-        Max_Store_Memory_Time := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_MN.U, MatrixRegTensor_M) * MatrixRegTensor_N * D_DataType / outsideDataWidthByte.U//总共要发对LLC的访存次数
-        // MaxIncStoreScpRequestSize := Mux(Is_Transpose, MatrixRegTensor_N, M_Get_IteratorMax * Matrix_MN.U) * Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N) * D_DataType / CMatrixReg_Total_Bandwidth.U
-        MaxIncStoreScpRequestSize := M_Get_IteratorMax * Matrix_MN.U * MatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U
-        MaxIncStoreRequestSize := (Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M) / Matrix_MN.U * Matrix_MN.U) * Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N) * D_DataType / CMatrixReg_Total_Bandwidth.U
-        Max_Load_Scp_Tail_SubMajor_Iter := Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M) % Matrix_MN.U
-        Current_Load_Scp_Tail_subMajor_Iter := 0.U
-        Current_Load_Scp_addr := 0.U
-        Current_Load_M_iter := 0.U
-        Current_Load_N_iter := 0.U
-        Per_LLC_Store_ReduceDim_Iter := Mux(D_DataType === 1.U, outsideDataWidthByte.U,
-                                    Mux(D_DataType === 2.U, outsideDataWidthByte.U/2.U,
-                                    Mux(D_DataType === 4.U, outsideDataWidthByte.U/4.U, outsideDataWidthByte.U)))
-        Per_MReg_Load_ReduceDim_Iter := Mux(D_DataType === 1.U, CMatrixReg_Total_Bandwidth.U,
-                                        Mux(D_DataType === 2.U, CMatrixReg_Total_Bandwidth.U/2.U,
-                                        Mux(D_DataType === 4.U, CMatrixReg_Total_Bandwidth.U/4.U, CMatrixReg_Total_Bandwidth.U)))
-        Max_SubReduce_DIM := Mux(D_DataType === 1.U, CMatrixReg_Total_Bandwidth.U,
-                                Mux(D_DataType === 2.U, CMatrixReg_Total_Bandwidth.U/2.U,
-                                Mux(D_DataType === 4.U, CMatrixReg_Total_Bandwidth.U/4.U, CMatrixReg_Total_Bandwidth.U)))
-        FireTimes := 0.U
-        Max_BlockTensor_Reduce_DIM := Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N)
-        Max_BlockTensor_Request_Reduce_DIM := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_MN.U, MatrixRegTensor_N)
-        Max_BlockTensor_Major_DIM := Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M)
+            TotalStoreSize := 0.U
+            TotalStoreRequestSize := 0.U
+            CurrentStore_BlockTensor_Major_DIM_Iter := 0.U
+            CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
+            FromMatrixRegReadFIFO := 0.U.asTypeOf(FromMatrixRegReadFIFO)
+            FromMatrixRegReadFIFOHead := 0.U
+            FromMatrixRegReadFIFOTail := 0.U
+            Max_Load_MReg_Time := MatrixRegTensor_M * MatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U//总共要发对SCAP的访存次数
+            Max_Store_Memory_Time := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_MN.U, MatrixRegTensor_M) * MatrixRegTensor_N * D_DataType / outsideDataWidthByte.U//总共要发对LLC的访存次数
+            // MaxIncStoreScpRequestSize := Mux(Is_Transpose, MatrixRegTensor_N, M_Get_IteratorMax * Matrix_MN.U) * Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N) * D_DataType / CMatrixReg_Total_Bandwidth.U
+            MaxIncStoreScpRequestSize := M_Get_IteratorMax * Matrix_MN.U * MatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U
+            MaxIncStoreRequestSize := (Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M) / Matrix_MN.U * Matrix_MN.U) * Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N) * D_DataType / CMatrixReg_Total_Bandwidth.U
+            Max_Load_Scp_Tail_SubMajor_Iter := Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M) % Matrix_MN.U
+            Current_Load_Scp_Tail_subMajor_Iter := 0.U
+            Current_Load_Scp_addr := 0.U
+            Current_Load_M_iter := 0.U
+            Current_Load_N_iter := 0.U
+            Per_LLC_Store_ReduceDim_Iter := Mux(D_DataType === 1.U, outsideDataWidthByte.U,
+                                        Mux(D_DataType === 2.U, outsideDataWidthByte.U/2.U,
+                                        Mux(D_DataType === 4.U, outsideDataWidthByte.U/4.U, outsideDataWidthByte.U)))
+            Per_MReg_Load_ReduceDim_Iter := Mux(D_DataType === 1.U, CMatrixReg_Total_Bandwidth.U,
+                                            Mux(D_DataType === 2.U, CMatrixReg_Total_Bandwidth.U/2.U,
+                                            Mux(D_DataType === 4.U, CMatrixReg_Total_Bandwidth.U/4.U, CMatrixReg_Total_Bandwidth.U)))
+            Max_SubReduce_DIM := Mux(D_DataType === 1.U, CMatrixReg_Total_Bandwidth.U,
+                                    Mux(D_DataType === 2.U, CMatrixReg_Total_Bandwidth.U/2.U,
+                                    Mux(D_DataType === 4.U, CMatrixReg_Total_Bandwidth.U/4.U, CMatrixReg_Total_Bandwidth.U)))
+            FireTimes := 0.U
+            Max_BlockTensor_Reduce_DIM := Mux(Is_Transpose, MatrixRegTensor_M, MatrixRegTensor_N)
+            Max_BlockTensor_Request_Reduce_DIM := Mux(Is_Transpose, M_Get_IteratorMax * Matrix_MN.U, MatrixRegTensor_N)
+            Max_BlockTensor_Major_DIM := Mux(Is_Transpose, MatrixRegTensor_N, MatrixRegTensor_M)
 
-        if(YJPCMLDebugEnable)
-        {
-            printf("[CMemoryLoader_Store<%d>]Store D Tensor Start, Max_Load_MReg_Time: %x\n", io.DebugInfo.DebugTimeStampe, MatrixRegTensor_M * MatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U)
-        }
-    }.elsewhen(memorystore_state === s_store_working){
-        val Reorder_ToLLC_Reg_Ready_Get = !(Reorder_ToLLC_Reg_Valid.reduce(_&&_))//只要有一个不是Valid就是true,表示可以接受CDC的数据
-        //如果MatrixReg的仲裁结果允许我们读取数据
-        HasScarhpadRead := !FromMatrixRegReadFIFO_ISSUE_Full && !FromMatrixRegReadFIFOFull && TotalStoreRequestSize < MaxIncStoreScpRequestSize
-        when(HasScarhpadRead){
-            transpose_scp_addr := Current_Load_N_iter + Current_Load_M_iter * N_Get_IteratorMax
             if(YJPCMLDebugEnable)
             {
-                printf("[CMemoryLoader_Store<%d>]N_Get_IteratorMax: %x, Current_Load_N_iter: %x, Current_Load_M_iter: %x, transpose_scp_addr: %x\n", io.DebugInfo.DebugTimeStampe, N_Get_IteratorMax, Current_Load_N_iter, Current_Load_M_iter, transpose_scp_addr)
-            }
-            //根据MatrixReg的仲裁结果，我们可以读取数据了
-            for (i <- 0 until CMatrixRegNBanks){
-                io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(i).bits := Mux(Is_Transpose, transpose_scp_addr, Current_Load_Scp_addr)
-                io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(i).valid := true.B
-            }
-            when(io.ToMatrixRegIO.ReadWriteResponse(MatrixRegTaskType.ReadFromMemoryLoaderIndex)){
-                TotalStoreRequestSize := TotalStoreRequestSize + 1.U
-                // logic for transpose
-                Current_Load_M_iter := Current_Load_M_iter + 1.U
-                when(Current_Load_M_iter === (M_Get_IteratorMax - 1.U)){
-                    Current_Load_M_iter := 0.U
-                    Current_Load_N_iter := Current_Load_N_iter + 1.U
-                }
-
-                Current_Load_Scp_addr := Current_Load_Scp_addr + 1.U
-            }
-            if (YJPCMLDebugEnable)
-            {
-                printf("[CMemoryLoader_Store<%d>]StoreTask MReg Load Request times: %x\n", io.DebugInfo.DebugTimeStampe, TotalStoreRequestSize)
+                printf("[CMemoryLoader_Store<%d>]Store D Tensor Start, Max_Load_MReg_Time: %x\n", io.DebugInfo.DebugTimeStampe, MatrixRegTensor_M * MatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U)
             }
         }
-        
-        //只要MatrixReg的数据读数有效，就可以将这个数置入fifo
-        val ReadResponseData_Valid = io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData.map(_.valid).reduce(_ && _)
-        val ReadResponseData_Bits = io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData.map(_.bits)
-        when(ReadResponseData_Valid){
-            FromMatrixRegReadFIFO(FromMatrixRegReadFIFOHead) := ReadResponseData_Bits.asUInt
-            FromMatrixRegReadFIFOHead := WrapInc(FromMatrixRegReadFIFOHead, CMemoryLoaderReadFromMatrixRegFIFODepth)
-            
-            if (YJPCMLDebugEnable)
-            {
-                printf("[CMemoryLoader_Store<%d>]FromMatrixRegReadFIFOHead: %x,FromMatrixRegReadFIFOTail: %x, data: %x\n", io.DebugInfo.DebugTimeStampe, FromMatrixRegReadFIFOHead,FromMatrixRegReadFIFOTail, ReadResponseData_Bits.asUInt)
-            }
-        }
-
-        //只要fifo内的数据有效，就可以写入LLC
-        val WriteRequest = io.LocalMMUIO.Request
-        WriteRequest.valid := false.B
-        when(!FromMatrixRegReadFIFOEmpty && Reorder_ToLLC_Reg_Ready_Get){
-            val Read_Data_list = WireInit(VecInit(Seq.fill(Matrix_MN)(0.U(Per_GetMatrix_NDim_Width.W))))
-            Read_Data_list := FromMatrixRegReadFIFO(FromMatrixRegReadFIFOTail).asTypeOf(Read_Data_list)
-            for (i <- 0 until Matrix_MN){
-                Reorder_ToLLC_Reg(Reorder_ToLLC_Reg_Get_Index)(i)(Fill_LLC_Iter) := Read_Data_list(i)
-            }
-            //更新相关迭代器
-            Fill_LLC_Iter := WrapInc(Fill_LLC_Iter, Fill_LLC_Max_Iter)
-            FromMatrixRegReadFIFOTail := WrapInc(FromMatrixRegReadFIFOTail, CMemoryLoaderReadFromMatrixRegFIFODepth)
-            when(Fill_LLC_Iter === (Fill_LLC_Max_Iter - 1).U){
-                Fill_LLC_Iter := 0.U
-                Reorder_ToLLC_Reg_Valid(Reorder_ToLLC_Reg_Get_Index) := true.B
-                Reorder_ToLLC_Reg_Get_Index := WrapInc(Reorder_ToLLC_Reg_Get_Index, 2)
-
-                //完成一组数据，4*4数据的填充输出这一组数据
-                // if (YJPAfterOpsDebugEnable)
-                // {
-                //     val Groups_Iter = GetCount / (Matrix_MN.U)
-                //     printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToVector_Reg, GetCount is %d(Groups %d),Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, GetCount,Groups_Iter,Reorder_ToVector_Reg(Reorder_ToVector_Reg_Get_Index).asUInt)
-                // }
-            }
-        }
-        val Reorder_ToLLC_Reg_Ready_Send= Reorder_ToLLC_Reg_Valid.reduce(_||_)//只要有一个是Valid就是ture，表示可以发往后操作执行
-        when(Reorder_ToLLC_Reg_Ready_Send){
-
-            val Request_Data = WireInit(VecInit(Seq.fill(outsideDataWidthByte / ResultWidthByte)(0.U(ResultWidth.W))))
-
-            Request_Data := Reorder_ToLLC_Reg(Reorder_ToLLC_Reg_Send_Index)(Send_LLC_Iter).asTypeOf(Request_Data)
-
-            val need_fill_zero = CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter > Max_BlockTensor_Reduce_DIM
-
-            when(need_fill_zero) {
-                for (i <- 0 until outsideDataWidthByte / ResultWidthByte) {
-                    when(CurrentStore_BlockTensor_Reduce_DIM_Iter + i.U >= Max_BlockTensor_Reduce_DIM) {
-                        Request_Data(i) := 0.U
-                    }
+        is(s_store_working) {
+            val Reorder_ToLLC_Reg_Ready_Get = !(Reorder_ToLLC_Reg_Valid.reduce(_&&_))//只要有一个不是Valid就是true,表示可以接受CDC的数据
+            //如果MatrixReg的仲裁结果允许我们读取数据
+            HasScarhpadRead := !FromMatrixRegReadFIFO_ISSUE_Full && !FromMatrixRegReadFIFOFull && TotalStoreRequestSize < MaxIncStoreScpRequestSize
+            when(HasScarhpadRead){
+                transpose_scp_addr := Current_Load_N_iter + Current_Load_M_iter * N_Get_IteratorMax
+                if(YJPCMLDebugEnable)
+                {
+                    printf("[CMemoryLoader_Store<%d>]N_Get_IteratorMax: %x, Current_Load_N_iter: %x, Current_Load_M_iter: %x, transpose_scp_addr: %x\n", io.DebugInfo.DebugTimeStampe, N_Get_IteratorMax, Current_Load_N_iter, Current_Load_M_iter, transpose_scp_addr)
                 }
-            }
-            
-            WriteRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) * ApplicationTensor_D_Stride_M + CurrentStore_BlockTensor_Reduce_DIM_Iter * D_DataType
-            WriteRequest.bits.RequestConherent := IsConherent
-            WriteRequest.bits.RequestSourceID := io.LocalMMUIO.ConherentRequsetSourceID.bits
-            WriteRequest.bits.RequestType_isWrite := true.B
-            WriteRequest.bits.RequestData := Request_Data.asUInt
-            WriteRequest.valid := true.B
-            //只有fire了才能继续
-            when(WriteRequest.fire && io.LocalMMUIO.ConherentRequsetSourceID.valid){
-                Send_LLC_Iter := WrapInc(Send_LLC_Iter, Send_LLC_Max_Iter)
-                // if (YJPAfterOpsDebugEnable)
-                // {
-                //     printf("[AfterOps<%d>]AfterOps: Send data to Vector, Send_Vector_Iter is %d,Send_Vector_Data is %x\n",io.DebugInfo.DebugTimeStampe, Send_Vector_Iter,io.VectorInterface.VectorDataIn.bits)
-                // }
-                when(Is_Transpose) {
-                    when(Send_LLC_Iter === (Send_LLC_Max_Iter - 1).U) {
-                        Send_LLC_Iter := 0.U
-                        Reorder_ToLLC_Reg_Valid(Reorder_ToLLC_Reg_Send_Index) := false.B
-                        Reorder_ToLLC_Reg_Send_Index := WrapInc(Reorder_ToLLC_Reg_Send_Index, 2)
-                    }
-
-                }.otherwise {
-                    when(Send_LLC_Iter === (Send_LLC_Max_Iter - 1).U || (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) === (MatrixRegTensor_M - 1.U)){
-                        Send_LLC_Iter := 0.U
-                        Reorder_ToLLC_Reg_Valid(Reorder_ToLLC_Reg_Send_Index) := false.B
-                        Reorder_ToLLC_Reg_Send_Index := WrapInc(Reorder_ToLLC_Reg_Send_Index, 2)
-                        // printf("[AfterOps<%d>]AfterOps: Send Reorder Group finish, Send_Vector_Iter is %d\n",io.DebugInfo.DebugTimeStampe, Send_Vector_Iter)
-                    }
+                //根据MatrixReg的仲裁结果，我们可以读取数据了
+                for (i <- 0 until CMatrixRegNBanks){
+                    io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(i).bits := Mux(Is_Transpose, transpose_scp_addr, Current_Load_Scp_addr)
+                    io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(i).valid := true.B
                 }
+                when(io.ToMatrixRegIO.ReadWriteResponse(MatrixRegTaskType.ReadFromMemoryLoaderIndex)){
+                    TotalStoreRequestSize := TotalStoreRequestSize + 1.U
+                    // logic for transpose
+                    Current_Load_M_iter := Current_Load_M_iter + 1.U
+                    when(Current_Load_M_iter === (M_Get_IteratorMax - 1.U)){
+                        Current_Load_M_iter := 0.U
+                        Current_Load_N_iter := Current_Load_N_iter + 1.U
+                    }
 
+                    Current_Load_Scp_addr := Current_Load_Scp_addr + 1.U
+                }
                 if (YJPCMLDebugEnable)
                 {
-                    printf("[CMemoryLoader_Store<%d>]WriteRequest: RequestVirtualAddr= %x, RequestConherent= %x,RequestSourceID= %x,RequestType_isWrite= %x,CurrentStore_BlockTensor_Major_DIM_Iter: %x, CurrentStore_BlockTensor_Reduce_DIM_Iter: %x,RequestData:%x\n", io.DebugInfo.DebugTimeStampe, WriteRequest.bits.RequestVirtualAddr, WriteRequest.bits.RequestConherent, WriteRequest.bits.RequestSourceID, WriteRequest.bits.RequestType_isWrite, CurrentStore_BlockTensor_Major_DIM_Iter, CurrentStore_BlockTensor_Reduce_DIM_Iter,WriteRequest.bits.RequestData)
+                    printf("[CMemoryLoader_Store<%d>]StoreTask MReg Load Request times: %x\n", io.DebugInfo.DebugTimeStampe, TotalStoreRequestSize)
+                }
+            }
+            
+            //只要MatrixReg的数据读数有效，就可以将这个数置入fifo
+            val ReadResponseData_Valid = io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData.map(_.valid).reduce(_ && _)
+            val ReadResponseData_Bits = io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData.map(_.bits)
+            when(ReadResponseData_Valid){
+                FromMatrixRegReadFIFO(FromMatrixRegReadFIFOHead) := ReadResponseData_Bits.asUInt
+                FromMatrixRegReadFIFOHead := WrapInc(FromMatrixRegReadFIFOHead, CMemoryLoaderReadFromMatrixRegFIFODepth)
+                
+                if (YJPCMLDebugEnable)
+                {
+                    printf("[CMemoryLoader_Store<%d>]FromMatrixRegReadFIFOHead: %x,FromMatrixRegReadFIFOTail: %x, data: %x\n", io.DebugInfo.DebugTimeStampe, FromMatrixRegReadFIFOHead,FromMatrixRegReadFIFOTail, ReadResponseData_Bits.asUInt)
+                }
+            }
+
+            //只要fifo内的数据有效，就可以写入LLC
+            val WriteRequest = io.LocalMMUIO.Request
+            WriteRequest.valid := false.B
+            when(!FromMatrixRegReadFIFOEmpty && Reorder_ToLLC_Reg_Ready_Get){
+                val Read_Data_list = WireInit(VecInit(Seq.fill(Matrix_MN)(0.U(Per_GetMatrix_NDim_Width.W))))
+                Read_Data_list := FromMatrixRegReadFIFO(FromMatrixRegReadFIFOTail).asTypeOf(Read_Data_list)
+                for (i <- 0 until Matrix_MN){
+                    Reorder_ToLLC_Reg(Reorder_ToLLC_Reg_Get_Index)(i)(Fill_LLC_Iter) := Read_Data_list(i)
+                }
+                //更新相关迭代器
+                Fill_LLC_Iter := WrapInc(Fill_LLC_Iter, Fill_LLC_Max_Iter)
+                FromMatrixRegReadFIFOTail := WrapInc(FromMatrixRegReadFIFOTail, CMemoryLoaderReadFromMatrixRegFIFODepth)
+                when(Fill_LLC_Iter === (Fill_LLC_Max_Iter - 1).U){
+                    Fill_LLC_Iter := 0.U
+                    Reorder_ToLLC_Reg_Valid(Reorder_ToLLC_Reg_Get_Index) := true.B
+                    Reorder_ToLLC_Reg_Get_Index := WrapInc(Reorder_ToLLC_Reg_Get_Index, 2)
+
+                    //完成一组数据，4*4数据的填充输出这一组数据
+                    // if (YJPAfterOpsDebugEnable)
+                    // {
+                    //     val Groups_Iter = GetCount / (Matrix_MN.U)
+                    //     printf("[AfterOps<%d>]AfterOps: Fill data to Reorder_ToVector_Reg, GetCount is %d(Groups %d),Fill_Reg_data is %x\n",io.DebugInfo.DebugTimeStampe, GetCount,Groups_Iter,Reorder_ToVector_Reg(Reorder_ToVector_Reg_Get_Index).asUInt)
+                    // }
+                }
+            }
+            val Reorder_ToLLC_Reg_Ready_Send= Reorder_ToLLC_Reg_Valid.reduce(_||_)//只要有一个是Valid就是ture，表示可以发往后操作执行
+            when(Reorder_ToLLC_Reg_Ready_Send){
+
+                val Request_Data = WireInit(VecInit(Seq.fill(outsideDataWidthByte / ResultWidthByte)(0.U(ResultWidth.W))))
+
+                Request_Data := Reorder_ToLLC_Reg(Reorder_ToLLC_Reg_Send_Index)(Send_LLC_Iter).asTypeOf(Request_Data)
+
+                val need_fill_zero = CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter > Max_BlockTensor_Reduce_DIM
+
+                when(need_fill_zero) {
+                    for (i <- 0 until outsideDataWidthByte / ResultWidthByte) {
+                        when(CurrentStore_BlockTensor_Reduce_DIM_Iter + i.U >= Max_BlockTensor_Reduce_DIM) {
+                            Request_Data(i) := 0.U
+                        }
+                    }
                 }
                 
+                WriteRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) * ApplicationTensor_D_Stride_M + CurrentStore_BlockTensor_Reduce_DIM_Iter * D_DataType
+                WriteRequest.bits.RequestConherent := IsConherent
+                WriteRequest.bits.RequestSourceID := io.LocalMMUIO.ConherentRequsetSourceID.bits
+                WriteRequest.bits.RequestType_isWrite := true.B
+                WriteRequest.bits.RequestData := Request_Data.asUInt
+                WriteRequest.valid := true.B
+                //只有fire了才能继续
+                when(WriteRequest.fire && io.LocalMMUIO.ConherentRequsetSourceID.valid){
+                    Send_LLC_Iter := WrapInc(Send_LLC_Iter, Send_LLC_Max_Iter)
+                    // if (YJPAfterOpsDebugEnable)
+                    // {
+                    //     printf("[AfterOps<%d>]AfterOps: Send data to Vector, Send_Vector_Iter is %d,Send_Vector_Data is %x\n",io.DebugInfo.DebugTimeStampe, Send_Vector_Iter,io.VectorInterface.VectorDataIn.bits)
+                    // }
+                    when(Is_Transpose) {
+                        when(Send_LLC_Iter === (Send_LLC_Max_Iter - 1).U) {
+                            Send_LLC_Iter := 0.U
+                            Reorder_ToLLC_Reg_Valid(Reorder_ToLLC_Reg_Send_Index) := false.B
+                            Reorder_ToLLC_Reg_Send_Index := WrapInc(Reorder_ToLLC_Reg_Send_Index, 2)
+                        }
 
-                CurrentStore_BlockTensor_SubMajor_DIM_Iter := CurrentStore_BlockTensor_SubMajor_DIM_Iter + 1.U
-                // M % Matrix_M的剩余M
-                when(CurrentStore_BlockTensor_SubMajor_DIM_Iter === (Matrix_MN-1).U || (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) === (Max_BlockTensor_Major_DIM - 1.U))
-                {
-                    CurrentStore_BlockTensor_SubMajor_DIM_Iter := 0.U
-                    CurrentStore_BlockTensor_Reduce_DIM_Iter := CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter
-                    when(CurrentStore_BlockTensor_Reduce_DIM_Iter === Max_BlockTensor_Request_Reduce_DIM - Per_LLC_Store_ReduceDim_Iter){
-                        CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
-                        CurrentStore_BlockTensor_Major_DIM_Iter := CurrentStore_BlockTensor_Major_DIM_Iter + Matrix_MN.U
+                    }.otherwise {
+                        when(Send_LLC_Iter === (Send_LLC_Max_Iter - 1).U || (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) === (MatrixRegTensor_M - 1.U)){
+                            Send_LLC_Iter := 0.U
+                            Reorder_ToLLC_Reg_Valid(Reorder_ToLLC_Reg_Send_Index) := false.B
+                            Reorder_ToLLC_Reg_Send_Index := WrapInc(Reorder_ToLLC_Reg_Send_Index, 2)
+                            // printf("[AfterOps<%d>]AfterOps: Send Reorder Group finish, Send_Vector_Iter is %d\n",io.DebugInfo.DebugTimeStampe, Send_Vector_Iter)
+                        }
                     }
-                }
-
-                Write_Mem_Wait_Table(io.LocalMMUIO.ConherentRequsetSourceID.bits) := true.B
-                TotalStoreSize := TotalStoreSize + 1.U
-                //输出完成的写回次数
-                if (YJPCMLDebugEnable)
-                {
-                    printf("[CMemoryLoader_Store<%d>]TotalStoreSize: %x\n", io.DebugInfo.DebugTimeStampe, TotalStoreSize)
-                }
-                when(TotalStoreSize === Max_Store_Memory_Time - 1.U){
-                    memorystore_state := s_store_end
 
                     if (YJPCMLDebugEnable)
                     {
-                        printf("[CMemoryLoader_Store<%d>]StoreEnd\n",io.DebugInfo.DebugTimeStampe)
+                        printf("[CMemoryLoader_Store<%d>]WriteRequest: RequestVirtualAddr= %x, RequestConherent= %x,RequestSourceID= %x,RequestType_isWrite= %x,CurrentStore_BlockTensor_Major_DIM_Iter: %x, CurrentStore_BlockTensor_Reduce_DIM_Iter: %x,RequestData:%x\n", io.DebugInfo.DebugTimeStampe, WriteRequest.bits.RequestVirtualAddr, WriteRequest.bits.RequestConherent, WriteRequest.bits.RequestSourceID, WriteRequest.bits.RequestType_isWrite, CurrentStore_BlockTensor_Major_DIM_Iter, CurrentStore_BlockTensor_Reduce_DIM_Iter,WriteRequest.bits.RequestData)
+                    }
+                    
+
+                    CurrentStore_BlockTensor_SubMajor_DIM_Iter := CurrentStore_BlockTensor_SubMajor_DIM_Iter + 1.U
+                    // M % Matrix_M的剩余M
+                    when(CurrentStore_BlockTensor_SubMajor_DIM_Iter === (Matrix_MN-1).U || (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) === (Max_BlockTensor_Major_DIM - 1.U))
+                    {
+                        CurrentStore_BlockTensor_SubMajor_DIM_Iter := 0.U
+                        CurrentStore_BlockTensor_Reduce_DIM_Iter := CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter
+                        when(CurrentStore_BlockTensor_Reduce_DIM_Iter === Max_BlockTensor_Request_Reduce_DIM - Per_LLC_Store_ReduceDim_Iter){
+                            CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
+                            CurrentStore_BlockTensor_Major_DIM_Iter := CurrentStore_BlockTensor_Major_DIM_Iter + Matrix_MN.U
+                        }
+                    }
+
+                    Write_Mem_Wait_Table(io.LocalMMUIO.ConherentRequsetSourceID.bits) := true.B
+                    TotalStoreSize := TotalStoreSize + 1.U
+                    //输出完成的写回次数
+                    if (YJPCMLDebugEnable)
+                    {
+                        printf("[CMemoryLoader_Store<%d>]TotalStoreSize: %x\n", io.DebugInfo.DebugTimeStampe, TotalStoreSize)
+                    }
+                    when(TotalStoreSize === Max_Store_Memory_Time - 1.U){
+                        memorystore_state := s_store_end
+
+                        if (YJPCMLDebugEnable)
+                        {
+                            printf("[CMemoryLoader_Store<%d>]StoreEnd\n",io.DebugInfo.DebugTimeStampe)
+                        }
+                    }
+                    
+                    if (YJPCMLDebugEnable)
+                    {
+                        printf("[CMemoryLoader_Store<%d>]CurrentStore_BlockTensor_Major_DIM_Iter: %x, CurrentStore_BlockTensor_Reduce_DIM_Iter: %x\n", io.DebugInfo.DebugTimeStampe, CurrentStore_BlockTensor_Major_DIM_Iter, CurrentStore_BlockTensor_Reduce_DIM_Iter)
                     }
                 }
-                
+            }
+        }
+        is(s_store_end) {
+            // memorystore_state := s_store_end
+            when(!Write_Mem_Wait_Table.reduce(_||_)) {
+                io.ConfigInfo.MicroTaskEndValid := true.B
+            }
+            when(io.ConfigInfo.MicroTaskEndReady && io.ConfigInfo.MicroTaskEndValid){
+                memorystore_state := s_store_idle
+                state := s_idle
                 if (YJPCMLDebugEnable)
                 {
-                    printf("[CMemoryLoader_Store<%d>]CurrentStore_BlockTensor_Major_DIM_Iter: %x, CurrentStore_BlockTensor_Reduce_DIM_Iter: %x\n", io.DebugInfo.DebugTimeStampe, CurrentStore_BlockTensor_Major_DIM_Iter, CurrentStore_BlockTensor_Reduce_DIM_Iter)
+                    printf("[CMemoryLoader_Store<%d>]Store Finish\n",io.DebugInfo.DebugTimeStampe)
                 }
             }
         }
-    }.elsewhen(memorystore_state === s_store_end){
-        // memorystore_state := s_store_end
-        when(!Write_Mem_Wait_Table.reduce(_||_)) {
-            io.ConfigInfo.MicroTaskEndValid := true.B
-        }
-        when(io.ConfigInfo.MicroTaskEndReady && io.ConfigInfo.MicroTaskEndValid){
-            memorystore_state := s_store_idle
-            state := s_idle
-            if (YJPCMLDebugEnable)
-            {
-                printf("[CMemoryLoader_Store<%d>]Store Finish\n",io.DebugInfo.DebugTimeStampe)
-            }
-        }
-    }.otherwise{
-        //闲闲没事做
     }
-
-
-    
-    
-
-
-
 }

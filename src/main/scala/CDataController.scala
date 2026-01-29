@@ -210,6 +210,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
                 //循环的最外层是M，然后是N
                 val load_addr =  M_Iterator * N_IteratorMax + N_Iterator
+                dontTouch(load_addr)
 
                 when(io.ComputeGo && CVectorCount < Max_Caculate_Iter){
                     //计算取数地址
