@@ -33,12 +33,10 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
     // MemoryLoader端的信号
     val MemoryLoaderBankAddr = io.MatrixRegIO.FromMemoryLoader.BankAddr
     val MemoryLoaderData = io.MatrixRegIO.FromMemoryLoader.Data
-    val MemoryLoaderZeroFill = io.MatrixRegIO.FromMemoryLoader.ZeroFill
     
     // 写优先的MatrixReg控制逻辑
     // write_go: 只要有写入请求（正常写或零填充）就为true
-    val write_go = MemoryLoaderBankAddr.zip(MemoryLoaderData).map{case (a, b) => a.valid && b.valid}.reduce(_||_) || 
-                   io.MatrixRegIO.FromMemoryLoader.ZeroFill.map(_.valid).reduce(_||_)
+    val write_go = MemoryLoaderBankAddr.zip(MemoryLoaderData).map{case (a, b) => a.valid && b.valid}.reduce(_||_)
     
     // read_go: 只有在没有写请求时才允许读，实现写优先
     val read_go = io.MatrixRegIO.FromDataController.BankAddr.valid && 
@@ -93,29 +91,16 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
         val s0_bank_write_data = MemoryLoaderData(i).bits
         val s0_bank_write_valid = MemoryLoaderBankAddr(i).valid && MemoryLoaderData(i).valid
         
-        // 零填充逻辑
-        val s0_bank_zerofill_valid = MemoryLoaderZeroFill(i).valid
-        
         // 最终的写入控制
-        val s0_final_write_valid = (write_go && s0_bank_write_valid) || s0_bank_zerofill_valid
-        val s0_final_write_addr = Mux((!(write_go && s0_bank_write_valid)) && s0_bank_zerofill_valid, 
-                                      MemoryLoaderZeroFill(i).bits, 
-                                      MemoryLoaderBankAddr(i).bits)
-        val s0_final_write_data = Mux((!(write_go && s0_bank_write_valid)) && s0_bank_zerofill_valid, 
-                                      0.U, 
-                                      MemoryLoaderData(i).bits)
+        val s0_final_write_valid = write_go && s0_bank_write_valid
+        val s0_final_write_addr = MemoryLoaderBankAddr(i).bits
+        val s0_final_write_data = MemoryLoaderData(i).bits
 
         when(write_go && s0_bank_write_valid){
             if (YJPDebugEnable)
             {
                 printf("[ABMatrixReg_Write(%d)]Bank(%d): s0_bank_write_addr = %d, s0_bank_write_data = %x\n",
                        scp_id.U, i.U, s0_bank_write_addr, s0_bank_write_data)
-            }
-        }.elsewhen(s0_bank_zerofill_valid){
-            if (YJPDebugEnable)
-            {
-                printf("[ABMatrixReg_ZeroFill(%d)]Bank(%d): s0_bank_write_addr = %d, s0_bank_write_data = %x\n",
-                       scp_id.U, i.U, MemoryLoaderZeroFill(i).bits, 0.U)
             }
         }
 

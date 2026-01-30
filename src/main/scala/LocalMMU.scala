@@ -46,17 +46,15 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     io.ALocalMMUIO.ConherentRequsetSourceID.valid := false.B
     io.BLocalMMUIO.ConherentRequsetSourceID.valid := false.B
     io.CLocalMMUIO.ConherentRequsetSourceID.valid := false.B
-    io.ALocalMMUIO.ConherentRequsetSourceID.bits := 0.U
-    io.BLocalMMUIO.ConherentRequsetSourceID.bits := 0.U
-    io.CLocalMMUIO.ConherentRequsetSourceID.bits := 0.U
-    io.ALocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
-    io.BLocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
-    io.CLocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
+    io.ALocalMMUIO.ConherentRequsetSourceID.bits := DontCare
+    io.BLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
+    io.CLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
     io.ALocalMMUIO.nonConherentRequsetSourceID.valid := false.B
     io.BLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
     io.CLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
-    io.LastLevelCacheTLIO.Request.bits.RequestConherent := false.B
-    io.LastLevelCacheTLIO.Request.bits.RequestSourceID := 0.U
+    io.ALocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
+    io.BLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
+    io.CLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
     // io.DLocalMMUIO.Request.ready := false.B
     //如果sourceid是valid，则LLC可以接受这个请求，开始送入到LLC的访存端口
     //这里得到谁先服务，送入LLC的访存端口，如果这里需要切流水也简单,提前锁定sourceid即可，将TLnode内的sourceid锁定的逻辑放到这里来写
@@ -65,12 +63,9 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     //输出一下sourceid2port的数据类型
     println("[LocalMMU] sourceid2port: " + sourceid2port)
 
-    io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := 0.U
-    io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := false.B
-    io.LastLevelCacheTLIO.Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W)) //MMU的Mask，默认全1
-    io.LastLevelCacheTLIO.Request.bits.RequestData := 0.U
-    io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
+
     io.LastLevelCacheTLIO.Request.valid := false.B
+    io.LastLevelCacheTLIO.Request.bits := DontCare
     io.LastLevelCacheTLIO.Response.ready := false.B
     // //输出ABC的信息和valid和hasrequest
     // printf(p"ALocalMMUIO ${io.ALocalMMUIO.Request.bits} request_valid ${io.ALocalMMUIO.Request.valid} ${io.ALocalMMUIO.Request.ready} ${io.ALocalMMUIO.Response}\n")
@@ -100,6 +95,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.ALocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
                 io.ALocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
                 io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.ALocalMMUIO.Request.bits.RequestVirtualAddr
+                io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := false.B
                 sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.AFirst
                 io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // A matrix is tile matrix register
             }
@@ -107,6 +103,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.BLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
                 io.BLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
                 io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.BLocalMMUIO.Request.bits.RequestVirtualAddr
+                io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := false.B
                 sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.BFirst
                 io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // B matrix is tile matrix register
             }
@@ -121,6 +118,8 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
             }
         }
 
+        // TODO: Support Request Mask
+        io.LastLevelCacheTLIO.Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
         io.LastLevelCacheTLIO.Request.bits.RequestConherent := true.B
         io.LastLevelCacheTLIO.Request.bits.RequestSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits
         io.LastLevelCacheTLIO.Request.valid := true.B

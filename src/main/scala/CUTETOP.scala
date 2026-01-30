@@ -99,7 +99,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         //MemoryLoader的请求
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
-        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ZeroFill)
     }
 
     // C MatrixReg
@@ -109,8 +108,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     }
 
     def abLoaderActivity(ioPort: ABMemoryLoaderMatrixRegIO): Bool = {
-        ioPort.BankAddr.map(_.valid).reduce(_||_) ||
-        ioPort.ZeroFill.map(_.valid).reduce(_||_)
+        ioPort.BankAddr.map(_.valid).reduce(_||_)
     }
 
     def disableABLoaderPort(dest: ABMemoryLoaderMatrixRegIO): Unit = {
@@ -119,8 +117,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             dest.BankAddr(b).bits := DontCare
             dest.Data(b).valid := false.B
             dest.Data(b).bits := DontCare
-            dest.ZeroFill(b).valid := false.B
-            dest.ZeroFill(b).bits := DontCare
         }
     }
 
@@ -130,8 +126,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             dest.BankAddr(b).bits := src.BankAddr(b).bits
             dest.Data(b).valid := src.Data(b).valid
             dest.Data(b).bits := src.Data(b).bits
-            dest.ZeroFill(b).valid := src.ZeroFill(b).valid
-            dest.ZeroFill(b).bits := src.ZeroFill(b).bits
         }
     }
     

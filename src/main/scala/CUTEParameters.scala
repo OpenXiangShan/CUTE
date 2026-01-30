@@ -788,10 +788,6 @@ class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val BankAddr = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntrys).W))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
     val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))
-    //zerofill用于指示是否填零（统一支持，B矩阵可以不使用）
-    val ZeroFill = Input(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntrys).W))))
-    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
-    // val Chosen = Input(Bool())
 }
 
 class CDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{

@@ -27,8 +27,6 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ToMatrixRegIO.BankAddr.map(_.bits := DontCare)
     io.ToMatrixRegIO.Data.map(_.valid := false.B)
     io.ToMatrixRegIO.Data.map(_.bits := DontCare)
-    io.ToMatrixRegIO.ZeroFill.map(_.valid := false.B)
-    io.ToMatrixRegIO.ZeroFill.map(_.bits := DontCare)
     io.LocalMMUIO.Request.valid := false.B
     io.LocalMMUIO.Request.bits := DontCare // It will be set if Request is valid
     io.LocalMMUIO.Response.ready := false.B
