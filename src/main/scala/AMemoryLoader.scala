@@ -23,11 +23,14 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
     })
 
-    io.ToMatrixRegIO.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.BankAddr)
-    io.ToMatrixRegIO.Data := 0.U.asTypeOf(io.ToMatrixRegIO.Data)
-    io.ToMatrixRegIO.ZeroFill := 0.U.asTypeOf(io.ToMatrixRegIO.ZeroFill)
+    io.ToMatrixRegIO.BankAddr.map(_.valid := false.B)
+    io.ToMatrixRegIO.BankAddr.map(_.bits := DontCare)
+    io.ToMatrixRegIO.Data.map(_.valid := false.B)
+    io.ToMatrixRegIO.Data.map(_.bits := DontCare)
+    io.ToMatrixRegIO.ZeroFill.map(_.valid := false.B)
+    io.ToMatrixRegIO.ZeroFill.map(_.bits := DontCare)
     io.LocalMMUIO.Request.valid := false.B
-    io.LocalMMUIO.Request.bits := 0.U.asTypeOf(io.LocalMMUIO.Request.bits)
+    io.LocalMMUIO.Request.bits := DontCare // It will be set if Request is valid
     io.LocalMMUIO.Response.ready := false.B
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
@@ -107,7 +110,6 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     }
 
     val Request = io.LocalMMUIO.Request
-    Request.valid := false.B
 
     when(state === s_idle){
         ConfigInfo.MicroTaskReady := true.B

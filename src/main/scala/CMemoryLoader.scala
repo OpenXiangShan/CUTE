@@ -34,14 +34,14 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
-    io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.Data := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.Data)
-    io.LocalMMUIO.Request.bits.RequestConherent := false.B
-    io.LocalMMUIO.Request.bits.RequestData := 0.U
-    io.LocalMMUIO.Request.bits.RequestSourceID := 0.U
-    io.LocalMMUIO.Request.bits.RequestType_isWrite := false.B
-    io.LocalMMUIO.Request.bits.RequestVirtualAddr := false.B
+    io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr.map(_.valid := false.B)
+    io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr.map(_.bits := DontCare)
+    io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr.map(_.valid := false.B)
+    io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr.map(_.bits := DontCare)
+    io.ToMatrixRegIO.WriteRequestToMatrixReg.Data.map(_.valid := false.B)
+    io.ToMatrixRegIO.WriteRequestToMatrixReg.Data.map(_.bits := DontCare)
+    io.LocalMMUIO.Request.valid := false.B
+    io.LocalMMUIO.Request.bits := DontCare // It will be set if Request is valid
     io.LocalMMUIO.Response.ready := false.B
     
 
@@ -235,7 +235,6 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     // val Fill_N_Iter_Time = RegInit(0.U(log2Ceil(Tensor_MN).W))
     //读数请求
     val ReadRequest = io.LocalMMUIO.Request
-    ReadRequest.valid := false.B
     switch(memoryload_state) {
         is(s_load_init) {
             memoryload_state := s_load_working
