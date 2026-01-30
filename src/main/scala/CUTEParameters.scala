@@ -259,6 +259,8 @@ case class CuteParams(
 
     val VectorWidth :Int = 256,      //向量流水线的宽度
 
+    val L2NBanks :Int = 4,
+
     val ConvolutionApplicationConfigDataWidth :Int = 32, //卷积相关的配置信息的宽度
     val ConvolutionDIM_Max :Int = 65536, //卷积相关的配置信息的宽度
     val Convolution_Input_Height_Weight_Dim_Max :Int = 16384,
@@ -470,6 +472,7 @@ trait CUTEImplParameters{
     val VecTaskDataBufferDepth = cuteParams.VecTaskDataBufferDepth
     val ReduceGroupSize = cuteParams.ReduceGroupSize
     val EnableDifftest = cuteParams.EnableDifftest
+    val L2NBanks = cuteParams.L2NBanks
 
     val cmptreelayers = FPEparams.cmptreelayers //FPE的计算树层数
     val P3AddNum :Int = FPEparams.P3AddNum //FPE的P3加法器的数量
