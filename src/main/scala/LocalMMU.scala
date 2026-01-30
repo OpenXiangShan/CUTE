@@ -95,32 +95,30 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     {
         // printf(p"last_sourceid ${last_sourceid} last_sourceid2port ${sourceid2port(last_sourceid)}\n")
         // last_sourceid := io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits
-        when(ChoseIndex_0 === LocalMMUTaskType.AFirst){
-            io.ALocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
-            io.ALocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
-            //输出sourceid的信息
-            // printf(p"[localmmu]ALocalMMUIO.ConherentRequsetSourceID ${io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits}\n")
-            io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.ALocalMMUIO.Request.bits.RequestVirtualAddr
-            sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.AFirst
-            io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // A matrix is tile matrix register
-        }.elsewhen(ChoseIndex_0 === LocalMMUTaskType.BFirst){
-            io.BLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
-            io.BLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
-            // printf(p"[localmmu]BLocalMMUIO.ConherentRequsetSourceID ${io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits}\n")
-            io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.BLocalMMUIO.Request.bits.RequestVirtualAddr
-            sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.BFirst
-            //输出LocalMMUTaskType.BFirst
-            // printf(p"[localmmu]LocalMMUTaskType.BFirst ${LocalMMUTaskType.BFirst}\n")
-            io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // B matrix is tile matrix register
-        }.elsewhen(ChoseIndex_0 === LocalMMUTaskType.CFirst){
-            io.CLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
-            io.CLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
-            // printf(p"[localmmu]CLocalMMUIO.ConherentRequsetSourceID ${io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits}\n")
-            io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.CLocalMMUIO.Request.bits.RequestVirtualAddr
-            io.LastLevelCacheTLIO.Request.bits.RequestData := io.CLocalMMUIO.Request.bits.RequestData
-            io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.CLocalMMUIO.Request.bits.RequestType_isWrite
-            sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.CFirst
-            io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
+        switch(ChoseIndex_0) {
+            is(LocalMMUTaskType.AFirst) {
+                io.ALocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
+                io.ALocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
+                io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.ALocalMMUIO.Request.bits.RequestVirtualAddr
+                sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.AFirst
+                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // A matrix is tile matrix register
+            }
+            is(LocalMMUTaskType.BFirst) {
+                io.BLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
+                io.BLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
+                io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.BLocalMMUIO.Request.bits.RequestVirtualAddr
+                sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.BFirst
+                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // B matrix is tile matrix register
+            }
+            is(LocalMMUTaskType.CFirst) {
+                io.CLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
+                io.CLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
+                io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.CLocalMMUIO.Request.bits.RequestVirtualAddr
+                io.LastLevelCacheTLIO.Request.bits.RequestData := io.CLocalMMUIO.Request.bits.RequestData
+                io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.CLocalMMUIO.Request.bits.RequestType_isWrite
+                sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.CFirst
+                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
+            }
         }
 
         io.LastLevelCacheTLIO.Request.bits.RequestConherent := true.B
@@ -135,15 +133,19 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     io.BLocalMMUIO.Response.valid := false.B
     io.CLocalMMUIO.Response.valid := false.B
 
-    when(sourceid2port(io.LastLevelCacheTLIO.Response.bits.ReseponseSourceID) === LocalMMUTaskType.AFirst){
-        io.ALocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
-        io.LastLevelCacheTLIO.Response.ready := io.ALocalMMUIO.Response.ready
-    }.elsewhen(sourceid2port(io.LastLevelCacheTLIO.Response.bits.ReseponseSourceID) === LocalMMUTaskType.BFirst){
-        io.BLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
-        io.LastLevelCacheTLIO.Response.ready := io.BLocalMMUIO.Response.ready
-    }.elsewhen(sourceid2port(io.LastLevelCacheTLIO.Response.bits.ReseponseSourceID) === LocalMMUTaskType.CFirst){
-        io.CLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
-        io.LastLevelCacheTLIO.Response.ready := io.CLocalMMUIO.Response.ready
+    switch(sourceid2port(io.LastLevelCacheTLIO.Response.bits.ReseponseSourceID)) {
+        is(LocalMMUTaskType.AFirst) {
+            io.ALocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
+            io.LastLevelCacheTLIO.Response.ready := io.ALocalMMUIO.Response.ready
+        }
+        is(LocalMMUTaskType.BFirst) {
+            io.BLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
+            io.LastLevelCacheTLIO.Response.ready := io.BLocalMMUIO.Response.ready
+        }
+        is(LocalMMUTaskType.CFirst) {
+            io.CLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
+            io.LastLevelCacheTLIO.Response.ready := io.CLocalMMUIO.Response.ready
+        }
     }
 
     //输出每次的请求
@@ -156,32 +158,26 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         val CML_Read_Request_times = RegInit(0.U(64.W))
         val CML_Write_Request_times = RegInit(0.U(64.W))
 
-        when(io.ALocalMMUIO.Request.valid && io.ALocalMMUIO.Request.ready)
-        {
-            when(io.ALocalMMUIO.Request.bits.RequestType_isWrite)
-            {
+        when(io.ALocalMMUIO.Request.fire) {
+            when(io.ALocalMMUIO.Request.bits.RequestType_isWrite) {
                 AML_Write_Request_times := AML_Write_Request_times + 1.U
-            }.otherwise{
+            }.otherwise {
                 AML_Read_Request_times := AML_Read_Request_times + 1.U
             }
         }
 
-        when(io.BLocalMMUIO.Request.valid && io.BLocalMMUIO.Request.ready)
-        {
-            when(io.BLocalMMUIO.Request.bits.RequestType_isWrite)
-            {
+        when(io.BLocalMMUIO.Request.fire) {
+            when(io.BLocalMMUIO.Request.bits.RequestType_isWrite) {
                 BML_Write_Request_times := BML_Write_Request_times + 1.U
-            }.otherwise{
+            }.otherwise {
                 BML_Read_Request_times := BML_Read_Request_times + 1.U
             }
         }
 
-        when(io.CLocalMMUIO.Request.valid && io.CLocalMMUIO.Request.ready)
-        {
-            when(io.CLocalMMUIO.Request.bits.RequestType_isWrite)
-            {
+        when(io.CLocalMMUIO.Request.fire) {
+            when(io.CLocalMMUIO.Request.bits.RequestType_isWrite) {
                 CML_Write_Request_times := CML_Write_Request_times + 1.U
-            }.otherwise{
+            }.otherwise {
                 CML_Read_Request_times := CML_Read_Request_times + 1.U
             }
         }
