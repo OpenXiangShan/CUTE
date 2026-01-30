@@ -3,6 +3,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
+import utility._
 
 class LocalMMU()(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
@@ -147,44 +148,10 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         }
     }
 
-    //输出每次的请求
-    if (YJPDebugEnable)
-    {
-        val AML_Read_Request_times = RegInit(0.U(64.W))
-        val AML_Write_Request_times = RegInit(0.U(64.W))
-        val BML_Read_Request_times = RegInit(0.U(64.W))
-        val BML_Write_Request_times = RegInit(0.U(64.W))
-        val CML_Read_Request_times = RegInit(0.U(64.W))
-        val CML_Write_Request_times = RegInit(0.U(64.W))
-
-        when(io.ALocalMMUIO.Request.fire) {
-            when(io.ALocalMMUIO.Request.bits.RequestType_isWrite) {
-                AML_Write_Request_times := AML_Write_Request_times + 1.U
-            }.otherwise {
-                AML_Read_Request_times := AML_Read_Request_times + 1.U
-            }
-        }
-
-        when(io.BLocalMMUIO.Request.fire) {
-            when(io.BLocalMMUIO.Request.bits.RequestType_isWrite) {
-                BML_Write_Request_times := BML_Write_Request_times + 1.U
-            }.otherwise {
-                BML_Read_Request_times := BML_Read_Request_times + 1.U
-            }
-        }
-
-        when(io.CLocalMMUIO.Request.fire) {
-            when(io.CLocalMMUIO.Request.bits.RequestType_isWrite) {
-                CML_Write_Request_times := CML_Write_Request_times + 1.U
-            }.otherwise {
-                CML_Read_Request_times := CML_Read_Request_times + 1.U
-            }
-        }
-
-        //每次请求发出时，输出一下
-        when(io.ALocalMMUIO.Request.fire || io.BLocalMMUIO.Request.fire || io.CLocalMMUIO.Request.fire)
-        {
-            printf(p"[LocalMMU] AML_Read_Request_times ${AML_Read_Request_times} AML_Write_Request_times ${AML_Write_Request_times} BML_Read_Request_times ${BML_Read_Request_times} BML_Write_Request_times ${BML_Write_Request_times} CML_Read_Request_times ${CML_Read_Request_times} CML_Write_Request_times ${CML_Write_Request_times}\n")
-        }
-    }
+    XSPerfAccumulate("CUTE_MMU_A_rd_request", io.ALocalMMUIO.Request.fire & !io.ALocalMMUIO.Request.bits.RequestType_isWrite)
+    XSPerfAccumulate("CUTE_MMU_A_wr_request", io.ALocalMMUIO.Request.fire & io.ALocalMMUIO.Request.bits.RequestType_isWrite)
+    XSPerfAccumulate("CUTE_MMU_B_rd_request", io.BLocalMMUIO.Request.fire & !io.BLocalMMUIO.Request.bits.RequestType_isWrite)
+    XSPerfAccumulate("CUTE_MMU_B_wr_request", io.BLocalMMUIO.Request.fire & io.BLocalMMUIO.Request.bits.RequestType_isWrite)
+    XSPerfAccumulate("CUTE_MMU_C_rd_request", io.CLocalMMUIO.Request.fire & !io.CLocalMMUIO.Request.bits.RequestType_isWrite)
+    XSPerfAccumulate("CUTE_MMU_C_wr_request", io.CLocalMMUIO.Request.fire & io.CLocalMMUIO.Request.bits.RequestType_isWrite)
 }
