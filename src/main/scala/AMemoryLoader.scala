@@ -71,7 +71,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
 
-    val s_idle :: s_mm_task :: s_end :: Nil = Enum(3)
+    val s_idle :: s_mm_task :: Nil = Enum(2)
     val state = RegInit(s_idle)
     val s_load_idle :: s_load_init :: s_load_working :: s_load_end :: Nil = Enum(4)
     val memoryload_state = RegInit(s_load_idle)

@@ -587,12 +587,22 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       
       io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := lsuInfo.baseAddr
       io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := lsuInfo.stride
-      io.AML_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
+      io.AML_MicroTask_Config.ApplicationTensor_A.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
+        Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
+        Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
+        Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
+        Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
+      ))
       io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
       io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
       io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
       io.AML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
-      io.AML_MicroTask_Config.MatrixRegTensor_K := lsuInfo.column / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
+      io.AML_MicroTask_Config.MatrixRegTensor_K := MuxLookup(lsuInfo.widths, lsuInfo.column)(Seq(
+        Bundles.MSew.e8 -> lsuInfo.column,
+        Bundles.MSew.e16 -> lsuInfo.column * 2.U,
+        Bundles.MSew.e32 -> lsuInfo.column * 4.U,
+        Bundles.MSew.e4 -> lsuInfo.column / 2.U 
+      )) / ReduceWidthByte.U
       io.AML_MicroTask_Config.MatrixRegId := regIdx
       if (EnableDifftest) {
         io.AML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
@@ -613,9 +623,19 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr := lsuInfo.baseAddr
       io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_Stride_N := lsuInfo.stride
       io.BML_MicroTask_Config.ApplicationTensor_B.BlockTensor_B_BaseVaddr := lsuInfo.baseAddr
-      io.BML_MicroTask_Config.ApplicationTensor_B.dataType := ElementDataType.DataTypeWidth8
+      io.BML_MicroTask_Config.ApplicationTensor_B.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
+        Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
+        Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
+        Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
+        Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
+      ))
       io.BML_MicroTask_Config.MatrixRegTensor_N := lsuInfo.column
-      io.BML_MicroTask_Config.MatrixRegTensor_K := lsuInfo.row / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
+      io.BML_MicroTask_Config.MatrixRegTensor_K := MuxLookup(lsuInfo.widths, lsuInfo.row)(Seq(
+        Bundles.MSew.e8 -> lsuInfo.row,
+        Bundles.MSew.e16 -> lsuInfo.row * 2.U,
+        Bundles.MSew.e32 -> lsuInfo.row * 4.U,
+        Bundles.MSew.e4 -> lsuInfo.row / 2.U 
+      )) / ReduceWidthByte.U
       io.BML_MicroTask_Config.MatrixRegId := regIdx
       if (EnableDifftest) {
         io.BML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
@@ -837,7 +857,13 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
     val mVal = mmaInfo.mtilem
     val nVal = mmaInfo.mtilen
-    val kVal = mmaInfo.mtilek
+    // val kVal = mmaInfo.mtilek
+    val kVal = MuxLookup(mmaInfo.types1(1, 0), mmaInfo.mtilek)(Seq(
+      Bundles.MSew.e8 -> mmaInfo.mtilek,
+      Bundles.MSew.e16 -> mmaInfo.mtilek * 2.U,
+      Bundles.MSew.e32 -> mmaInfo.mtilek * 4.U,
+      Bundles.MSew.e4 -> mmaInfo.mtilek / 2.U,
+    ))
 
     io.ADC_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
     io.ADC_MicroTask_Config.MatrixRegTensor_M := mVal
