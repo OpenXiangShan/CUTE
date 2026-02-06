@@ -17,7 +17,6 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val BML_MicroTask_Config = new BMLMicroTaskConfigIO
   val CML_MicroTask_Config = new CMLMicroTaskConfigIO
   val MTE_MicroTask_Config = new MTEMicroTaskConfigIO
-  val MReg_CtrlInfo = new MRegControlInfo
   val DebugTimeStampe = Input(UInt(32.W))
 }
 
@@ -48,10 +47,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   io.ygjkctrl.mrelease.valid := false.B
   io.ygjkctrl.mrelease.bits := 0.U.asTypeOf(new MreleaseIO)
-
-  val mRegCtrlInfo = WireDefault(0.U.asTypeOf(new MRegControlInfo))
-
-  io.MReg_CtrlInfo := mRegCtrlInfo
 
   // 默认输出赋值
   io.ADC_MicroTask_Config.ApplicationTensor_A.dataType := 0.U
@@ -271,7 +266,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val pendingLoadRow = RegInit(0.U(TileDimWidth.W))
   val pendingLoadColumn = RegInit(0.U(TileDimWidth.W))
   val pendingLoadTranspose = RegInit(false.B)
-  val pendingLoadIsAcc = RegInit(false.B)
 
   val pendingComputeA = RegInit(false.B)
   val pendingComputeAReg = RegInit(0.U(2.W))
@@ -309,7 +303,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     loadAFinishEvent.row := pendingLoadRow
     loadAFinishEvent.column := pendingLoadColumn
     loadAFinishEvent.transpose := pendingLoadTranspose
-    loadAFinishEvent.isAcc := pendingLoadIsAcc
+    loadAFinishEvent.isAcc := false.B
     loadAFinishEventEn := true.B
   }
 
@@ -325,7 +319,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     loadBFinishEvent.row := pendingLoadRow
     loadBFinishEvent.column := pendingLoadColumn
     loadBFinishEvent.transpose := pendingLoadTranspose
-    loadBFinishEvent.isAcc := pendingLoadIsAcc
+    loadBFinishEvent.isAcc := false.B
     loadBFinishEventEn := true.B
   }
 
@@ -342,7 +336,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       loadCFinishEvent.row := pendingLoadRow
       loadCFinishEvent.column := pendingLoadColumn
       loadCFinishEvent.transpose := pendingLoadTranspose
-      loadCFinishEvent.isAcc := pendingLoadIsAcc
+      loadCFinishEvent.isAcc := true.B
       loadCFinishEventEn := true.B
     }.elsewhen(pendingStore) {
       scoreboard.io.update.store_finish := true.B
@@ -582,9 +576,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val regIdx = lsuInfo.ms(1, 0)
     val loadIdx = loadAllocIdx
     when(needA) {
-      mRegCtrlInfo.AML_MReg_ID := regIdx
-      mRegCtrlInfo.ADC_MReg_ID := regIdx
-      
       io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := lsuInfo.baseAddr
       io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := lsuInfo.stride
       io.AML_MicroTask_Config.ApplicationTensor_A.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
@@ -618,8 +609,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       pendingLoadAFifoIdx := loadIdx
     }
     when(needB) {
-      mRegCtrlInfo.BML_MReg_ID := regIdx
-      mRegCtrlInfo.BDC_MReg_ID := regIdx
       io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr := lsuInfo.baseAddr
       io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_Stride_N := lsuInfo.stride
       io.BML_MicroTask_Config.ApplicationTensor_B.BlockTensor_B_BaseVaddr := lsuInfo.baseAddr
@@ -648,9 +637,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       pendingLoadBFifoIdx := loadIdx
     }
     when(needC) {
-      mRegCtrlInfo.CML_MReg_ID := regIdx
-      mRegCtrlInfo.CDC_MReg_ID := regIdx
-      
       io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := lsuInfo.baseAddr
       io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_Stride_M := lsuInfo.stride
       io.CML_MicroTask_Config.ApplicationTensor_C.BlockTensor_C_BaseVaddr := lsuInfo.baseAddr
@@ -689,7 +675,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       pendingLoadRow := lsuInfo.row
       pendingLoadColumn := lsuInfo.column
       pendingLoadTranspose := lsuInfo.transpose
-      pendingLoadIsAcc := lsuInfo.isacc
 
       loadAllocateEvent.eventType := 0.U
       loadAllocateEvent.regId := regIdx
@@ -716,9 +701,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   when(issueZeroAcc) {
     val regIdx = arithInfo.md(1, 0)
     val loadIdx = loadAllocIdx
-
-    mRegCtrlInfo.CML_MReg_ID := regIdx
-    mRegCtrlInfo.CDC_MReg_ID := regIdx
 
     io.CML_MicroTask_Config.ApplicationTensor_C.dataType := ElementDataType.DataTypeWidth32
     io.CML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
@@ -753,7 +735,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     pendingLoadRow := 0.U
     pendingLoadColumn := 0.U
     pendingLoadTranspose := false.B
-    pendingLoadIsAcc := true.B
 
     loadAllocateEvent.eventType := 0.U
     loadAllocateEvent.regId := regIdx
@@ -780,9 +761,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val regIdx = arithInfo.md(1, 0)
     val loadIdx = loadAllocIdx
 
-    mRegCtrlInfo.CML_MReg_ID := regIdx
-    mRegCtrlInfo.CDC_MReg_ID := regIdx
-
     io.AML_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
     io.AML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
     io.AML_MicroTask_Config.MatrixRegTensor_K := cuteParams.Tensor_K.U / ReduceWidthByte.U
@@ -799,21 +777,20 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
     scoreboard.io.update.load_allocate := true.B
     scoreboard.io.update.load_alloc_fifo_idx := loadIdx
-    scoreboard.io.update.load_alloc_a_reg := 0.U
+    scoreboard.io.update.load_alloc_a_reg := regIdx
     scoreboard.io.update.load_alloc_b_reg := 0.U
-    scoreboard.io.update.load_alloc_c_reg := regIdx
-    scoreboard.io.update.load_alloc_has_a := false.B
+    scoreboard.io.update.load_alloc_c_reg := 0.U
+    scoreboard.io.update.load_alloc_has_a := true.B
     scoreboard.io.update.load_alloc_has_b := false.B
-    scoreboard.io.update.load_alloc_has_c := true.B
+    scoreboard.io.update.load_alloc_has_c := false.B
     loadAllocIdx := loadAllocIdx + 1.U
 
-    pendingLoadC := false.B
-    pendingLoadCReg := regIdx
-    pendingLoadCFifoIdx := loadIdx
+    pendingLoadA := true.B
+    pendingLoadAReg := regIdx
+    pendingLoadAFifoIdx := loadIdx
     pendingLoadRow := 0.U
     pendingLoadColumn := 0.U
     pendingLoadTranspose := false.B
-    pendingLoadIsAcc := false.B
 
     loadAllocateEvent.eventType := 0.U
     loadAllocateEvent.regId := regIdx
@@ -844,12 +821,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val bReg = Mux(isMma, mmaInfo.ms2(1, 0), arithInfo.md(1, 0))
     val cReg = Mux(isMma, mmaInfo.md(1, 0), arithInfo.md(1, 0))
     val computeIdx = computeIssueIdx
-    mRegCtrlInfo.ADC_MReg_ID := aReg
-    mRegCtrlInfo.BDC_MReg_ID := bReg
-    mRegCtrlInfo.CDC_MReg_ID := cReg
-    mRegCtrlInfo.AML_MReg_ID := aReg
-    mRegCtrlInfo.BML_MReg_ID := bReg
-    mRegCtrlInfo.CML_MReg_ID := cReg
 
     io.ADC_MicroTask_Config.MicroTaskValid := true.B
     io.BDC_MicroTask_Config.MicroTaskValid := true.B
@@ -953,8 +924,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   when(issueStore) {
     val regIdx = lsuInfo.ms(1, 0)
     val storeIdx = storeIssueIdx
-    mRegCtrlInfo.CML_MReg_ID := regIdx
-    mRegCtrlInfo.CDC_MReg_ID := regIdx
     
     io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_BaseVaddr := lsuInfo.baseAddr
     io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_Stride_M := lsuInfo.stride
