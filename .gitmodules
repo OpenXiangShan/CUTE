@@ -1,9 +1,6 @@
 [submodule "cute-fpe"]
 	path = cute-fpe
-	url = git@github.com:OpenXiangShan/CUTEFPE.git
-[submodule "cutetest"]
-	path = cutetest
-	url = git@github.com:OpenXiangShan/CUTETest.git
+	url = https://github.com/OpenXiangShan/CUTEFPE.git
 [submodule "coupledL2"]
 	path = coupledL2
 	url = https://github.com/OpenXiangShan/HBL2.git
