@@ -78,7 +78,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val state = RegInit(s_idle)
 
     //计算状态机，用来配合流水线刷新
-    val s_cal_idle :: s_cal_init :: s_cal_working :: s_cal_after_vecops :: s_cal_end :: Nil = Enum(5)
+    val s_cal_idle :: s_cal_init :: s_cal_working :: s_cal_end :: Nil = Enum(4)
     val calculate_state = RegInit(s_cal_idle)
     val MatrixRegWorkingTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegWorkingTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
@@ -170,12 +170,8 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val ReadRequest = WireInit(false.B)
     val WriteRequset = WireInit(false.B)
 
-    val ReadMatrixRegDataHoldReg = RegInit(0.U((ResultWidth*Matrix_MN*Matrix_MN).W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
+    val ReadMatrixRegDataHoldReg = Reg(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数；仅当ReadMatrixRegDataHoldValid为true时被使用，故无需初始化
     val ReadMatrixRegDataHoldValid = RegInit(false.B) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
-
-    val After_ops_issue_iter = RegInit(0.U(32.W)) //后操作的迭代器，用来计算后操作的迭代次数
-
-
 
     //如果是mm_task,且计算状态机是init，那么就开始初始化
     when(state === s_mm_task){
@@ -191,7 +187,6 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                 CVectorCount := 0.U
                 DVectorCount := 0.U
                 ReadMatrixRegDataHoldReg := 0.U
-                After_ops_issue_iter := 0.U
                 ReadMatrixRegDataHoldValid := false.B
 
                 assert(MatrixRegWorkingTensor_N === Tensor_MN.U, "MatrixRegWorkingTensor_N = %d is not Full!", MatrixRegWorkingTensor_N)

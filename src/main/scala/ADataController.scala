@@ -120,8 +120,8 @@ class ADataController(implicit p: Parameters) extends CuteModule{
     val ARequestVectorCount = RegInit(0.U(32.W))//当前计算任务实际上的迭代次数
 
     val MatrixRegRequestBankAddr = io.FromMatrixRegIO.BankAddr  //往MatrixReg请求数据的地址
-    MatrixRegRequestBankAddr.bits := 0.U.asTypeOf(MatrixRegRequestBankAddr.bits)        //全部初始化为0
-    MatrixRegRequestBankAddr.valid := false.B                                           //默认无效
+    MatrixRegRequestBankAddr.bits := DontCare
+    MatrixRegRequestBankAddr.valid := false.B //默认无效
     val MatrixRegData = io.FromMatrixRegIO.Data //从MatrixReg读数，会有1周期的延迟
 
     val MatrixRegDataHoldReg = RegInit(0.U(MatrixRegData.bits.asUInt.getWidth.W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
