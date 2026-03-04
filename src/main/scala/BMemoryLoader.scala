@@ -36,6 +36,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     })
     // 对外统一使用 ToMatrixRegIO
 
+    io.ToMatrixRegIO.active := false.B
     io.ToMatrixRegIO.BankAddr.map(_.valid := false.B)
     io.ToMatrixRegIO.BankAddr.map(_.bits := DontCare)
     io.ToMatrixRegIO.Data.map(_.valid := false.B)
@@ -194,6 +195,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             MaxRequestIter := MatrixRegTensor_K * MatrixRegTensor_N * ReduceWidthByte.U / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
         }
         is(s_load_working) {
+            io.ToMatrixRegIO.active := true.B
             //根据不同的MemoryOrder，执行不同的访存模式
 
             //只要Request是ready，我们发出的访存请求就会被MMU送往总线，我们可以发出下一个访存请求

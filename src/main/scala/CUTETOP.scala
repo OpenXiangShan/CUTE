@@ -107,10 +107,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadWriteRequest := 0.U
     }
 
-    def abLoaderActivity(ioPort: ABMemoryLoaderMatrixRegIO): Bool = {
-        ioPort.BankAddr.map(_.valid).reduce(_||_)
-    }
-
     def disableABLoaderPort(dest: ABMemoryLoaderMatrixRegIO): Unit = {
         for (b <- 0 until ABMatrixRegNBanks) {
             dest.BankAddr(b).valid := false.B
@@ -133,8 +129,9 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         val dest = ABMatrixRegs(regIdx).io.MatrixRegIO.FromMemoryLoader
         val amlSel = AML.io.MatrixRegId === regIdx.U
         val bmlSel = BML.io.MatrixRegId === regIdx.U
-        val amlActive = abLoaderActivity(AML.io.ToMatrixRegIO)
-        val bmlActive = abLoaderActivity(BML.io.ToMatrixRegIO)
+        val amlActive = AML.io.ToMatrixRegIO.active
+        val bmlActive = BML.io.ToMatrixRegIO.active
+        dest.active := DontCare
         when(amlSel && bmlSel && amlActive && bmlActive) {
             assert(false.B, cf"[CUTETop] AML and BML choose the same AB MatrixReg($regIdx)")
         }

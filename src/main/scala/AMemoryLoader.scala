@@ -23,6 +23,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
     })
 
+    io.ToMatrixRegIO.active := false.B
     io.ToMatrixRegIO.BankAddr.map(_.valid := false.B)
     io.ToMatrixRegIO.BankAddr.map(_.bits := DontCare)
     io.ToMatrixRegIO.Data.map(_.valid := false.B)
@@ -149,6 +150,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             MReg_Fill_Table_Time := 0.U.asTypeOf(MReg_Fill_Table_Time)
         }
         is(s_load_working) {
+            io.ToMatrixRegIO.active := true.B
             assert(PopCount(Cat(Is_ZeroLoad, Is_FullLoad)) === 1.U,
                   "Error! AML Load Task Type: Exactly one of Is_ZeroLoad, Is_FullLoad should be true!")
 
