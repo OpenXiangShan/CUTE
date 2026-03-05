@@ -640,7 +640,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := lsuInfo.baseAddr
       io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_Stride_M := lsuInfo.stride
       io.CML_MicroTask_Config.ApplicationTensor_C.BlockTensor_C_BaseVaddr := lsuInfo.baseAddr
-      io.CML_MicroTask_Config.ApplicationTensor_C.dataType := ElementDataType.DataTypeWidth32
+      io.CML_MicroTask_Config.ApplicationTensor_C.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
+        Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
+        Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
+        Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
+        Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
+      ))
       io.CML_MicroTask_Config.Conherent := true.B
       io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
       io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
@@ -928,7 +933,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_BaseVaddr := lsuInfo.baseAddr
     io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_Stride_M := lsuInfo.stride
     io.CML_MicroTask_Config.ApplicationTensor_D.BlockTensor_D_BaseVaddr := lsuInfo.baseAddr
-    io.CML_MicroTask_Config.ApplicationTensor_D.dataType := ElementDataType.DataTypeWidth32
+    io.CML_MicroTask_Config.ApplicationTensor_D.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
+      Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
+      Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
+      Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
+      Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
+    ))
     
     io.CML_MicroTask_Config.StoreTaskInfo.Is_ZeroStore := false.B
     io.CML_MicroTask_Config.Conherent := true.B
