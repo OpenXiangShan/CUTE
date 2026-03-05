@@ -62,7 +62,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         difftestAmuFinish.valid := (io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr.map(_.valid).reduce(_||_)
           || (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
         difftestAmuFinish.pc := pcReg
-        for (i <- 0 until ABMatrixRegNBanks) {
+        for (i <- 0 until CMatrixRegNBanks) {
           difftestAmuFinish.bankValid(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).valid
           difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).bits
           difftestAmuFinish.data(i * 4 + 0) := io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(i).bits(63,0)
