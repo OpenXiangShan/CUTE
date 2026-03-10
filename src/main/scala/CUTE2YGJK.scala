@@ -140,14 +140,15 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
   tl_out.a.valid := io.mmu.Request.valid && !is_full
   tl_out.a.bits := Mux1H(Seq(
     (io.mmu.Request.bits.RequestType_isWrite === 0.U) -> edge.Get(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(outsideDataWidthByte).U)._2,
-    (io.mmu.Request.bits.RequestType_isWrite === 1.U) -> edge.Put(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(outsideDataWidthByte).U, data,io.mmu.Request.bits.RequestMask)._2
+    (io.mmu.Request.bits.RequestType_isWrite === 1.U) -> edge.Put(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(outsideDataWidthByte).U, data)._2
   ))
 
   // Assign MatrixKey to cooperate with HBL2.
   // MatrixIsAcc: false for A/B matrix (tile matrix register), true for C matrix (accumulation matrix register)
-  // MatrixKey: "b01" for A/B matrix, "b11" for C matrix
+  // MatrixKey: "b01" for A/B matrix read and C matrix write, "b11" for C matrix read.
   tl_out.a.bits.user.lift(MatrixKey).foreach { matrixKey =>
-    matrixKey := Mux(io.mmu.Request.bits.MatrixIsAcc, "b11".U, "b01".U)
+    val isMatrixCread = io.mmu.Request.bits.MatrixIsAcc && !io.mmu.Request.bits.RequestType_isWrite
+    matrixKey := Mux(isMatrixCread, "b11".U, "b01".U)
   }
   tl_out.a.bits.user.lift(AmeIndexKey).foreach { ameIndex =>
     require(ameIndex.getWidth >= id.getWidth, "AmeIndex should cover Cute2TL id range.")
