@@ -81,7 +81,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
 
 
     //任务状态机 先来个简单的，顺序读取所有分块矩阵
-    val s_idle :: s_mm_task :: s_write :: Nil = Enum(3)
+    val s_idle :: s_mm_task :: Nil = Enum(2)
     val state = RegInit(s_idle)
 
     //访存读状态机，用来配合流水线刷新
