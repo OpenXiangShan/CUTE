@@ -104,10 +104,6 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
   // so when io.matrix_data_in fires, tl_out.d will not fire.
   io.matrix_data_in.ready := io.mmu.Response.ready
   tl_out.d.ready := io.mmu.Response.ready && !io.matrix_data_in.valid
-  when(tl_out.d.bits.opcode === TLMessages.AccessAck && tl_out.d.valid && busy(tl_out.d.bits.source) === true.B)//写回的ack，直接确认，不需要等待,怎么可能会不被响应？？
-  {
-    tl_out.d.ready := true.B
-  }
   when(io.matrix_data_in.fire || tl_out.d.fire){
     // io.matrix_data_in and tl_out.d may both be valid at the same time,
     // but the previously set priority rule for tl_out.d.ready ensures that when io.matrix_data_in is valid,
@@ -115,6 +111,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     // the source must come from io.matrix_data_in.
     val d_bits = Mux(io.matrix_data_in.valid, io.matrix_data_in.bits, tl_out.d.bits)
     busy(d_bits.source) := false.B
+    assert(busy(d_bits.source), "Source %x in resp is not busy.", d_bits.source)
     if (YJPDebugEnable)
     {
         when(d_bits.opcode === TLMessages.AccessAckData){
