@@ -3,7 +3,6 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
-import cute.Bundles._
 // import boom.acc._
 
 trait YGJKParameters{
@@ -36,17 +35,21 @@ class YGJKBuffer extends Bundle with YGJKParameters{
   val id = UInt(6.W)
 }
 
-class MreleaseIO extends Bundle{
-    val tokenRd = Vec(32, Bool())
-}
-
-class YGJKControl(implicit p: Parameters) extends CuteBundle{
+class YGJKControl extends Bundle{
   val reset = Output(Bool())
-  val amuCtrl = Decoupled(new AmuCtrlIO)
-  val mrelease = Flipped(Valid(new MreleaseIO))
+  val acc_running = Input(Bool())
+  val InstFIFO_Info = Input((UInt(5.W)))
+  val InstFIFO_Full = Input((Bool()))
+  val InstFIFO_Finish = Input((UInt(5.W)))
+  val cute_return_val = (Input(UInt(32.W)))
+  val config  = Valid(new Bundle{
+    val cfgData1 = UInt(64.W)
+    val cfgData2 = UInt(64.W)
+    val func = UInt(7.W)
+  })
 }
 
-class YGJKIO(implicit p: Parameters) extends CuteBundle {
+class YGJKIO extends Bundle {
   val cmd     = new YGJKCommand   // 访存请求
   val buffer0  = Valid(new YGJKBuffer)    // 数据返回通道
   val buffer1 = Valid(new YGJKBuffer)
@@ -54,6 +57,6 @@ class YGJKIO(implicit p: Parameters) extends CuteBundle {
 }
 
 case object BuildYGAC extends Field[Parameters => MyACCModule]
-abstract class MyACCModule(implicit p: Parameters) extends CuteModule with YGJKParameters{
+abstract class MyACCModule extends Module with YGJKParameters{
    val io = IO(Flipped(new YGJKIO))  
 }
