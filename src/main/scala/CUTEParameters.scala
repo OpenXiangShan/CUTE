@@ -41,6 +41,60 @@ class DebugInfoIO()(implicit p: Parameters) extends CuteBundle{
 
 case object CuteParamsKey extends Field[CuteParams]
 
+case class MatrixIsaParams(
+    enableInt4Int32: Boolean = false,
+    enableInt8Int32: Boolean = false,
+    enableInt84Int32: Boolean = false,
+    enableFp8Fp32: Boolean = false,
+    enableFp8Fp16: Boolean = false,
+    enableFp8Bf16: Boolean = false,
+    enableFp16Fp16: Boolean = false,
+    enableBf16Fp32: Boolean = false,
+    enableFp16Fp32: Boolean = false,
+    enableTf32Fp32: Boolean = false,
+    enableFp32Fp32: Boolean = false,
+) {
+    assert(enableInt84Int32 == false, "enableInt84Int32 is not supported now")
+    assert(enableFp32Fp32 == false, "enableFp32Fp32 is not supported now")
+
+    def enableMatrix: Boolean =
+        enableInt4Int32 || enableInt8Int32 || enableInt84Int32 ||
+        enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16 ||
+        enableFp16Fp16 || enableBf16Fp32 || enableFp16Fp32 ||
+        enableFp32Fp32 || enableTf32Fp32
+    
+    def enable4BitSrc: Boolean =
+        enableInt4Int32
+
+    def enable8BitSrc: Boolean =
+        enableInt8Int32 || enableInt84Int32 ||
+        enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16
+    
+    def enable16BitSrc: Boolean =
+        enableFp16Fp16 || enableBf16Fp32 || enableFp16Fp32
+    
+    def enable32BitSrc: Boolean =
+        enableFp32Fp32 || enableTf32Fp32
+    
+    def enable64BitSrc: Boolean = false
+
+    def enable4BitDst: Boolean = false
+    
+    def enable8BitDst: Boolean = false
+
+    def enable16BitDst: Boolean =
+        enableFp8Fp16 || enableFp8Bf16 || enableFp16Fp16
+    
+    def enable32BitDst: Boolean =
+        enableInt4Int32 || enableInt8Int32 || enableInt84Int32 ||
+        enableFp8Fp32 ||
+        enableBf16Fp32 || enableFp16Fp32 ||
+        enableFp32Fp32 ||
+        enableTf32Fp32
+    
+    def enable64BitDst: Boolean = false
+}
+
 trait CuteParamsKey{
   implicit val p: Parameters
   def CuteParams: CuteParams = p(CuteParamsKey)
@@ -84,6 +138,14 @@ object CuteParams {
         Tensor_K = 64,
         Matrix_MN = 8,
         ReduceWidthByte = 32,
+        MatrixExtension = MatrixIsaParams(
+            enableInt8Int32 = true,
+            enableFp8Fp32 = true,
+            enableFp8Fp16 = true,
+            enableFp8Bf16 = true,
+            enableFp16Fp16 = true,
+            enableBf16Fp32 = true,
+        ),
         // Debug = CuteDebugParams.AMLDebugEnable
     )
 
@@ -95,6 +157,14 @@ object CuteParams {
         Tensor_K = 64,
         Matrix_MN = 16,
         ReduceWidthByte = 32,
+        MatrixExtension = MatrixIsaParams(
+            enableInt8Int32 = true,
+            enableFp8Fp32 = true,
+            enableFp8Fp16 = true,
+            enableFp8Bf16 = true,
+            enableFp16Fp16 = true,
+            enableBf16Fp32 = true,
+        ),
         Debug = CuteDebugParams.AllDebugOn,
     )
 
@@ -106,6 +176,14 @@ object CuteParams {
         Tensor_K = 64,
         Matrix_MN = 4,
         ReduceWidthByte = 32,
+        MatrixExtension = MatrixIsaParams(
+            enableInt8Int32 = true,
+            enableFp8Fp32 = true,
+            enableFp8Fp16 = true,
+            enableFp8Bf16 = true,
+            enableFp16Fp16 = true,
+            enableBf16Fp32 = true,
+        ),
     )
 
     def CUTE_2Tops_debug = baseParams.copy(
@@ -116,6 +194,14 @@ object CuteParams {
         Tensor_K = 64,
         Matrix_MN = 4,
         ReduceWidthByte = 32,
+        MatrixExtension = MatrixIsaParams(
+            enableInt8Int32 = true,
+            enableFp8Fp32 = true,
+            enableFp8Fp16 = true,
+            enableFp8Bf16 = true,
+            enableFp16Fp16 = true,
+            enableBf16Fp32 = true,
+        ),
         Debug = CuteDebugParams.AllDebugOn,
     )
 }
@@ -156,6 +242,14 @@ object Cutev3Params {
         Tensor_K = 64,
         Matrix_MN = 8,
         ReduceWidthByte = 32,
+        MatrixExtension = MatrixIsaParams(
+            enableInt8Int32 = true,
+            enableFp8Fp32 = true,
+            enableFp8Fp16 = true,
+            enableFp8Bf16 = true,
+            enableFp16Fp16 = true,
+            enableBf16Fp32 = true,
+        ),
         // Debug = CuteDebugParams.AMLDebugEnable
     )
 
@@ -302,7 +396,9 @@ case class CuteParams(
     
     val v3config: Cutev3extParams = Cutev3extParams.NoextParams, //v3的扩展参数
 
-    val FPEparams: CuteFPEParams = CuteFPEParams.baseparams //FPE的参数
+    val FPEparams: CuteFPEParams = CuteFPEParams.baseparams, //FPE的参数
+
+    val MatrixExtension: MatrixIsaParams = MatrixIsaParams()
 ) {
 
     //所有参数都必须是2的n次方
