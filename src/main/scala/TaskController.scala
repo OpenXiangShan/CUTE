@@ -12,9 +12,13 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val ygjkctrl = Flipped(new YGJKControl)
   val ADC_MicroTask_Config = new ADCMicroTaskConfigIO
   val BDC_MicroTask_Config = new BDCMicroTaskConfigIO
+  val ASC_MicroTask_Config = new ADCMicroTaskConfigIO
+  val BSC_MicroTask_Config = new BDCMicroTaskConfigIO
   val CDC_MicroTask_Config = new CDCMicroTaskConfigIO
   val AML_MicroTask_Config = new AMLMicroTaskConfigIO
   val BML_MicroTask_Config = new BMLMicroTaskConfigIO
+  val ASL_MicroTask_Config = new ASLMicroTaskConfigIO
+  val BSL_MicroTask_Config = new BSLMicroTaskConfigIO
   val CML_MicroTask_Config = new CMLMicroTaskConfigIO
   val MTE_MicroTask_Config = new MTEMicroTaskConfigIO
   val DebugTimeStampe = Input(UInt(32.W))
@@ -58,6 +62,15 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.ADC_MicroTask_Config.MicroTaskValid := false.B
   io.ADC_MicroTask_Config.MicroTaskEndReady := false.B
 
+  io.ASC_MicroTask_Config.ApplicationTensor_A.dataType := 0.U
+  io.ASC_MicroTask_Config.MatrixRegTensor_M := 0.U
+  io.ASC_MicroTask_Config.MatrixRegTensor_K := 0.U
+  io.ASC_MicroTask_Config.MatrixRegTensor_N := 0.U
+  io.ASC_MicroTask_Config.MatrixRegId := 0.U
+  io.ASC_MicroTask_Config.Is_Transpose := false.B
+  io.ASC_MicroTask_Config.MicroTaskValid := false.B
+  io.ASC_MicroTask_Config.MicroTaskEndReady := false.B
+
   io.BDC_MicroTask_Config.ApplicationTensor_B.dataType := 0.U
   io.BDC_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.BDC_MicroTask_Config.MatrixRegTensor_K := 0.U
@@ -66,6 +79,15 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.BDC_MicroTask_Config.Is_Transpose := false.B
   io.BDC_MicroTask_Config.MicroTaskValid := false.B
   io.BDC_MicroTask_Config.MicroTaskEndReady := false.B
+
+  io.BSC_MicroTask_Config.ApplicationTensor_B.dataType := 0.U
+  io.BSC_MicroTask_Config.MatrixRegTensor_M := 0.U
+  io.BSC_MicroTask_Config.MatrixRegTensor_K := 0.U
+  io.BSC_MicroTask_Config.MatrixRegTensor_N := 0.U
+  io.BSC_MicroTask_Config.MatrixRegId := 0.U
+  io.BSC_MicroTask_Config.Is_Transpose := false.B
+  io.BSC_MicroTask_Config.MicroTaskValid := false.B
+  io.BSC_MicroTask_Config.MicroTaskEndReady := false.B
 
   io.CDC_MicroTask_Config.ApplicationTensor_C.dataType := 0.U
   io.CDC_MicroTask_Config.ApplicationTensor_D.dataType := 0.U
@@ -99,6 +121,13 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.AML_MicroTask_Config.coreid.get := 0.U
   }
 
+  io.ASL_MicroTask_Config.ApplicationScale_A := 0.U.asTypeOf(io.ASL_MicroTask_Config.ApplicationScale_A)
+  io.ASL_MicroTask_Config.MatrixRegTensor_M := 0.U
+  io.ASL_MicroTask_Config.MatrixRegTensor_K := 0.U
+  io.ASL_MicroTask_Config.Conherent := false.B
+  io.ASL_MicroTask_Config.MicroTaskValid := false.B
+  io.ASL_MicroTask_Config.MicroTaskEndReady := false.B
+
   io.BML_MicroTask_Config.ApplicationTensor_B := 0.U.asTypeOf(io.BML_MicroTask_Config.ApplicationTensor_B)
   io.BML_MicroTask_Config.MatrixRegTensor_N := 0.U
   io.BML_MicroTask_Config.MatrixRegTensor_K := 0.U
@@ -110,6 +139,13 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.BML_MicroTask_Config.pc.get := 0.U
     io.BML_MicroTask_Config.coreid.get := 0.U
   }
+
+  io.BSL_MicroTask_Config.ApplicationScale_B := 0.U.asTypeOf(io.BSL_MicroTask_Config.ApplicationScale_B)
+  io.BSL_MicroTask_Config.MatrixRegTensor_N := 0.U
+  io.BSL_MicroTask_Config.MatrixRegTensor_K := 0.U
+  io.BSL_MicroTask_Config.Conherent := false.B
+  io.BSL_MicroTask_Config.MicroTaskValid := false.B
+  io.BSL_MicroTask_Config.MicroTaskEndReady := false.B
 
   io.CML_MicroTask_Config.ApplicationTensor_C := 0.U.asTypeOf(io.CML_MicroTask_Config.ApplicationTensor_C)
   io.CML_MicroTask_Config.ApplicationTensor_D := 0.U.asTypeOf(io.CML_MicroTask_Config.ApplicationTensor_D)
@@ -128,8 +164,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CML_MicroTask_Config.pc.get := 0.U
     io.CML_MicroTask_Config.coreid.get := 0.U
   }
-
-  io.MTE_MicroTask_Config.dataType := 0.U
 
   // Scoreboard实例
   private val scoreboard = Module(new Scoreboard)
@@ -818,8 +852,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     loadIssueEventEn := true.B
   }
 
-  val mmaDataType = RegInit(0.U(3.W))
-  io.MTE_MicroTask_Config.dataType := mmaDataType
+  val mmaDataType = WireInit(0.U.asTypeOf(io.MTE_MicroTask_Config.dataType))
+  io.MTE_MicroTask_Config.dataType := mmaDataType  // Latch inside MTE.
+  io.MTE_MicroTask_Config.MicroTaskValid := issueMma
 
   when(issueMma) {
     val aReg = Mux(isMma, mmaInfo.ms1(1, 0), arithInfo.md(1, 0))
@@ -867,17 +902,134 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.CDC_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
     }
 
+    /* 
+        types1, types2, typed encoding refereence
+          output.typed  := Cat(
+    MmulOpType.isFloat(realFuOpType) && MmulOpType.isToE16(realFuOpType) && MmulOpType.isBf16(realFuOpType),
+    MmulOpType.getToType(realFuOpType)
+  )
+  output.types1  := Cat(
+    Mux(MmulOpType.isFloat(realFuOpType),
+      Mux1H(Seq(
+        MmulOpType.isFromE4(realFuOpType) -> "b0".U,
+        MmulOpType.isFromE8(realFuOpType) -> MmulOpType.isE4m3(realFuOpType).asUInt,
+        MmulOpType.isFromE16(realFuOpType) -> MmulOpType.isBf16(realFuOpType).asUInt,
+        MmulOpType.isFromE32(realFuOpType) -> MmulOpType.isTf32(realFuOpType).asUInt,
+      )),
+      MmulOpType.ms1sign(realFuOpType).asUInt
+    ),
+    MmulOpType.getFromType(realFuOpType)
+  )
+  output.types2  := Cat(
+    Mux(MmulOpType.isFloat(realFuOpType),
+      Mux1H(Seq(
+        MmulOpType.isToE4(realFuOpType) -> "b0".U,
+        MmulOpType.isToE8(realFuOpType) -> MmulOpType.isE4m3(realFuOpType).asUInt,
+        MmulOpType.isToE16(realFuOpType) -> MmulOpType.isBf16(realFuOpType).asUInt,
+        MmulOpType.isToE32(realFuOpType) -> MmulOpType.isTf32(realFuOpType).asUInt,
+      )),
+      MmulOpType.ms2sign(realFuOpType).asUInt
+    ),
+    MmulOpType.getFromType(realFuOpType)
+  )
+
+  object MmulOpType {
+    def placeholder = "b11_111_111".U
+
+    // bit encoding:
+    // | 7  | 6  | 5 4 3 | 2 1 | 0 |
+    // |int | sgn| from  | to  |sat|
+    // int: 0 for int, 1 for float
+    // sgn: 0 for unsigned, 1 for signed (only for int)
+    // from: source element width, 3'b100 for msew
+    // to: target element width, 2'b00 for 1W, 2'b01 for 2W, 2'b10 for 4W
+    // sat: 0 for no saturation, 1 for saturation
+
+    def hybridprec    (func: UInt) = func(8) === "b1".U
+
+    def isInt         (func: UInt) = func(7) === "b0".U
+    def isFloat       (func: UInt) = func(7) === "b1".U
+
+    def isFp16     (func: UInt) = isFloat(func) && !func(6)
+    def isBf16     (func: UInt) = isFloat(func) && func(6)
+    def isE5m2     (func: UInt) = isFloat(func) && !func(4)
+    def isE4m3     (func: UInt) = isFloat(func) && func(4)
+    def isFp32     (func: UInt) = isFloat(func) && !func(4)
+    def isTf32     (func: UInt) = isFloat(func) && func(4)
+
+    def ms1sign    (func: UInt) = isInt(func) && func(5)
+    def ms1unsigned(func: UInt) = isInt(func) && !func(5)
+    def ms2sign    (func: UInt) = isInt(func) && func(4)
+    def ms2unsigned(func: UInt) = isInt(func) && !func(4)
+
+    def isFromE4   (func: UInt) = func(3, 2) === "b11".U
+    def isFromE8   (func: UInt) = func(3, 2) === "b00".U
+    def isFromE16  (func: UInt) = func(3, 2) === "b01".U
+    def isFromE32  (func: UInt) = func(3, 2) === "b10".U
+
+    def isToE4     (func: UInt) = func(1, 0) === "b11".U
+    def isToE8     (func: UInt) = func(1, 0) === "b00".U
+    def isToE16    (func: UInt) = func(1, 0) === "b01".U
+    def isToE32    (func: UInt) = func(1, 0) === "b10".U
+
+    def mma_e5m2_fp16 = "b0_1_000_00_01".U
+    def mma_e4m3_fp16 = "b0_1_001_00_01".U
+    def mma_e5m2_bf16 = "b0_1_100_00_01".U
+    def mma_e4m3_bf16 = "b0_1_101_00_01".U
+    def mma_e5m2_fp32 = "b0_1_000_00_10".U
+    def mma_e4m3_fp32 = "b0_1_001_00_10".U
+    def mma_fp16_fp16 = "b0_1_000_01_01".U
+    def mma_fp16_fp32 = "b0_1_000_01_10".U
+    def mma_bf16_fp32 = "b0_1_100_01_10".U
+    def mma_tf32_fp32 = "b0_1_001_10_10".U
+    def mma_fp32_fp32 = "b0_1_000_10_10".U
+
+    def mma_int8_int32    = "b0_0_011_00_10".U
+    def mma_uint8_int32   = "b0_0_000_00_10".U
+    def mma_usint8_int32  = "b0_0_001_00_10".U
+    def mma_suint8_uint32 = "b0_0_010_00_10".U
+    def mma_int4_int32    = "b0_0_011_11_10".U
+    def mma_uint4_uint32  = "b0_0_000_11_10".U
+    def mma_usint4_uint32 = "b0_0_001_11_10".U
+    def mma_suint4_int32  = "b0_0_010_11_10".U
+
+    def getFromType(func: UInt) = func(3, 2)
+    def getToType(func: UInt) = func(1, 0)
+  }
+     */
+
     when (mmaInfo.isfp) {
+      // types = Cat(isFloat?typeBit:sign, getFromType[1:0])
+      // For FP: typeBit = isE4m3(E8)/isBf16(E16)/isTf32(E32)/0(E4)
+      // FP16: Cat(0, 01) = b001
       when (mmaInfo.types1 === "b001".U && mmaInfo.types2 === "b001".U) {
         mmaDataType := DataTypeF16F16F32
+      // FP8 E5M2: Cat(0, 00) = b000
+      }.elsewhen (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b000".U) {
+        mmaDataType := DataTypefp8e5m2F32
+      // FP8 E4M3: Cat(1, 00) = b100
+      }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b100".U) {
+        mmaDataType := DataTypefp8e4m3F32
+      // BF16: Cat(1, 01) = b101
       }.elsewhen (mmaInfo.types1 === "b101".U && mmaInfo.types2 === "b101".U) {
         mmaDataType := DataTypeBF16BF16F32
+      // FP32: Cat(0, 10) = b010
+      }.elsewhen (mmaInfo.types1 === "b010".U && mmaInfo.types2 === "b010".U) {
+        mmaDataType := DataTypeUndef  // DataTypeFP32FP32FP32
+      // TF32: Cat(1, 10) = b110
       }.elsewhen (mmaInfo.types1 === "b110".U && mmaInfo.types2 === "b110".U) {
         mmaDataType := DataTypeTF32TF32F32
+      // FP4: Cat(0, 11) = b011
+      }.elsewhen (mmaInfo.types1 === "b011".U && mmaInfo.types2 === "b011".U) {
+        // NVFP4 vs MXFP4 need to be distinguished by other means
+        mmaDataType := DataTypenvfp4F32
       }.otherwise {
-        mmaDataType := 7.U
+        mmaDataType := DataTypeUndef
       }
-    }.otherwise { // !mmaInfo.isfp
+    }.otherwise { // !mmaInfo.isfp - Integer types
+      // types = Cat(sign, getFromType[1:0])
+      // U8: Cat(0, 00) = b000
+      // I8: Cat(1, 00) = b100
       when (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b000".U) {
         mmaDataType := DataTypeU8U8I32
       }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b000".U) {
@@ -887,7 +1039,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b100".U) {
         mmaDataType := DataTypeI8I8I32
       }.otherwise {
-        mmaDataType := 7.U
+        mmaDataType := DataTypeUndef
       }
     }
 

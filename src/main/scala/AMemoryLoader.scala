@@ -11,7 +11,7 @@ import org.chipsalliance.cde.config._
 
 class ASourceIdSearch(implicit p: Parameters) extends CuteBundle{
     val MatrixRegBankId = UInt(log2Ceil(ABMatrixRegNBanks).W)
-    val MatrixRegAddr = UInt(log2Ceil(ABMatrixRegBankNEntrys).W)
+    val MatrixRegAddr = UInt(log2Ceil(ABMatrixRegBankNEntries).W)
 }
 
 class AMemoryLoader(implicit p: Parameters) extends CuteModule{
@@ -100,7 +100,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)).W))
 
     val MReg_Fill_Table = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
-    val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(ABMatrixRegBankNEntrys).W)))))
+    val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(ABMatrixRegBankNEntries).W)))))
     val MReg_Fill_Table_Time = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/ABMatrixRegEntryByteSize)+1).W)))))
     val MReg_Fill_Table_Free = MReg_Fill_Table_Time.map(_ === 0.U)
     val MReg_Fill_Table_Insert_Index = PriorityEncoder(MReg_Fill_Table_Free)
@@ -168,7 +168,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                   "Error! AML Load Task Type: Exactly one of Is_ZeroLoad, Is_FullLoad should be true!")
 
             when(Is_ZeroLoad){
-                val Max_ZeroLoad_Write_Times = ABMatrixRegBankNEntrys
+                val Max_ZeroLoad_Write_Times = ABMatrixRegBankNEntries
                 for (i <- 0 until ABMatrixRegNBanks){
                     io.ToMatrixRegIO.BankAddr(i).bits := TotalLoadSize
                     io.ToMatrixRegIO.BankAddr(i).valid := true.B
