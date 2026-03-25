@@ -18,7 +18,7 @@ import freechips.rocketchip.util.SeqToAugmentedSeq
 
 class CSourceIdSearch(implicit p: Parameters) extends CuteBundle{
     val MatrixRegBankId =UInt(log2Ceil(CMatrixRegNBanks).W)
-    val MatrixRegAddr = UInt(log2Ceil(CMatrixRegBankNEntrys).W)
+    val MatrixRegAddr = UInt(log2Ceil(CMatrixRegBankNEntries).W)
 }
 
 class CMemoryLoader(implicit p: Parameters) extends CuteModule{
@@ -122,7 +122,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Is_FullLoad = RegInit(false.B)
     val Is_RepeatRowLoad = RegInit(false.B)
 
-    val C_DataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
+    val C_DataWidth = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
     val D_DataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
 
     when(state === s_idle)
@@ -146,10 +146,11 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 Is_FullLoad := io.ConfigInfo.LoadTaskInfo.Is_FullLoad
                 Is_RepeatRowLoad := io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad
 
-                C_DataType := io.ConfigInfo.ApplicationTensor_C.dataType
+                var PEDataType = new FReducePEDataType
+                C_DataWidth := PEDataType.CdataByteWidth(io.ConfigInfo.ApplicationTensor_C.dataType)
                 if(YJPCMLDebugEnable)
                 {
-                    printf("[CMemoryLoader_Load<%d>]Load C Tensor Start, Tensor_Block_BaseAddr: %x, ApplicationTensor_C_Stride_M: %x, IsConherent: %x,MatrixRegTensor_M: %x,MatrixRegTensor_N: %x,C_DataType(zero,full,repeatrow) :(%d,%d,%d)\n", io.DebugInfo.DebugTimeStampe, io.ConfigInfo.ApplicationTensor_C.BlockTensor_C_BaseVaddr, io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_Stride_M, io.ConfigInfo.Conherent,io.ConfigInfo.MatrixRegTensor_M,io.ConfigInfo.MatrixRegTensor_N,io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad.asUInt,io.ConfigInfo.LoadTaskInfo.Is_FullLoad.asUInt,io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad.asUInt)
+                    printf("[CMemoryLoader_Load<%d>]Load C Tensor Start, Tensor_Block_BaseAddr: %x, ApplicationTensor_C_Stride_M: %x, IsConherent: %x,MatrixRegTensor_M: %x,MatrixRegTensor_N: %x,C_DataWidth(zero,full,repeatrow) :(%d,%d,%d)\n", io.DebugInfo.DebugTimeStampe, io.ConfigInfo.ApplicationTensor_C.BlockTensor_C_BaseVaddr, io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_Stride_M, io.ConfigInfo.Conherent,io.ConfigInfo.MatrixRegTensor_M,io.ConfigInfo.MatrixRegTensor_N,io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad.asUInt,io.ConfigInfo.LoadTaskInfo.Is_FullLoad.asUInt,io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad.asUInt)
                 }
 
             }
@@ -213,7 +214,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     //2.给每个准备回填数据的bank，找到其对应的Fill_FIFO的index，在这个fill_fifo[index]的filltime+1，如果filltime==MAX_Fill_Times，那么这个数据就用完了
     //3.更新FIFO，更新Tail，更新Table
     val MReg_Fill_Table = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
-    val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(CMatrixRegBankNEntrys).W)))))//记录这个LLC回的数是在scp的哪个地址
+    val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(CMatrixRegBankNEntries).W)))))//记录这个LLC回的数是在scp的哪个地址
     val MReg_Fill_Table_Time = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/CMatrixRegEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
     val MReg_Fill_Table_Free = MReg_Fill_Table_Time.map(_ === 0.U)//记录这个FIFO能否能填数据
     val MReg_Fill_Table_Valid = MReg_Fill_Table_Time.map(_ =/= 0.U)//记录这个FIFO里的数据是否有效
@@ -315,7 +316,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 val RequestMatrixRegBankId = (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) % CMatrixRegNBanks.U //访存请求落在哪个MatrixRegBank上
                 val RequestMatrixRegAddr = (CurrentLoaded_BlockTensor_M_Iter / CMatrixRegNBanks.U * MatrixRegTensor_N / Matrix_MN.U) + (CurrentLoaded_BlockTensor_N_Iter / Matrix_MN.U) //该访存请求的第零号数据，落在哪个MatrixRegBank的哪个地址上
                 
-                ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_C_Stride_M + CurrentLoaded_BlockTensor_N_Iter * C_DataType
+                ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_C_Stride_M + CurrentLoaded_BlockTensor_N_Iter * C_DataWidth
                 
                 // val CurrentBankID = RequestMatrixRegBankId
                 // val CurrentFIFOIndex = FromMemoryLoaderReadFIFOHead
@@ -338,8 +339,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                     Request_M_Iter_Time := Request_M_Iter_Time + 1.U//连续的跨bank去访存
                     when(Request_M_Iter_Time === (Matrix_MN - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === MatrixRegTensor_M - 1.U){
                         Request_M_Iter_Time := 0.U
-                        CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType
-                        when(CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType === MatrixRegTensor_N){
+                        CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataWidth
+                        when(CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataWidth === MatrixRegTensor_N){
                             CurrentLoaded_BlockTensor_N_Iter := 0.U
                             CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_MN.U
                         }
@@ -462,8 +463,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             {
                 //给所有的bank发出写0的请求
                 HasScarhpadWrite := true.B
-                //每次写所有bank的一个entry，总共要写CMatrixRegBankNEntrys次
-                val Max_ZeroLoad_Write_Times = CMatrixRegBankNEntrys
+                //每次写所有bank的一个entry，总共要写CMatrixRegBankNEntries次
+                val Max_ZeroLoad_Write_Times = CMatrixRegBankNEntries
                 for (i <- 0 until CMatrixRegNBanks)
                 {
                     io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).bits := TotalLoadSize
@@ -494,11 +495,11 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             // {
             //     //由于RepeatRowLoad的特殊性，我们一次Load需要写MReg很多次,导致我们的FIFO在被写满时，会导致长时间的TL无法握手。
             //     //故，我们针对这样的情况，我们需要为每一个发出的访存请求预留一个FIFO的空位，这样就可以保证TL握手成功，从而不浪费访存带宽，这样可能会导致整体延迟增加(但不会低到阻碍吞吐)，但我们的访存带宽利用率一定不会低
-            //     //获取整个Row的数据，然后重复填充，Row的总数据量为Tensor_N*C_DataType
+            //     //获取整个Row的数据，然后重复填充，Row的总数据量为Tensor_N*C_DataWidth
             //     val sourceId = Mux(IsConherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
-            //     val Max_RepeatRowLoad_Memory_Load_Times = Tensor_MN.U * C_DataType / outsideDataWidthByte.U //总共要发出的访存请求的次数
+            //     val Max_RepeatRowLoad_Memory_Load_Times = Tensor_MN.U * C_DataWidth / outsideDataWidthByte.U //总共要发出的访存请求的次数
             //     val Max_MReg_Write_Times = Tensor_MN*Tensor_MN*ResultWidthByte/CMatrixReg_Total_Bandwidth //总共要写入MReg的次数
-            //     ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr +  CurrentLoaded_BlockTensor_N_Iter * C_DataType
+            //     ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr +  CurrentLoaded_BlockTensor_N_Iter * C_DataWidth
             //     ReadRequest.bits.RequestConherent := IsConherent
             //     ReadRequest.bits.RequestSourceID := sourceId.bits
             //     ReadRequest.bits.RequestType_isWrite := false.B
@@ -510,7 +511,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             //     val Per_Memory_Load_Have_Data_Write_Group = (outsideDataWidthByte/CMatrixRegEntryByteSize)//每次Memory的load，有几组数据要写回
             //     val Per_Write_MReg_Addr_Add = (Tensor_MN / Matrix_MN).U //一组数据Per_Data_Repeat_Times迭代中，下一次写入的scp地址的增量
 
-            //     // val Load_Time = CurrentLoaded_BlockTensor_N_Iter / (outsideDataWidthByte.U/C_DataType)
+            //     // val Load_Time = CurrentLoaded_BlockTensor_N_Iter / (outsideDataWidthByte.U/C_DataWidth)
 
             //     //向量的访存顺序
             //     //01,23,45,67.....
@@ -539,7 +540,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             //         TableItem.MatrixRegAddr := TotalRequestSize * Per_Memory_Load_Have_Data_Write_Group.U//这个数据的第一个数据，落在哪个MatrixRegBank的哪个地址上
             //         SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
 
-            //         CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataType
+            //         CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataWidth
             //         Repeat_Fill_Request_Infight := Repeat_Fill_Request_Infight + 1.U
             //         if (YJPCMLDebugEnable)
             //         {
@@ -692,9 +693,9 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     }
 
     val M_Get_IteratorMax = Mux(Is_Transpose, (MatrixRegTensor_M / (Matrix_MN.U * 2.U) + (MatrixRegTensor_M % (Matrix_MN.U * 2.U) =/= 0.U)) * 2.U, (MatrixRegTensor_M / Matrix_MN.U) + ((MatrixRegTensor_M % Matrix_MN.U) =/= 0.U))
-    val N_Get_IteratorMax = WireInit(0.U(log2Ceil(CMatrixRegBankNEntrys).W))
+    val N_Get_IteratorMax = WireInit(0.U(log2Ceil(CMatrixRegBankNEntries).W))
     N_Get_IteratorMax := (MatrixRegTensor_N / Matrix_MN.U)
-    val transpose_scp_addr = WireInit(0.U(log2Ceil(CMatrixRegBankNEntrys).W))
+    val transpose_scp_addr = WireInit(0.U(log2Ceil(CMatrixRegBankNEntries).W))
 
     // val Max_Caculate_Iter = M_Get_IteratorMax * N_Get_IteratorMax
 

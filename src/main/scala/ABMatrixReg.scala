@@ -58,7 +58,7 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
         // latency=1: 读延迟为1拍
         val bank = Module(new SRAMTemplate(
             gen = UInt((ABMatrixRegEntryByteSize*8).W),
-            set = ABMatrixRegBankNEntrys,
+            set = ABMatrixRegBankNEntries,
             way = 1,
             singlePort = true,
             latency = 1,

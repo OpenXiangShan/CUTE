@@ -13,6 +13,8 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val VectorA = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_MN).W)))
         val VectorB = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_MN).W)))
+        val ScaleA  = Flipped(DecoupledIO(UInt((ScaleWidth*Matrix_MN).W)))
+        val ScaleB  = Flipped(DecoupledIO(UInt((ScaleWidth*Matrix_MN).W)))
         val MatrixC = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
         val MatrixD = DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W))
         val ConfigInfo = Flipped((new MTEMicroTaskConfigIO))
@@ -24,6 +26,13 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     //实例化ReducePE
     val Matrix = VecInit.tabulate(Matrix_MN, Matrix_MN){(x,y) => Module(new FReducePE()).io}
 
+    // 配置数据类型
+    val DataType = Reg(UInt((ElementDataType.DataTypeBitWidth).W))
+
+    when (io.ConfigInfo.MicroTaskValid) {
+        DataType := io.ConfigInfo.dataType
+    }
+
     //直接驱动ReducePE的输入
     //接下来给每个ReducePE的输入进行赋值
     //broadcaster的逻辑
@@ -33,9 +42,13 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
             Matrix(i)(j).AVector.valid      := io.VectorA.valid
             Matrix(i)(j).BVector.bits       := io.VectorB.bits((j+1)*ReduceWidth-1,(j)*ReduceWidth)
             Matrix(i)(j).BVector.valid      := io.VectorB.valid
+            Matrix(i)(j).AScale.bits        := io.ScaleA.bits((i+1)*ScaleWidth-1,(i)*ScaleWidth)
+            Matrix(i)(j).AScale.valid       := io.ScaleA.valid
+            Matrix(i)(j).BScale.bits        := io.ScaleB.bits((j+1)*ScaleWidth-1,(j)*ScaleWidth)
+            Matrix(i)(j).BScale.valid       := io.ScaleB.valid
             Matrix(i)(j).CAdd.bits          := io.MatrixC.bits((i*Matrix_MN+j+1)*ResultWidth-1,(i*Matrix_MN+j)*ResultWidth)
             Matrix(i)(j).CAdd.valid         := io.MatrixC.valid
-            Matrix(i)(j).opcode             := io.ConfigInfo.dataType
+            Matrix(i)(j).opcode             := DataType
             when(io.VectorA.valid && io.VectorB.valid && io.MatrixC.valid){
                 // printf("[MatrixTE]: Matrix(%d)(%d) ReduceA:%x ReduceB:%x AddC:%x\n",i.U,j.U,Matrix(i)(j).ReduceA.bits,Matrix(i)(j).ReduceB.bits,Matrix(i)(j).AddC.bits)
             }
@@ -71,9 +84,11 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     //确定所有的ready信号
     //当所有的ReducePE的输入都ready的时候，VectorA和VectorB的ready才为true
     //注意这里如果是时序不足的点，很简单只用考察一个PE即可，因为所有PE是同步执行的，这里这样写是保证逻辑完整完备，代码可读性高
-    val ReducePEInputAllReady = Matrix(0)(0).AVector.ready && Matrix(0)(0).BVector.ready && Matrix(0)(0).CAdd.ready
+    val ReducePEInputAllReady = Matrix(0)(0).AVector.ready && Matrix(0)(0).BVector.ready && Matrix(0)(0).CAdd.ready && Matrix(0)(0).AScale.ready
     io.VectorA.ready := ReducePEInputAllReady
     io.VectorB.ready := ReducePEInputAllReady
+    io.ScaleA.ready := ReducePEInputAllReady
+    io.ScaleB.ready := ReducePEInputAllReady
     io.MatrixC.ready := ReducePEInputAllReady
     
     assert(io.VectorA.fire === io.VectorB.fire, "VectorA and VectorB should be fired at the same time")

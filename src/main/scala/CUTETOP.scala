@@ -24,6 +24,15 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val BML = Module(new BMemoryLoader)
 
     val CMatrixRegs = Seq.tabulate(CMatrixRegCount)(i => Module(new CMatrixReg(i))).toVector
+
+    val ASMRegs = Seq.tabulate(2)(i => Module(new ABScaleMatrixReg)).toVector//双缓冲
+    val ASC = Module(new AScaleController)
+    val ASL = Module(new AScaleLoader)
+
+    val BSMRegs = Seq.tabulate(2)(i => Module(new ABScaleMatrixReg)).toVector//双缓冲
+    val BSC = Module(new BScaleController)
+    val BSL = Module(new BScaleLoader)
+
     val CDC = Module(new CDataController)
     val CML = Module(new CMemoryLoader)
 
@@ -44,10 +53,22 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     ADC.io.ConfigInfo <> TaskCtrl.io.ADC_MicroTask_Config
     ADC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
 
+    //ASC的默认输入
+    ASC.io.FromMatrixRegIO.Data.valid := false.B
+    ASC.io.FromMatrixRegIO.Data.bits := 0.U.asTypeOf(ASC.io.FromMatrixRegIO.Data.bits)
+    ASC.io.FromMatrixRegIO.BankAddr.ready := false.B
+    ASC.io.ConfigInfo <> TaskCtrl.io.ASC_MicroTask_Config
+    ASC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
+
     //AML的默认输入
     AML.io.ConfigInfo <> TaskCtrl.io.AML_MicroTask_Config
     AML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     AML.io.LocalMMUIO <> MMU.io.ALocalMMUIO
+
+    //ASL的默认输入
+    ASL.io.ConfigInfo <> TaskCtrl.io.ASL_MicroTask_Config
+    ASL.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
+    ASL.io.LocalMMUIO <> MMU.io.ASLocalMMUIO
 
     //BDC的默认输入
     BDC.io.FromMatrixRegIO.Data.valid := false.B
@@ -55,10 +76,22 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     BDC.io.ConfigInfo <> TaskCtrl.io.BDC_MicroTask_Config
     BDC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
 
+    //BSC的默认输入
+    BSC.io.FromMatrixRegIO.Data.valid := false.B
+    BSC.io.FromMatrixRegIO.Data.bits := 0.U.asTypeOf(BSC.io.FromMatrixRegIO.Data.bits)
+    BSC.io.FromMatrixRegIO.BankAddr.ready := false.B
+    BSC.io.ConfigInfo <> TaskCtrl.io.BSC_MicroTask_Config
+    BSC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
+
     //BML的默认输入
     BML.io.ConfigInfo <> TaskCtrl.io.BML_MicroTask_Config
     BML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     BML.io.LocalMMUIO <> MMU.io.BLocalMMUIO
+
+    //BSL的默认输入
+    BSL.io.ConfigInfo <> TaskCtrl.io.BSL_MicroTask_Config
+    BSL.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
+    BSL.io.LocalMMUIO <> MMU.io.BSLocalMMUIO
 
     //CDC的默认输入
     CDC.io.FromMatrixRegIO.ReadResponseData := 0.U.asTypeOf(CDC.io.FromMatrixRegIO.ReadResponseData)
@@ -73,15 +106,18 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     CML.io.ToMatrixRegIO.ReadWriteResponse := 0.U
     CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData := 0.U.asTypeOf(CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData)
 
-    //MTE的默认输入
     MTE.io.VectorA <> ADC.io.VectorA
     MTE.io.VectorB <> BDC.io.VectorB
+    MTE.io.ScaleA  <> ASC.io.ScaleA
+    MTE.io.ScaleB  <> BSC.io.ScaleB
     MTE.io.MatrixC <> CDC.io.Matrix_C
     MTE.io.MatrixD <> CDC.io.ResultMatrix_D
     MTE.io.ConfigInfo <> TaskCtrl.io.MTE_MicroTask_Config
     MTE.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     ADC.io.ComputeGo := MTE.io.ComputeGo
     BDC.io.ComputeGo := MTE.io.ComputeGo
+    ASC.io.ComputeGo := MTE.io.ComputeGo
+    BSC.io.ComputeGo := MTE.io.ComputeGo
     CDC.io.ComputeGo := MTE.io.ComputeGo
     
     //后续需要连入CPU的MMU或者IOMMU
@@ -101,11 +137,72 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
     }
 
+    // AB Scale Regs
+    (ASMRegs ++ BSMRegs).foreach { reg =>
+        reg.io.FromScaleController.BankAddr.valid := false.B
+        reg.io.FromScaleController.BankAddr.bits := 0.U.asTypeOf(reg.io.FromScaleController.BankAddr.bits)
+        reg.io.FromScaleLoader.BankAddr := 0.U.asTypeOf(reg.io.FromScaleLoader.BankAddr)
+        reg.io.FromScaleLoader.Data := 0.U.asTypeOf(reg.io.FromScaleLoader.Data)
+    }
+
     // C MatrixReg
     for (i <- 0 until CMatrixRegCount){
         CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteRequest := 0.U
         CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadWriteRequest := 0.U
     }
+
+    // ============================================
+    // A Scale MatrixReg 路由逻辑 (双缓冲)
+    // ============================================
+    def connectScaleControlToRegs(
+        ScaleCtrlIO: ABScaleControlMatrixRegIO,
+        ScaleRegs: Seq[ABScaleMatrixReg]
+    ): Unit = {
+        // ASC 选择 ScaleRegs，根据 SpadId 选择对应的 MatrixReg
+        for (spadIdx <- 0 until ScaleRegs.length) {
+            val dest = ScaleRegs(spadIdx).io.FromScaleController
+            val ascSel = ASC.io.SpadId === spadIdx.U
+            when(ascSel) {
+                dest.BankAddr.valid := ScaleCtrlIO.BankAddr.valid
+                dest.BankAddr.bits := ScaleCtrlIO.BankAddr.bits
+            }.otherwise {
+                dest.BankAddr.valid := false.B
+                dest.BankAddr.bits := DontCare
+            }
+        }
+
+        // ASC 接收 ScaleRegs 返回的数据
+        val sels = ScaleRegs.indices.map(ASC.io.SpadId === _.U)
+        ScaleCtrlIO.BankAddr.ready := Mux1H(sels zip ScaleRegs.map(_.io.FromScaleController.BankAddr.ready))
+        ScaleCtrlIO.Data.valid     := Mux1H(sels zip ScaleRegs.map(_.io.FromScaleController.Data.valid))
+        ScaleCtrlIO.Data.bits      := Mux1H(sels zip ScaleRegs.map(_.io.FromScaleController.Data.bits))
+    }
+
+    def connectScaleLoaderToRegs(
+        ScaleLoaderIO: ABScaleLoaderMatrixRegIO,
+        ScaleRegs: Seq[ABScaleMatrixReg]
+    ): Unit = {
+        // ASL 选择 ScaleRegs，根据 SpadId 选择对应的 MatrixReg
+        for (spadIdx <- 0 until ScaleRegs.length) {
+            val dest = ScaleRegs(spadIdx).io.FromScaleLoader
+            val aslSel = ASL.io.SpadId === spadIdx.U
+            when(aslSel) {
+                dest.BankAddr := ASL.io.ToMatrixRegIO.BankAddr
+                dest.Data := ASL.io.ToMatrixRegIO.Data
+            }.otherwise {
+                dest.BankAddr.valid := false.B
+                dest.BankAddr.bits := DontCare
+                dest.Data.valid := false.B
+                dest.Data.bits := DontCare
+            }
+        }
+    }
+
+    connectScaleControlToRegs(ASC.io.FromMatrixRegIO, ASMRegs)
+    connectScaleLoaderToRegs(ASL.io.ToMatrixRegIO, ASMRegs)
+
+    connectScaleControlToRegs(BSC.io.FromMatrixRegIO, BSMRegs)
+    connectScaleLoaderToRegs(BSL.io.ToMatrixRegIO, BSMRegs)
 
     def disableABLoaderPort(dest: ABMemoryLoaderMatrixRegIO): Unit = {
         for (b <- 0 until ABMatrixRegNBanks) {
