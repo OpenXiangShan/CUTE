@@ -530,37 +530,37 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       scoreboardReq.fuType := fuType
       scoreboardReq.dest.valid := true.B
       scoreboardReq.dest.bits.is_acc := lsuInfo.isacc
-      scoreboardReq.dest.bits.regIdx := lsuInfo.ms(ScoreboardConsts.RegIdxWidth - 1, 0)
+      scoreboardReq.dest.bits.accept(lsuInfo.ms)
     }
     when(isMma) {
       scoreboardReqValid := true.B
       scoreboardReq.fuType := ScoreboardFuType.Compute
       scoreboardReq.dest.valid := true.B
       scoreboardReq.dest.bits.is_acc := true.B
-      scoreboardReq.dest.bits.regIdx := mmaInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
+      scoreboardReq.dest.bits.accept(mmaInfo.md)
       scoreboardReq.src1.valid := true.B
       scoreboardReq.src1.bits.is_acc := false.B
-      scoreboardReq.src1.bits.regIdx := mmaInfo.ms1(ScoreboardConsts.RegIdxWidth - 1, 0)
+      scoreboardReq.src1.bits.accept(mmaInfo.ms1)
       scoreboardReq.src2.valid := true.B
       scoreboardReq.src2.bits.is_acc := false.B
-      scoreboardReq.src2.bits.regIdx := mmaInfo.ms2(ScoreboardConsts.RegIdxWidth - 1, 0)
+      scoreboardReq.src2.bits.accept(mmaInfo.ms2)
       scoreboardReq.src3.valid := true.B
       scoreboardReq.src3.bits.is_acc := true.B
-      scoreboardReq.src3.bits.regIdx := mmaInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
+      scoreboardReq.src3.bits.accept(mmaInfo.md)
     }
     when(isArith) {
       scoreboardReqValid := true.B
       scoreboardReq.fuType := Mux(arithDestIsAcc, ScoreboardFuType.CML, ScoreboardFuType.AML)
       scoreboardReq.dest.valid := true.B
       scoreboardReq.dest.bits.is_acc := arithDestIsAcc
-      scoreboardReq.dest.bits.regIdx := arithInfo.md(ScoreboardConsts.RegIdxWidth - 1, 0)
+      scoreboardReq.dest.bits.accept(arithInfo.md)
     }
     when(isStore) {
       scoreboardReqValid := true.B
       scoreboardReq.fuType := ScoreboardFuType.CML
       scoreboardReq.src1.valid := true.B
       scoreboardReq.src1.bits.is_acc := lsuInfo.isacc
-      scoreboardReq.src1.bits.regIdx := lsuInfo.ms(ScoreboardConsts.RegIdxWidth - 1, 0)
+      scoreboardReq.src1.bits.accept(lsuInfo.ms)
     }
   }
 
