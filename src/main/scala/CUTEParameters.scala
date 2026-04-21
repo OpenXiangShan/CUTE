@@ -601,6 +601,7 @@ trait CUTEImplParameters{
     val CMatrixRegCount = 4
     val ABMatrixRegIdWidth = log2Ceil(ABMatrixRegCount)
     val CMatrixRegIdWidth = log2Ceil(CMatrixRegCount)
+    val MatrixRegIdWidth = ABMatrixRegIdWidth max CMatrixRegIdWidth
 
     val vpnBits = MMUParams.vpnBits
     val ppnBits = MMUParams.ppnBits

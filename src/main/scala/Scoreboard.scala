@@ -5,22 +5,21 @@ import chisel3.util._
 import org.chipsalliance.cde.config._
 
 object ScoreboardConsts {
-  val NumAbRegs = 4
-  val NumCRegs = 2
   val NumAMLUnits = 1
   val NumBMLUnits = 1
   val NumCMLUnits = 1
   val NumComputeUnits = 1
   val TotalUnits = NumAMLUnits + NumBMLUnits + NumCMLUnits + NumComputeUnits
-
-  val TileRegIdxWidth = math.max(1, log2Ceil(NumAbRegs))
-  val AccRegIdxWidth = math.max(1, log2Ceil(NumCRegs))
-  val RegIdxWidth = TileRegIdxWidth max AccRegIdxWidth
 }
 
 class RegIdx(implicit p: Parameters) extends CuteBundle {
   val is_acc = Bool()
-  val regIdx = UInt(ScoreboardConsts.RegIdxWidth.W)
+  val regIdx = UInt(MatrixRegIdWidth.W)
+
+  def accept(src: UInt): Unit = {
+    regIdx := src(MatrixRegIdWidth - 1, 0)
+    assert(regIdx === src, s"RegIdx data width causes corruption: ${regIdx.getWidth} =/= ${src.getWidth}")
+  }
 }
 
 class RegResultStatus(fuIdWidth: Int) extends Bundle {
@@ -28,7 +27,7 @@ class RegResultStatus(fuIdWidth: Int) extends Bundle {
   val fuId = UInt(fuIdWidth.W)
 }
 
-class FuncUnitSrcStatus(fuIdWidth: Int)(implicit p: Parameters) extends Bundle {
+class FuncUnitSrcStatus(fuIdWidth: Int)(implicit p: Parameters) extends CuteBundle {
   val valid = Bool()
   val reg = new RegIdx()
   val ready = Bool()
@@ -36,12 +35,12 @@ class FuncUnitSrcStatus(fuIdWidth: Int)(implicit p: Parameters) extends Bundle {
   val readPending = Bool()
 }
 
-class FuncUnitStatus(fuIdWidth: Int)(implicit p: Parameters) extends Bundle {
+class FuncUnitStatus(fuIdWidth: Int)(implicit p: Parameters) extends CuteBundle {
   val busy = Bool()
   val fifoIdx = UInt(2.W)
 
   val destValid = Bool()
-  val destReg = UInt(ScoreboardConsts.RegIdxWidth.W)
+  val destReg = UInt(MatrixRegIdWidth.W)
 
   val srcs = Vec(3, new FuncUnitSrcStatus(fuIdWidth))
 }
@@ -70,9 +69,9 @@ class ScoreboardQueryIO(implicit p: Parameters) extends CuteBundle {
 class ScoreboardUpdateIO(implicit p: Parameters) extends CuteBundle {
     // 分配寄存器给Load指令
     val load_allocate = Input(Bool())
-    val load_alloc_a_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
-    val load_alloc_b_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
-    val load_alloc_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val load_alloc_a_reg = Input(UInt(MatrixRegIdWidth.W))
+    val load_alloc_b_reg = Input(UInt(MatrixRegIdWidth.W))
+    val load_alloc_c_reg = Input(UInt(MatrixRegIdWidth.W))
     val load_alloc_has_a = Input(Bool())
     val load_alloc_has_b = Input(Bool())
     val load_alloc_has_c = Input(Bool())
@@ -80,37 +79,37 @@ class ScoreboardUpdateIO(implicit p: Parameters) extends CuteBundle {
     
     // Load完成，标记寄存器为Ready
     val load_finish_a = Input(Bool())
-    val load_finish_a_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val load_finish_a_reg = Input(UInt(MatrixRegIdWidth.W))
     val load_finish_b = Input(Bool())
-    val load_finish_b_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val load_finish_b_reg = Input(UInt(MatrixRegIdWidth.W))
     val load_finish_c = Input(Bool())
-    val load_finish_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val load_finish_c_reg = Input(UInt(MatrixRegIdWidth.W))
     
     // Compute发射，读取A/B/C，写入C
     val compute_issue = Input(Bool())
-    val compute_issue_a_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
-    val compute_issue_b_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
-    val compute_issue_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val compute_issue_a_reg = Input(UInt(MatrixRegIdWidth.W))
+    val compute_issue_b_reg = Input(UInt(MatrixRegIdWidth.W))
+    val compute_issue_c_reg = Input(UInt(MatrixRegIdWidth.W))
     val compute_issue_fifo_idx = Input(UInt(2.W))
     
     // Compute完成读取A/B
     val compute_read_finish_a = Input(Bool())
-    val compute_read_finish_a_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val compute_read_finish_a_reg = Input(UInt(MatrixRegIdWidth.W))
     val compute_read_finish_b = Input(Bool())
-    val compute_read_finish_b_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val compute_read_finish_b_reg = Input(UInt(MatrixRegIdWidth.W))
     
     // Compute完成写入C
     val compute_write_finish_c = Input(Bool())
-    val compute_write_finish_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val compute_write_finish_c_reg = Input(UInt(MatrixRegIdWidth.W))
     
     // Store发射，读取C
     val store_issue = Input(Bool())
-    val store_issue_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val store_issue_c_reg = Input(UInt(MatrixRegIdWidth.W))
     val store_issue_fifo_idx = Input(UInt(2.W))
     
     // Store完成，释放C
     val store_finish = Input(Bool())
-    val store_finish_c_reg = Input(UInt(ScoreboardConsts.RegIdxWidth.W))
+    val store_finish_c_reg = Input(UInt(MatrixRegIdWidth.W))
 }
 
 class Scoreboard(implicit p: Parameters) extends CuteModule {
@@ -128,8 +127,8 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
   private val cmlFuIdConst = ScoreboardFuType.CML.asUInt
   private val computeFuIdConst = ScoreboardFuType.Compute.asUInt
 
-  private val abRegStatus = RegInit(VecInit(Seq.fill(NumAbRegs)(0.U.asTypeOf(new RegResultStatus(fuIdWidth)))))
-  private val cRegStatus = RegInit(VecInit(Seq.fill(NumCRegs)(0.U.asTypeOf(new RegResultStatus(fuIdWidth)))))
+  private val abRegStatus = RegInit(VecInit(Seq.fill(ABMatrixRegCount)(0.U.asTypeOf(new RegResultStatus(fuIdWidth)))))
+  private val cRegStatus = RegInit(VecInit(Seq.fill(CMatrixRegCount)(0.U.asTypeOf(new RegResultStatus(fuIdWidth)))))
 
   private val fuStatuses = RegInit(VecInit(Seq.fill(ScoreboardFuType.all.length)(0.U.asTypeOf(new FuncUnitStatus(fuIdWidth)))))
 
@@ -157,13 +156,13 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
   private val SrcBIdx = 1
   private val SrcCIdx = 2
 
-  private def toTileIdx(idx: UInt): UInt = idx(ScoreboardConsts.TileRegIdxWidth - 1, 0)
-  private def toAccIdx(idx: UInt): UInt = idx(ScoreboardConsts.AccRegIdxWidth - 1, 0)
+  private def toTileIdx(idx: UInt): UInt = idx(ABMatrixRegIdWidth - 1, 0)
+  private def toAccIdx(idx: UInt): UInt = idx(CMatrixRegIdWidth - 1, 0)
 
   private def resetSrcStatus(src: FuncUnitSrcStatus): Unit = {
     src.valid := false.B
     src.reg.is_acc := false.B
-    src.reg.regIdx := 0.U(ScoreboardConsts.RegIdxWidth.W)
+    src.reg.regIdx := 0.U(MatrixRegIdWidth.W)
     src.ready := false.B
     src.waitFu := noneFuId
     src.readPending := false.B
@@ -518,8 +517,14 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
   }
 
   if (YJPDebugEnable) {
-    printf("[NewScoreboard] AB Busy: [%d,%d,%d,%d], C Busy: [%d,%d]\n",
-      abRegStatus(0).busy, abRegStatus(1).busy, abRegStatus(2).busy, abRegStatus(3).busy,
-      cRegStatus(0).busy, cRegStatus(1).busy)
+    val abBusyVec = abRegStatus.map(_.busy)
+    val cBusyVec = cRegStatus.map(_.busy)
+    val abFormat = abBusyVec.map(_ => "%d").mkString(",")
+    val cFormat = cBusyVec.map(_ => "%d").mkString(",")
+    val formatStr = "[NewScoreboard] AB Busy: [" + abFormat + "], C Busy: [" + cFormat + "]\n"
+    val anyBusy = (abBusyVec ++ cBusyVec).reduce(_||_)
+    when (anyBusy) {
+      printf(formatStr, (abBusyVec ++ cBusyVec): _*)
+    }
   }
 }
