@@ -52,20 +52,31 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         when (io.ConfigInfo.MicroTaskValid) {
           pcReg := io.ConfigInfo.pc.get
         }
-        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent, delay = 0, dontCare = true)
+        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         // 默认值初始化
         difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
         difftestAmuFinish.index := 1.U
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
           (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
         difftestAmuFinish.pc := pcReg
+        // DiffAmuFinishEvent packing is parameterized by words-per-bank.
+        val eventWordsPerBank = difftestAmuFinish.data.length / ABMatrixRegNBanks
+        val abMRegWordsPerBank = ABMatrixRegEntryBitSize / 64
+        require(difftestAmuFinish.data.length % ABMatrixRegNBanks == 0, "DiffAmuFinishEvent.data should divide by AB bank count")
+        require(ABMatrixRegEntryBitSize % 64 == 0, s"ABMatrixRegEntryBitSize must be 64-bit aligned, got $ABMatrixRegEntryBitSize")
+        require(abMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuFinishEvent only supports up to $eventWordsPerBank words per AB bank, got $abMRegWordsPerBank")
         for (i <- 0 until ABMatrixRegNBanks) {
           difftestAmuFinish.bankValid(i) := io.ToMatrixRegIO.BankAddr(i).valid
           difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.BankAddr(i).bits
-          difftestAmuFinish.data(i * 4 + 0) := io.ToMatrixRegIO.Data(i).bits(63,0)
-          difftestAmuFinish.data(i * 4 + 1) := io.ToMatrixRegIO.Data(i).bits(127,64)
-          difftestAmuFinish.data(i * 4 + 2) := io.ToMatrixRegIO.Data(i).bits(191,128)
-          difftestAmuFinish.data(i * 4 + 3) := io.ToMatrixRegIO.Data(i).bits(255,192)
+          for (w <- 0 until eventWordsPerBank) {
+            if (w < abMRegWordsPerBank) {
+              val lo = w * 64
+              val hi = lo + 63
+              difftestAmuFinish.data(i * eventWordsPerBank + w) := io.ToMatrixRegIO.Data(i).bits(hi, lo)
+            } else {
+              difftestAmuFinish.data(i * eventWordsPerBank + w) := 0.U(64.W)
+            }
+          }
         }
         difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
     }

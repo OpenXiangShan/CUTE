@@ -457,6 +457,9 @@ case class CuteParams(
     def CMatrixRegEntryByteSize = Matrix_MN*ResultWidthByte //这个取数和存数的带宽
     def ABMatrixRegEntryBitSize = ReduceWidthByte * 8 //适合向TE供数的带宽
     def CMatrixRegEntryBitSize = Matrix_MN*ResultWidthByte * 8//这个取数和存数的带宽
+    // DiffAmuFinishEvent flattens per-bank payload into UInt(64) lanes.
+    // Use the maximum bank payload width so one event layout works for AB/C paths.
+    def DiffAmuFinishWordsPerBank = Math.max(ABMatrixRegEntryBitSize, CMatrixRegEntryBitSize) / 64
     def ABMatrixRegNBanks = Matrix_MN //注意这里与Matrix_MN有强相关性，一般是Matrix_MN的整数倍
     def CMatrixRegNBanks = Matrix_MN //方便进行reorder
     def ABMatrixReg_Total_Bandwidth = ABMatrixRegNBanks * ABMatrixRegEntryByteSize  //ABMatrixReg的总带宽
@@ -548,6 +551,7 @@ trait CUTEImplParameters{
     val CMatrixRegEntryByteSize = cuteParams.CMatrixRegEntryByteSize
     val ABMatrixRegEntryBitSize = cuteParams.ABMatrixRegEntryBitSize
     val CMatrixRegEntryBitSize = cuteParams.CMatrixRegEntryBitSize
+    val DiffAmuFinishWordsPerBank = cuteParams.DiffAmuFinishWordsPerBank
     val ABMatrixRegNBanks = cuteParams.ABMatrixRegNBanks
     val CMatrixRegNBanks = cuteParams.CMatrixRegNBanks
     val ABMatrixReg_Total_Bandwidth = cuteParams.ABMatrixReg_Total_Bandwidth

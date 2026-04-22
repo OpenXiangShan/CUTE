@@ -988,7 +988,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   if (EnableDifftest) {
-    val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent, delay = 0, dontCare = true)
+    val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
     difftestAmuFinish.coreid := io.ygjkctrl.amuCtrl.bits.coreid.get
     difftestAmuFinish.index := 4.U
     difftestAmuFinish.valid := io.ygjkctrl.mrelease.valid
