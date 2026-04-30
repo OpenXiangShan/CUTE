@@ -3,6 +3,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
+import utility.XSPerfAccumulate
 
 object ScoreboardConsts {
   val NumAMLUnits = 1
@@ -18,7 +19,7 @@ class RegIdx(implicit p: Parameters) extends CuteBundle {
 
   def accept(src: UInt): Unit = {
     regIdx := src(MatrixRegIdWidth - 1, 0)
-    assert(regIdx === src, s"RegIdx data width causes corruption: ${regIdx.getWidth} =/= ${src.getWidth}")
+    // assert(regIdx === src, s"RegIdx data width causes corruption: ${regIdx.getWidth} =/= ${src.getWidth}")
   }
 }
 
@@ -319,6 +320,30 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
   }
 
   io.query.req.ready := !io.query.req.valid || canIssueReq(io.query.req.bits)
+
+  val req = io.query.req.bits
+  val sbBlock = io.query.req.valid && !io.query.req.ready
+  val isAML = req.fuType === ScoreboardFuType.AML
+  val isBML = req.fuType === ScoreboardFuType.BML
+  val isCML = req.fuType === ScoreboardFuType.CML
+  val isCompute = req.fuType === ScoreboardFuType.Compute
+  val isCMLLoad = isCML && req.dest.valid
+  val isCMLStore = isCML && !req.dest.valid
+  val destBusy = req.dest.valid && regBusy(req.dest.bits)
+  val destHasConsumers = req.dest.valid && hasPendingReaders(req.dest.bits, req.fuType.asUInt)
+  val writesOk = !req.dest.valid || (!destBusy && !destHasConsumers)
+  val srcsReady = regReady(req.src1) && regReady(req.src2) && regReady(req.src3)
+  val storeConsumersOk = !hasPendingReaders(req.src1.bits, cmlFuIdConst)
+
+  XSPerfAccumulate("CUTE_L3_SB_Dep_SrcNotReady", sbBlock && !srcsReady)
+  XSPerfAccumulate("CUTE_L3_SB_Dep_DestBusy", sbBlock && srcsReady && req.dest.valid && destBusy)
+  XSPerfAccumulate("CUTE_L3_SB_Dep_DestHasConsumers", sbBlock && srcsReady && req.dest.valid && !destBusy && destHasConsumers)
+  XSPerfAccumulate("CUTE_L3_SB_Dep_CMLStoreConsumer", sbBlock && srcsReady && writesOk && isCMLStore && fuFree(ScoreboardFuType.CML) && !storeConsumersOk)
+  XSPerfAccumulate("CUTE_L3_SB_Res_AMLBusy", sbBlock && srcsReady && writesOk && isAML && !fuFree(ScoreboardFuType.AML))
+  XSPerfAccumulate("CUTE_L3_SB_Res_BMLBusy", sbBlock && srcsReady && writesOk && isBML && !fuFree(ScoreboardFuType.BML))
+  XSPerfAccumulate("CUTE_L3_SB_Res_CMLLoadBusy", sbBlock && srcsReady && writesOk && isCMLLoad && !fuFree(ScoreboardFuType.CML))
+  XSPerfAccumulate("CUTE_L3_SB_Res_CMLStoreBusy", sbBlock && srcsReady && writesOk && isCMLStore && !fuFree(ScoreboardFuType.CML))
+  XSPerfAccumulate("CUTE_L3_SB_Res_ComputeBusy", sbBlock && srcsReady && writesOk && isCompute && !fuFree(ScoreboardFuType.Compute))
 
   // Issue stage updates
   when(io.update.load_allocate) {

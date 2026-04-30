@@ -5,6 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
+import utility.XSPerfAccumulate
 
 // AMemoryLoader：加载 A 矩阵数据到 MatrixReg，仅支持矩阵加载（无卷积）
 // 参考 CMemoryLoader 的 FullLoad 实现，按 M、K 维度顺序访存
@@ -89,6 +90,10 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val state = RegInit(s_idle)
     val s_load_idle :: s_load_init :: s_load_working :: s_load_end :: Nil = Enum(4)
     val memoryload_state = RegInit(s_load_idle)
+
+    val amlNotReady = !io.ConfigInfo.MicroTaskReady
+    XSPerfAccumulate("CUTE_L3_ML_AML_FullLoad", amlNotReady && (state =/= s_idle) && (memoryload_state === s_load_working) && Is_FullLoad)
+    XSPerfAccumulate("CUTE_L3_ML_AML_ZeroLoad", amlNotReady && (state =/= s_idle) && (memoryload_state === s_load_working) && Is_ZeroLoad)
 
     val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize)+1).W))
     val TotalRequestSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)).W))

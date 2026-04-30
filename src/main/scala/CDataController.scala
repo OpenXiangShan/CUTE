@@ -5,6 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
+import utility.XSPerfAccumulate
 // import boom.exu.ygjk._
 // import boom.v3.util._
 
@@ -183,6 +184,12 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
     val ReadMatrixRegDataHoldReg = Reg(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数；仅当ReadMatrixRegDataHoldValid为true时被使用，故无需初始化
     val ReadMatrixRegDataHoldValid = RegInit(false.B) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
+
+    val cdcNotReady = !io.ConfigInfo.MicroTaskReady
+    val cdcWorking = (state =/= s_idle) && (calculate_state === s_cal_working)
+    XSPerfAccumulate("CUTE_L3_DC_CDC_WaitComputeGo", cdcNotReady && cdcWorking && (CVectorCount < Max_Caculate_Iter) && !io.ComputeGo)
+    XSPerfAccumulate("CUTE_L3_DC_CDC_WaitMatrixRegValid", cdcNotReady && cdcWorking && (CVectorCount < Max_Caculate_Iter) && io.ComputeGo && !io.Matrix_C.valid)
+    XSPerfAccumulate("CUTE_L3_DC_CDC_WaitResultMatrixDValid", cdcNotReady && cdcWorking && (DVectorCount < Max_Caculate_Iter) && !io.ResultMatrix_D.valid)
 
     //如果是mm_task,且计算状态机是init，那么就开始初始化
     when(state === s_mm_task){

@@ -7,6 +7,7 @@ import cute.Bundles._
 import cute.ElementDataType._
 import difftest._
 import utility.ChiselDB
+import utility.XSPerfAccumulate
 
 class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val ygjkctrl = Flipped(new YGJKControl)
@@ -599,6 +600,23 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   decodedFifo.io.deq.ready := headValid && headReady
 
   val issueFire = decodedFifo.io.deq.fire
+  val stallSlot = headValid && !issueFire
+  val l2SbBlocked = stallSlot && scoreboardReqValid && !scoreboardReqReady
+  val l2ReleaseWaitStore = stallSlot && isRelease && !releaseReady
+  val l2AmlNotReady = stallSlot && scoreboardReqReady && ((isLoad && needA && !io.AML_MicroTask_Config.MicroTaskReady) || (isMzeroTr && !io.AML_MicroTask_Config.MicroTaskReady))
+  val l2BmlNotReady = stallSlot && scoreboardReqReady && (isLoad && needB && !io.BML_MicroTask_Config.MicroTaskReady)
+  val l2CmlNotReady = stallSlot && scoreboardReqReady && ((isLoad && needC && !io.CML_MicroTask_Config.MicroTaskReady) || (isStore && !io.CML_MicroTask_Config.MicroTaskReady) || (isMzeroAcc && !io.CML_MicroTask_Config.MicroTaskReady))
+  val l2DcNotReady = stallSlot && scoreboardReqReady && isMma && (!io.ADC_MicroTask_Config.MicroTaskReady || !io.BDC_MicroTask_Config.MicroTaskReady || !io.CDC_MicroTask_Config.MicroTaskReady)
+
+  XSPerfAccumulate("CUTE_L0_TC_HeadValidSlot", headValid)
+  XSPerfAccumulate("CUTE_L0_TC_IssueFire", issueFire)
+  XSPerfAccumulate("CUTE_L2_TC_ScoreboardBlocked", l2SbBlocked)
+  XSPerfAccumulate("CUTE_L2_TC_ReleasePendingStore", l2ReleaseWaitStore)
+  XSPerfAccumulate("CUTE_L2_TC_AMLNotReady", l2AmlNotReady)
+  XSPerfAccumulate("CUTE_L2_TC_BMLNotReady", l2BmlNotReady)
+  XSPerfAccumulate("CUTE_L2_TC_CMLNotReady", l2CmlNotReady)
+  XSPerfAccumulate("CUTE_L2_TC_DCNotReady", l2DcNotReady)
+
   val issueLoad = issueFire && isLoad
   val issueStore = issueFire && isStore
   val issueMma = issueFire && isMma

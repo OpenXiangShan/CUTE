@@ -5,6 +5,7 @@ import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
 import freechips.rocketchip.util.SeqToAugmentedSeq
+import utility.XSPerfAccumulate
 
 //CMemoryLoader，用于加载C矩阵的数据，供给MatrixReg使用
 //从不同的存储介质中加载数据，供给MatrixReg使用
@@ -121,6 +122,11 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
     val Is_RepeatRowLoad = RegInit(false.B)
+
+    val cmlNotReady = !io.ConfigInfo.MicroTaskReady
+    XSPerfAccumulate("CUTE_L3_ML_CML_FullLoad", cmlNotReady && (state =/= s_idle) && (memoryload_state === s_load_working) && Is_FullLoad)
+    XSPerfAccumulate("CUTE_L3_ML_CML_ZeroLoad", cmlNotReady && (state =/= s_idle) && (memoryload_state === s_load_working) && Is_ZeroLoad)
+    XSPerfAccumulate("CUTE_L3_ML_CML_Store", cmlNotReady && (state =/= s_idle) && (memorystore_state === s_store_working))
 
     val C_DataWidth = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
     val D_DataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))

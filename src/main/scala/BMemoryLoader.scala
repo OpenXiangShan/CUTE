@@ -5,6 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
+import utility.XSPerfAccumulate
 
 //BMemoryLoader，用于加载B矩阵的数据，供给MatrixReg使用
 //从不同的存储介质中加载数据，供给MatrixReg使用
@@ -106,6 +107,9 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val s_load_idle :: s_load_init :: s_load_working :: s_load_end :: Nil = Enum(4)
     val memoryload_state = RegInit(s_load_idle)
     val Tensor_Block_BaseAddr = Reg(UInt(MMUAddrWidth.W)) //分块矩阵的基地址
+
+    val bmlNotReady = !io.ConfigInfo.MicroTaskReady
+    XSPerfAccumulate("CUTE_L3_ML_BML_FullLoad", bmlNotReady && (state =/= s_idle) && (memoryload_state === s_load_working))
 
     val Conherent = RegInit(true.B) //是否一致性访存的标志位，由TaskController提供
 

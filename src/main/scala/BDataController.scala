@@ -4,6 +4,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
+import utility.XSPerfAccumulate
 // import boom.exu.ygjk._
 
 //代表对MatrixTE供数的供数逻辑控制单元，隶属于TE，负责选取 MatrixReg、选取行，向TE供数。
@@ -121,6 +122,11 @@ class BDataController(implicit p: Parameters) extends CuteModule{
 
     val MatrixRegDataHoldReg = RegInit(0.U(MatrixRegData.bits.asUInt.getWidth.W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
     val MatrixRegDataHoldValid = RegInit(false.B) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
+
+    val bdcNotReady = !io.ConfigInfo.MicroTaskReady
+    val bdcWorking = (state =/= s_idle) && (calculate_state === s_cal_working)
+    XSPerfAccumulate("CUTE_L3_DC_BDC_WaitComputeGo", bdcNotReady && bdcWorking && !io.ComputeGo)
+    XSPerfAccumulate("CUTE_L3_DC_BDC_WaitMatrixRegValid", bdcNotReady && bdcWorking && io.ComputeGo && !MatrixRegData.valid && !MatrixRegDataHoldValid)
 
     //如果是mm_task,且计算状态机是init，那么就开始初始化
     when(state === s_mm_task){
