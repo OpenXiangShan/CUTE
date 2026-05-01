@@ -17,8 +17,14 @@ class RegIdx(implicit p: Parameters) extends CuteBundle {
   val regIdx = UInt(MatrixRegIdWidth.W)
 
   def accept(src: UInt): Unit = {
+    // AMU ISA register fields are wider than the local register index width.
+    // Keep low index bits for scoreboard lookup and assert upper bits are zero
+    // when width expansion exists.
     regIdx := src(MatrixRegIdWidth - 1, 0)
-    assert(regIdx === src, s"RegIdx data width causes corruption: ${regIdx.getWidth} =/= ${src.getWidth}")
+    if (src.getWidth > MatrixRegIdWidth) {
+      val highBits = src(src.getWidth - 1, MatrixRegIdWidth)
+      assert(highBits === 0.U, s"RegIdx high bits must be zero after truncation: src width ${src.getWidth}, idx width ${MatrixRegIdWidth}")
+    }
   }
 }
 
