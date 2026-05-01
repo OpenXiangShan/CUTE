@@ -331,19 +331,18 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
   val isCMLStore = isCML && !req.dest.valid
   val destBusy = req.dest.valid && regBusy(req.dest.bits)
   val destHasConsumers = req.dest.valid && hasPendingReaders(req.dest.bits, req.fuType.asUInt)
-  val writesOk = !req.dest.valid || (!destBusy && !destHasConsumers)
   val srcsReady = regReady(req.src1) && regReady(req.src2) && regReady(req.src3)
   val storeConsumersOk = !hasPendingReaders(req.src1.bits, cmlFuIdConst)
 
   XSPerfAccumulate("CUTE_L3_SB_Dep_SrcNotReady", sbBlock && !srcsReady)
-  XSPerfAccumulate("CUTE_L3_SB_Dep_DestBusy", sbBlock && srcsReady && req.dest.valid && destBusy)
-  XSPerfAccumulate("CUTE_L3_SB_Dep_DestHasConsumers", sbBlock && srcsReady && req.dest.valid && !destBusy && destHasConsumers)
-  XSPerfAccumulate("CUTE_L3_SB_Dep_CMLStoreConsumer", sbBlock && srcsReady && writesOk && isCMLStore && fuFree(ScoreboardFuType.CML) && !storeConsumersOk)
-  XSPerfAccumulate("CUTE_L3_SB_Res_AMLBusy", sbBlock && srcsReady && writesOk && isAML && !fuFree(ScoreboardFuType.AML))
-  XSPerfAccumulate("CUTE_L3_SB_Res_BMLBusy", sbBlock && srcsReady && writesOk && isBML && !fuFree(ScoreboardFuType.BML))
-  XSPerfAccumulate("CUTE_L3_SB_Res_CMLLoadBusy", sbBlock && srcsReady && writesOk && isCMLLoad && !fuFree(ScoreboardFuType.CML))
-  XSPerfAccumulate("CUTE_L3_SB_Res_CMLStoreBusy", sbBlock && srcsReady && writesOk && isCMLStore && !fuFree(ScoreboardFuType.CML))
-  XSPerfAccumulate("CUTE_L3_SB_Res_ComputeBusy", sbBlock && srcsReady && writesOk && isCompute && !fuFree(ScoreboardFuType.Compute))
+  XSPerfAccumulate("CUTE_L3_SB_Dep_DestBusy", sbBlock && req.dest.valid && destBusy)
+  XSPerfAccumulate("CUTE_L3_SB_Dep_DestHasConsumers", sbBlock && req.dest.valid && destHasConsumers)
+  XSPerfAccumulate("CUTE_L3_SB_Dep_CMLStoreConsumer", sbBlock && isCMLStore && !storeConsumersOk)
+  XSPerfAccumulate("CUTE_L3_SB_Res_AMLBusy", sbBlock && isAML && !fuFree(ScoreboardFuType.AML))
+  XSPerfAccumulate("CUTE_L3_SB_Res_BMLBusy", sbBlock && isBML && !fuFree(ScoreboardFuType.BML))
+  XSPerfAccumulate("CUTE_L3_SB_Res_CMLLoadBusy", sbBlock && isCMLLoad && !fuFree(ScoreboardFuType.CML))
+  XSPerfAccumulate("CUTE_L3_SB_Res_CMLStoreBusy", sbBlock && isCMLStore && !fuFree(ScoreboardFuType.CML))
+  XSPerfAccumulate("CUTE_L3_SB_Res_ComputeBusy", sbBlock && isCompute && !fuFree(ScoreboardFuType.Compute))
 
   // Issue stage updates
   when(io.update.load_allocate) {

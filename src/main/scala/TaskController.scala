@@ -603,10 +603,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val stallSlot = headValid && !issueFire
   val l2SbBlocked = stallSlot && scoreboardReqValid && !scoreboardReqReady
   val l2ReleaseWaitStore = stallSlot && isRelease && !releaseReady
-  val l2AmlNotReady = stallSlot && scoreboardReqReady && ((isLoad && needA && !io.AML_MicroTask_Config.MicroTaskReady) || (isMzeroTr && !io.AML_MicroTask_Config.MicroTaskReady))
-  val l2BmlNotReady = stallSlot && scoreboardReqReady && (isLoad && needB && !io.BML_MicroTask_Config.MicroTaskReady)
-  val l2CmlNotReady = stallSlot && scoreboardReqReady && ((isLoad && needC && !io.CML_MicroTask_Config.MicroTaskReady) || (isStore && !io.CML_MicroTask_Config.MicroTaskReady) || (isMzeroAcc && !io.CML_MicroTask_Config.MicroTaskReady))
-  val l2DcNotReady = stallSlot && scoreboardReqReady && isMma && (!io.ADC_MicroTask_Config.MicroTaskReady || !io.BDC_MicroTask_Config.MicroTaskReady || !io.CDC_MicroTask_Config.MicroTaskReady)
+  val l2AmlNotReady = stallSlot && ((isLoad && needA && !io.AML_MicroTask_Config.MicroTaskReady) || (isMzeroTr && !io.AML_MicroTask_Config.MicroTaskReady))
+  val l2BmlNotReady = stallSlot && (isLoad && needB && !io.BML_MicroTask_Config.MicroTaskReady)
+  val l2CmlNotReady = stallSlot && ((isLoad && needC && !io.CML_MicroTask_Config.MicroTaskReady) || (isStore && !io.CML_MicroTask_Config.MicroTaskReady) || (isMzeroAcc && !io.CML_MicroTask_Config.MicroTaskReady))
+  val l2DcNotReady = stallSlot && isMma && (!io.ADC_MicroTask_Config.MicroTaskReady || !io.BDC_MicroTask_Config.MicroTaskReady || !io.CDC_MicroTask_Config.MicroTaskReady)
 
   XSPerfAccumulate("CUTE_L0_TC_HeadValidSlot", headValid)
   XSPerfAccumulate("CUTE_L0_TC_IssueFire", issueFire)
@@ -1186,4 +1186,3 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   releaseEventTable.log(releaseIssueEvent, releaseIssueEventEn, "ReleaseIssue", clock, reset)
 }
-
