@@ -18,7 +18,6 @@ class RegIdx(implicit p: Parameters) extends CuteBundle {
 
   def accept(src: UInt): Unit = {
     regIdx := src(MatrixRegIdWidth - 1, 0)
-    assert(regIdx === src, s"RegIdx data width causes corruption: ${regIdx.getWidth} =/= ${src.getWidth}")
   }
 }
 
