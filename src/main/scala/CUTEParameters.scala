@@ -1014,23 +1014,21 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val LoadTaskInfo = (new LoadTask_Info)
 
-    val StoreTaskInfo = (new Bundle{
-        val Is_ZeroStore = (Bool())//暂时没有传递的参数
-    })
-
     val Conherent                           = (Bool())      //是否需要coherent
     val Is_Transpose                        = (Bool())      //是否需要转置
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
 
-    val IsLoadMicroTask                     = (Bool())      //是否是Load任务
-    val IsStoreMicroTask                    = (Bool())      //是否是Store任务
+    val LoadMicroTaskReady                  = Flipped(Bool())//可配置下一个Load任务
+    val LoadMicroTaskValid                  = (Bool())       //当前Load任务的配置信息有效
+    val LoadMicroTaskEndValid               = Flipped(Bool())//已完成当前Load任务
+    val LoadMicroTaskEndReady               = (Bool())       //已知晓当前Load任务完成
 
-    val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
-    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
-    val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
-    val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+    val StoreMicroTaskReady                 = Flipped(Bool())//可配置下一个Store任务
+    val StoreMicroTaskValid                 = (Bool())       //当前Store任务的配置信息有效
+    val StoreMicroTaskEndValid              = Flipped(Bool())//已完成当前Store任务
+    val StoreMicroTaskEndReady              = (Bool())       //已知晓当前Store任务完成
 
     val pc                                = Option.when(EnableDifftest) (UInt(64.W))
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
@@ -1117,9 +1115,10 @@ class CMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
         val BankAddr = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W)))))
         val Data = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(CMatrixRegEntryBitSize.W)))))
     })
-
-    val ReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
-    val ReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val LoadReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val StoreReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val LoadReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val StoreReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     // val Chosen = Input(Bool())
 }
 
@@ -1387,11 +1386,12 @@ class MatrixRegTask(implicit p: Parameters) extends CuteBundle{
 
 case object LocalMMUTaskType extends Field[UInt]{
     val TaskTypeBitWidth = 3
-    val TaskTypeMax = 5
+    val TaskTypeMax = 6
     val AFirst = 0.U(TaskTypeBitWidth.W)
     val BFirst = 1.U(TaskTypeBitWidth.W)
-    val CFirst = 2.U(TaskTypeBitWidth.W)
-    val BScaleFirst = 3.U(TaskTypeBitWidth.W)
-    val AScaleFirst = 4.U(TaskTypeBitWidth.W)
+    val CLoadFirst = 2.U(TaskTypeBitWidth.W)
+    val CStoreFirst = 3.U(TaskTypeBitWidth.W)
+    val BScaleFirst = 4.U(TaskTypeBitWidth.W)
+    val AScaleFirst = 5.U(TaskTypeBitWidth.W)
     // val DFirst = 3.U(TaskTypeBitWidth.W)
 }

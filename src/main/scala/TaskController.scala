@@ -150,16 +150,15 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.CML_MicroTask_Config.ApplicationTensor_C := 0.U.asTypeOf(io.CML_MicroTask_Config.ApplicationTensor_C)
   io.CML_MicroTask_Config.ApplicationTensor_D := 0.U.asTypeOf(io.CML_MicroTask_Config.ApplicationTensor_D)
   io.CML_MicroTask_Config.LoadTaskInfo := 0.U.asTypeOf(io.CML_MicroTask_Config.LoadTaskInfo)
-  io.CML_MicroTask_Config.StoreTaskInfo := 0.U.asTypeOf(io.CML_MicroTask_Config.StoreTaskInfo)
   io.CML_MicroTask_Config.Conherent := false.B
   io.CML_MicroTask_Config.Is_Transpose := false.B
   io.CML_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.CML_MicroTask_Config.MatrixRegTensor_N := 0.U
   io.CML_MicroTask_Config.MatrixRegId := 0.U
-  io.CML_MicroTask_Config.IsLoadMicroTask := false.B
-  io.CML_MicroTask_Config.IsStoreMicroTask := false.B
-  io.CML_MicroTask_Config.MicroTaskValid := false.B
-  io.CML_MicroTask_Config.MicroTaskEndReady := false.B
+  io.CML_MicroTask_Config.LoadMicroTaskValid := false.B
+  io.CML_MicroTask_Config.LoadMicroTaskEndReady := false.B
+  io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
+  io.CML_MicroTask_Config.StoreMicroTaskEndReady := false.B
   if (EnableDifftest) {
     io.CML_MicroTask_Config.pc.get := 0.U
     io.CML_MicroTask_Config.coreid.get := 0.U
@@ -357,34 +356,35 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     loadBFinishEventEn := true.B
   }
 
-  io.CML_MicroTask_Config.MicroTaskEndReady := pendingLoadC || pendingStore
-  when(io.CML_MicroTask_Config.MicroTaskEndValid) {
-    when(pendingLoadC) {
-      scoreboard.io.update.load_finish_c := true.B
-      scoreboard.io.update.load_finish_c_reg := pendingLoadCReg
-      pendingLoadC := false.B
-      loadCFinishEvent.eventType := 2.U
-      loadCFinishEvent.regId := pendingLoadCReg
-      loadCFinishEvent.fifoIdx := pendingLoadCFifoIdx
-      loadCFinishEvent.needMask := "b100".U
-      loadCFinishEvent.row := pendingLoadRow
-      loadCFinishEvent.column := pendingLoadColumn
-      loadCFinishEvent.transpose := pendingLoadTranspose
-      loadCFinishEvent.isAcc := true.B
-      loadCFinishEventEn := true.B
-    }.elsewhen(pendingStore) {
-      scoreboard.io.update.store_finish := true.B
-      scoreboard.io.update.store_finish_c_reg := pendingStoreReg
-      pendingStore := false.B
-      storeFinishEvent.eventType := 1.U
-      storeFinishEvent.regId := pendingStoreReg
-      storeFinishEvent.fifoIdx := pendingStoreFifoIdx
-      storeFinishEvent.row := pendingStoreRow
-      storeFinishEvent.column := pendingStoreColumn
-      storeFinishEvent.transpose := pendingStoreTranspose
-      storeFinishEvent.isAcc := pendingStoreIsAcc
-      storeFinishEventEn := true.B
-    }
+  io.CML_MicroTask_Config.LoadMicroTaskEndReady := pendingLoadC
+  when(pendingLoadC && io.CML_MicroTask_Config.LoadMicroTaskEndValid) {
+    scoreboard.io.update.load_finish_c := true.B
+    scoreboard.io.update.load_finish_c_reg := pendingLoadCReg
+    pendingLoadC := false.B
+    loadCFinishEvent.eventType := 2.U
+    loadCFinishEvent.regId := pendingLoadCReg
+    loadCFinishEvent.fifoIdx := pendingLoadCFifoIdx
+    loadCFinishEvent.needMask := "b100".U
+    loadCFinishEvent.row := pendingLoadRow
+    loadCFinishEvent.column := pendingLoadColumn
+    loadCFinishEvent.transpose := pendingLoadTranspose
+    loadCFinishEvent.isAcc := true.B
+    loadCFinishEventEn := true.B
+  }
+
+  io.CML_MicroTask_Config.StoreMicroTaskEndReady := pendingStore
+  when(pendingStore && io.CML_MicroTask_Config.StoreMicroTaskEndValid) {
+    scoreboard.io.update.store_finish := true.B
+    scoreboard.io.update.store_finish_c_reg := pendingStoreReg
+    pendingStore := false.B
+    storeFinishEvent.eventType := 1.U
+    storeFinishEvent.regId := pendingStoreReg
+    storeFinishEvent.fifoIdx := pendingStoreFifoIdx
+    storeFinishEvent.row := pendingStoreRow
+    storeFinishEvent.column := pendingStoreColumn
+    storeFinishEvent.transpose := pendingStoreTranspose
+    storeFinishEvent.isAcc := pendingStoreIsAcc
+    storeFinishEventEn := true.B
   }
 
   io.ADC_MicroTask_Config.MicroTaskEndReady := pendingComputeA
@@ -523,7 +523,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     when(isLoad) {
       scoreboardReqValid := true.B
       val fuType = MuxCase(ScoreboardFuType.AML, Seq(
-        lsuInfo.isacc -> ScoreboardFuType.CML,
+        lsuInfo.isacc -> ScoreboardFuType.CMLLoad,
         lsuInfo.isA -> ScoreboardFuType.AML,
         lsuInfo.isB -> ScoreboardFuType.BML
       ))
@@ -550,14 +550,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     }
     when(isArith) {
       scoreboardReqValid := true.B
-      scoreboardReq.fuType := Mux(arithDestIsAcc, ScoreboardFuType.CML, ScoreboardFuType.AML)
+      scoreboardReq.fuType := Mux(arithDestIsAcc, ScoreboardFuType.CMLLoad, ScoreboardFuType.AML)
       scoreboardReq.dest.valid := true.B
       scoreboardReq.dest.bits.is_acc := arithDestIsAcc
       scoreboardReq.dest.bits.accept(arithInfo.md)
     }
     when(isStore) {
       scoreboardReqValid := true.B
-      scoreboardReq.fuType := ScoreboardFuType.CML
+      scoreboardReq.fuType := ScoreboardFuType.CMLStore
       scoreboardReq.src1.valid := true.B
       scoreboardReq.src1.bits.is_acc := lsuInfo.isacc
       scoreboardReq.src1.bits.accept(lsuInfo.ms)
@@ -570,8 +570,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val mmaUnitsReady = io.ADC_MicroTask_Config.MicroTaskReady &&
     io.BDC_MicroTask_Config.MicroTaskReady &&
     io.CDC_MicroTask_Config.MicroTaskReady
-  val storeUnitsReady = io.CML_MicroTask_Config.MicroTaskReady
-  val zeroAccUnitsReady = io.CML_MicroTask_Config.MicroTaskReady
+  val storeUnitsReady = io.CML_MicroTask_Config.StoreMicroTaskReady
+  val zeroAccUnitsReady = io.CML_MicroTask_Config.LoadMicroTaskReady
   val zeroTrUnitsReady = io.AML_MicroTask_Config.MicroTaskReady
 
   val needA = isLoad && lsuInfo.isA
@@ -580,7 +580,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   val loadUnitsReady = (!needA || io.AML_MicroTask_Config.MicroTaskReady) &&
     (!needB || io.BML_MicroTask_Config.MicroTaskReady) &&
-    (!needC || io.CML_MicroTask_Config.MicroTaskReady)
+    (!needC || io.CML_MicroTask_Config.LoadMicroTaskReady)
 
   // val storeReadersEmpty = scoreboard.io.debug.c_reg_reader_counts.map(_ === 0.U).reduce(_ && _)
   val releaseReady = !pendingStore // && storeReadersEmpty
@@ -691,9 +691,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.CML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
         io.CML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
       }
-      io.CML_MicroTask_Config.IsLoadMicroTask := true.B
-      io.CML_MicroTask_Config.IsStoreMicroTask := false.B
-      io.CML_MicroTask_Config.MicroTaskValid := true.B
+      io.CML_MicroTask_Config.LoadMicroTaskValid := true.B
+      io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
       io.CML_MicroTask_Config.Is_Transpose := lsuInfo.transpose
       
       pendingLoadC := true.B
@@ -745,9 +744,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
     io.CML_MicroTask_Config.MatrixRegTensor_N := cuteParams.Tensor_MN.U
     io.CML_MicroTask_Config.MatrixRegId := regIdx
-    io.CML_MicroTask_Config.IsLoadMicroTask := true.B
-    io.CML_MicroTask_Config.IsStoreMicroTask := false.B
-    io.CML_MicroTask_Config.MicroTaskValid := true.B
+    io.CML_MicroTask_Config.LoadMicroTaskValid := true.B
+    io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
     io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
     io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
     io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
@@ -1092,17 +1090,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
     ))
     
-    io.CML_MicroTask_Config.StoreTaskInfo.Is_ZeroStore := false.B
     io.CML_MicroTask_Config.Conherent := true.B
     io.CML_MicroTask_Config.Is_Transpose := lsuInfo.transpose
     io.CML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
     io.CML_MicroTask_Config.MatrixRegTensor_N := lsuInfo.column
     io.CML_MicroTask_Config.MatrixRegId := regIdx
 
-    io.CML_MicroTask_Config.IsLoadMicroTask := false.B
-    io.CML_MicroTask_Config.IsStoreMicroTask := true.B
-
-    io.CML_MicroTask_Config.MicroTaskValid := true.B
+    io.CML_MicroTask_Config.LoadMicroTaskValid := false.B
+    io.CML_MicroTask_Config.StoreMicroTaskValid := true.B
     if (EnableDifftest) {
       io.CML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
       io.CML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
@@ -1168,4 +1163,3 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   releaseEventTable.log(releaseIssueEvent, releaseIssueEventEn, "ReleaseIssue", clock, reset)
 }
-

@@ -11,104 +11,81 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         val BLocalMMUIO = (new LocalMMUIO)
         val BSLocalMMUIO = (new LocalMMUIO)
         val ASLocalMMUIO = (new LocalMMUIO)
-        val CLocalMMUIO = (new LocalMMUIO)
+        val CLoadLocalMMUIO = (new LocalMMUIO)
+        val CStoreLocalMMUIO = (new LocalMMUIO)
         val LastLevelCacheTLIO = Flipped(new MMU2TLIO)
     })
 
-    //比较低的性能方式，轮询的方式，但是doublebuffer是可以的
-    //访存流的设计，可以通过设计一些标志位来实现～！
-    //设计当前访存流处于哪种优先级。通过一些参数可以控制这个访存流。
-
-    val FirstRequestIndex = RegInit(0.U(LocalMMUTaskType.TaskTypeBitWidth.W))// 有8个来源 只有3个请求来源，2位就够用了
-    // //printf(p"FirstRequestIndex ${FirstRequestIndex}\n")
-    //选择一个离FirstRequestIndex最近的请求
+    val FirstRequestIndex = RegInit(0.U(LocalMMUTaskType.TaskTypeBitWidth.W))
     val FirstIndex = FirstRequestIndex
     val SecIndex = WrapInc(FirstIndex, LocalMMUTaskType.TaskTypeMax)
     val ThirdIndex = WrapInc(SecIndex, LocalMMUTaskType.TaskTypeMax)
     val FourthIndex = WrapInc(ThirdIndex, LocalMMUTaskType.TaskTypeMax)
     val FifthIndex = WrapInc(FourthIndex, LocalMMUTaskType.TaskTypeMax)
-    // val ForthIndex = WrapInc(ThirdIndex, LocalMMUTaskType.TaskTypeMax)
+    val SixthIndex = WrapInc(FifthIndex, LocalMMUTaskType.TaskTypeMax)
 
-    //假设目前只有一个LLC的访存端口。所以只能选择一个LLC的访存请求，进行服务。
-    //循环服务和连续顺序服务，要考虑Cache连续读和Memory连续读的性能啊！！
-    //如果这样循环发出请求，可能会导致访存性能下降了，尤其是Memory，他是有bank切换和line切换的代价的！！
-    //这里先写一个循环的，后面再修改成局部连续的
-    val AllRequestValid = Cat(io.ASLocalMMUIO.Request.valid, io.BSLocalMMUIO.Request.valid, io.CLocalMMUIO.Request.valid, io.BLocalMMUIO.Request.valid, io.ALocalMMUIO.Request.valid)
+    // Bit index follows LocalMMUTaskType encoding directly.
+    val AllRequestValid = Cat(
+      io.ASLocalMMUIO.Request.valid,
+      io.BSLocalMMUIO.Request.valid,
+      io.CStoreLocalMMUIO.Request.valid,
+      io.CLoadLocalMMUIO.Request.valid,
+      io.BLocalMMUIO.Request.valid,
+      io.ALocalMMUIO.Request.valid
+    )
     val HasRequest = AllRequestValid.orR
     val ChoseIndex_0 = Mux(AllRequestValid(FirstIndex), FirstIndex,
                         Mux(AllRequestValid(SecIndex), SecIndex,
                         Mux(AllRequestValid(ThirdIndex), ThirdIndex,
                         Mux(AllRequestValid(FourthIndex), FourthIndex,
-                        Mux(AllRequestValid(FifthIndex), FifthIndex, LocalMMUTaskType.TaskTypeMax.U)))))
+                        Mux(AllRequestValid(FifthIndex), FifthIndex,
+                        Mux(AllRequestValid(SixthIndex), SixthIndex, LocalMMUTaskType.TaskTypeMax.U))))))
 
     FirstRequestIndex := WrapInc(ChoseIndex_0, LocalMMUTaskType.TaskTypeMax)
-    
-    //如果是AFirst，就服务A，如果是B，就服务B，如果是C，就服务C
-
-    //这里的设计是，只有一个LLC的访存端口，所以只能选择一个访存请求，进行服务。
-    //如果有多个访存端口，就可以同时服务多个访存请求。
 
     io.ALocalMMUIO.Request.ready := false.B
     io.BLocalMMUIO.Request.ready := false.B
     io.ASLocalMMUIO.Request.ready := false.B
     io.BSLocalMMUIO.Request.ready := false.B
-    io.CLocalMMUIO.Request.ready := false.B
+    io.CLoadLocalMMUIO.Request.ready := false.B
+    io.CStoreLocalMMUIO.Request.ready := false.B
+
     io.ALocalMMUIO.ConherentRequsetSourceID.valid := false.B
     io.BLocalMMUIO.ConherentRequsetSourceID.valid := false.B
     io.ASLocalMMUIO.ConherentRequsetSourceID.valid := false.B
     io.BSLocalMMUIO.ConherentRequsetSourceID.valid := false.B
-    io.CLocalMMUIO.ConherentRequsetSourceID.valid := false.B
+    io.CLoadLocalMMUIO.ConherentRequsetSourceID.valid := false.B
+    io.CStoreLocalMMUIO.ConherentRequsetSourceID.valid := false.B
+
     io.ALocalMMUIO.ConherentRequsetSourceID.bits := DontCare
     io.BLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
-    io.CLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
     io.ASLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
     io.BSLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
+    io.CLoadLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
+    io.CStoreLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
+
     io.ALocalMMUIO.nonConherentRequsetSourceID.valid := false.B
     io.BLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
     io.ASLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
     io.BSLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
-    io.CLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
+    io.CLoadLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
+    io.CStoreLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
+
     io.ALocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
     io.BLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
     io.ASLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
     io.BSLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
-    io.CLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
+    io.CLoadLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
+    io.CStoreLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
 
-    // io.DLocalMMUIO.Request.ready := false.B
-    //如果sourceid是valid，则LLC可以接受这个请求，开始送入到LLC的访存端口
-    //这里得到谁先服务，送入LLC的访存端口，如果这里需要切流水也简单,提前锁定sourceid即可，将TLnode内的sourceid锁定的逻辑放到这里来写
-    // val sourceid2port = VecInit(Seq.fill(LLCSourceMaxNum)(RegInit(0.U(log2Ceil(LocalMMUTaskType.TaskTypeMax).W))))
     val sourceid2port = RegInit(VecInit(Seq.fill(LLCSourceMaxNum)(0.U(log2Ceil(LocalMMUTaskType.TaskTypeMax).W))))
-    //输出一下sourceid2port的数据类型
-    println("[LocalMMU] sourceid2port: " + sourceid2port)
-
 
     io.LastLevelCacheTLIO.Request.valid := false.B
     io.LastLevelCacheTLIO.Request.bits := DontCare
     io.LastLevelCacheTLIO.Response.ready := false.B
-    // //输出ABC的信息和valid和hasrequest
-    // printf(p"ALocalMMUIO ${io.ALocalMMUIO.Request.bits} request_valid ${io.ALocalMMUIO.Request.valid} ${io.ALocalMMUIO.Request.ready} ${io.ALocalMMUIO.Response}\n")
-    // printf(p"BLocalMMUIO ${io.BLocalMMUIO.Request.bits} request_valid ${io.BLocalMMUIO.Request.valid} ${io.BLocalMMUIO.Request.ready} ${io.BLocalMMUIO.Response}\n")
-    // printf(p"CLocalMMUIO ${io.CLocalMMUIO.Request.bits} request_valid ${io.CLocalMMUIO.Request.valid} ${io.CLocalMMUIO.Request.ready} ${io.CLocalMMUIO.Response}\n")
-    // //输出io.LastLevelCacheTLIO.ConherentRequsetSourceID
-    // printf(p"ConherentRequsetSourceID ${io.LastLevelCacheTLIO.ConherentRequsetSourceID}\n")
-    // printf(p"HasRequest ${HasRequest}\n")
-    // printf(p"ChoseIndex_0 ${ChoseIndex_0}\n")
-    // val last_sourceid = RegInit(0.U(LLCSourceMaxNumBitSize.W))
-    
-
-    //如果HasRequest，输出其他两个信息
-    when(HasRequest)
-    {
-        //输出io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid
-        //输出io.LastLevelCacheTLIO.Request.ready
-        // printf(p"[localmmu]io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid ${io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid} io.LastLevelCacheTLIO.Request.ready ${io.LastLevelCacheTLIO.Request.ready}\n")
-    }
 
     when(io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid && HasRequest)
     {
-        // printf(p"last_sourceid ${last_sourceid} last_sourceid2port ${sourceid2port(last_sourceid)}\n")
-        // last_sourceid := io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits
         switch(ChoseIndex_0) {
             is(LocalMMUTaskType.AFirst) {
                 io.ALocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
@@ -116,7 +93,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.ALocalMMUIO.Request.bits.RequestVirtualAddr
                 io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := false.B
                 sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.AFirst
-                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // A matrix is tile matrix register
+                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
             }
             is(LocalMMUTaskType.AScaleFirst){
                 io.ASLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
@@ -132,7 +109,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.BLocalMMUIO.Request.bits.RequestVirtualAddr
                 io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := false.B
                 sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.BFirst
-                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B // B matrix is tile matrix register
+                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
             }
             is(LocalMMUTaskType.BScaleFirst) {
                 io.BSLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
@@ -142,18 +119,26 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.BScaleFirst
                 io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
             }
-            is(LocalMMUTaskType.CFirst) {
-                io.CLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
-                io.CLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
-                io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.CLocalMMUIO.Request.bits.RequestVirtualAddr
-                io.LastLevelCacheTLIO.Request.bits.RequestData := io.CLocalMMUIO.Request.bits.RequestData
-                io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.CLocalMMUIO.Request.bits.RequestType_isWrite
-                sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.CFirst
-                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
+            is(LocalMMUTaskType.CLoadFirst) {
+                io.CLoadLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
+                io.CLoadLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
+                io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.CLoadLocalMMUIO.Request.bits.RequestVirtualAddr
+                io.LastLevelCacheTLIO.Request.bits.RequestData := io.CLoadLocalMMUIO.Request.bits.RequestData
+                io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.CLoadLocalMMUIO.Request.bits.RequestType_isWrite
+                sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.CLoadFirst
+                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := true.B
+            }
+            is(LocalMMUTaskType.CStoreFirst) {
+                io.CStoreLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
+                io.CStoreLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
+                io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.CStoreLocalMMUIO.Request.bits.RequestVirtualAddr
+                io.LastLevelCacheTLIO.Request.bits.RequestData := io.CStoreLocalMMUIO.Request.bits.RequestData
+                io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.CStoreLocalMMUIO.Request.bits.RequestType_isWrite
+                sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.CStoreFirst
+                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := true.B
             }
         }
 
-        // TODO: Support Request Mask
         io.LastLevelCacheTLIO.Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
         io.LastLevelCacheTLIO.Request.bits.RequestConherent := true.B
         io.LastLevelCacheTLIO.Request.bits.RequestSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits
@@ -164,12 +149,15 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     io.BLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
     io.ASLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
     io.BSLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
-    io.CLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
+    io.CLoadLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
+    io.CStoreLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
+
     io.ALocalMMUIO.Response.valid := false.B
     io.BLocalMMUIO.Response.valid := false.B
     io.ASLocalMMUIO.Response.valid := false.B
     io.BSLocalMMUIO.Response.valid := false.B
-    io.CLocalMMUIO.Response.valid := false.B
+    io.CLoadLocalMMUIO.Response.valid := false.B
+    io.CStoreLocalMMUIO.Response.valid := false.B
 
     switch(sourceid2port(io.LastLevelCacheTLIO.Response.bits.ReseponseSourceID)) {
         is(LocalMMUTaskType.AFirst) {
@@ -188,9 +176,13 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
             io.BSLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
             io.LastLevelCacheTLIO.Response.ready := io.BSLocalMMUIO.Response.ready
         }
-        is(LocalMMUTaskType.CFirst) {
-            io.CLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
-            io.LastLevelCacheTLIO.Response.ready := io.CLocalMMUIO.Response.ready
+        is(LocalMMUTaskType.CLoadFirst) {
+            io.CLoadLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
+            io.LastLevelCacheTLIO.Response.ready := io.CLoadLocalMMUIO.Response.ready
+        }
+        is(LocalMMUTaskType.CStoreFirst) {
+            io.CStoreLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
+            io.LastLevelCacheTLIO.Response.ready := io.CStoreLocalMMUIO.Response.ready
         }
     }
 
@@ -198,6 +190,11 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     XSPerfAccumulate("CUTE_MMU_A_wr_request", io.ALocalMMUIO.Request.fire & io.ALocalMMUIO.Request.bits.RequestType_isWrite)
     XSPerfAccumulate("CUTE_MMU_B_rd_request", io.BLocalMMUIO.Request.fire & !io.BLocalMMUIO.Request.bits.RequestType_isWrite)
     XSPerfAccumulate("CUTE_MMU_B_wr_request", io.BLocalMMUIO.Request.fire & io.BLocalMMUIO.Request.bits.RequestType_isWrite)
-    XSPerfAccumulate("CUTE_MMU_C_rd_request", io.CLocalMMUIO.Request.fire & !io.CLocalMMUIO.Request.bits.RequestType_isWrite)
-    XSPerfAccumulate("CUTE_MMU_C_wr_request", io.CLocalMMUIO.Request.fire & io.CLocalMMUIO.Request.bits.RequestType_isWrite)
+
+    val cLoadRd = io.CLoadLocalMMUIO.Request.fire & !io.CLoadLocalMMUIO.Request.bits.RequestType_isWrite
+    val cStoreRd = io.CStoreLocalMMUIO.Request.fire & !io.CStoreLocalMMUIO.Request.bits.RequestType_isWrite
+    val cLoadWr = io.CLoadLocalMMUIO.Request.fire & io.CLoadLocalMMUIO.Request.bits.RequestType_isWrite
+    val cStoreWr = io.CStoreLocalMMUIO.Request.fire & io.CStoreLocalMMUIO.Request.bits.RequestType_isWrite
+    XSPerfAccumulate("CUTE_MMU_C_rd_request", cLoadRd || cStoreRd)
+    XSPerfAccumulate("CUTE_MMU_C_wr_request", cLoadWr || cStoreWr)
 }
