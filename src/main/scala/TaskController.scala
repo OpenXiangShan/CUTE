@@ -243,7 +243,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   class ReleaseEventEntry extends Bundle {
     val eventType = UInt(2.W)
-    val token = UInt(5.W)
+    val msync = UInt(5.W)
     val slotId = UInt(SlotIdxWidth.W)
     val seqId = UInt(SeqIdWidth.W)
   }
@@ -949,10 +949,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       is(TaskCtrlOpKind.Release) {
         val issueRelease = issueCtrl.data.asTypeOf(new AmuReleaseIO)
         io.ygjkctrl.mrelease.valid := true.B
-        io.ygjkctrl.mrelease.bits.tokenRd(issueRelease.tokenRd) := true.B
+        io.ygjkctrl.mrelease.bits.msyncRd(issueRelease.msyncRd) := true.B
 
         releaseIssueEvent.eventType := 0.U
-        releaseIssueEvent.token := issueRelease.tokenRd
+        releaseIssueEvent.msync := issueRelease.msyncRd
         releaseIssueEvent.slotId := issueSlotIdx
         releaseIssueEvent.seqId := issueSlot.seqId
         releaseIssueEventEn := true.B
