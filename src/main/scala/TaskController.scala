@@ -210,7 +210,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   class ReleaseEventEntry extends Bundle {
     val eventType = UInt(2.W)
-    val token = UInt(5.W)
+    val msync = UInt(5.W)
   }
 
   private val loadEventTable = ChiselDB.createTable("CUTELoadEvent", new LoadEventEntry, basicDB = true)
@@ -1133,9 +1133,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   when(issueRelease) {
     io.ygjkctrl.mrelease.valid := true.B
-    io.ygjkctrl.mrelease.bits.tokenRd(releaseInfo.tokenRd) := true.B
+    io.ygjkctrl.mrelease.bits.msyncRd(releaseInfo.msyncRd) := true.B
     releaseIssueEvent.eventType := 0.U
-    releaseIssueEvent.token := releaseInfo.tokenRd
+    releaseIssueEvent.msync := releaseInfo.msyncRd
     releaseIssueEventEn := true.B
   }
 
@@ -1168,4 +1168,3 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   releaseEventTable.log(releaseIssueEvent, releaseIssueEventEn, "ReleaseIssue", clock, reset)
 }
-
