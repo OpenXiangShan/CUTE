@@ -7,9 +7,10 @@ import org.chipsalliance.cde.config._
 object ScoreboardConsts {
   val NumAMLUnits = 1
   val NumBMLUnits = 1
-  val NumCMLUnits = 1
+  val NumCMLLoadUnits = 1
+  val NumCMLStoreUnits = 1
   val NumComputeUnits = 1
-  val TotalUnits = NumAMLUnits + NumBMLUnits + NumCMLUnits + NumComputeUnits
+  val TotalUnits = NumAMLUnits + NumBMLUnits + NumCMLLoadUnits + NumCMLStoreUnits + NumComputeUnits
 }
 
 class RegIdx(implicit p: Parameters) extends CuteBundle {
@@ -54,7 +55,7 @@ class QueryReq(implicit p: Parameters) extends CuteBundle {
 }
 
 object ScoreboardFuType extends ChiselEnum {
-  val None, AML, BML, CML, Compute = Value
+  val None, AML, BML, CMLLoad, CMLStore, Compute = Value
 }
 
 // Scoreboard的查询接口：用于依赖检查（使用Valid-Ready握手）
@@ -123,7 +124,8 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
   private val noneFuId = ScoreboardFuType.None.asUInt
   private val amlFuIdConst = ScoreboardFuType.AML.asUInt
   private val bmlFuIdConst = ScoreboardFuType.BML.asUInt
-  private val cmlFuIdConst = ScoreboardFuType.CML.asUInt
+  private val cmlLoadFuIdConst = ScoreboardFuType.CMLLoad.asUInt
+  private val cmlStoreFuIdConst = ScoreboardFuType.CMLStore.asUInt
   private val computeFuIdConst = ScoreboardFuType.Compute.asUInt
 
   private val abRegStatus = RegInit(VecInit(Seq.fill(ABMatrixRegCount)(0.U.asTypeOf(new RegResultStatus(fuIdWidth)))))
@@ -136,7 +138,8 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
 
   private def amlStatus: FuncUnitStatus = statusOf(ScoreboardFuType.AML)
   private def bmlStatus: FuncUnitStatus = statusOf(ScoreboardFuType.BML)
-  private def cmlStatus: FuncUnitStatus = statusOf(ScoreboardFuType.CML)
+  private def cmlLoadStatus: FuncUnitStatus = statusOf(ScoreboardFuType.CMLLoad)
+  private def cmlStoreStatus: FuncUnitStatus = statusOf(ScoreboardFuType.CMLStore)
   private def computeStatus: FuncUnitStatus = statusOf(ScoreboardFuType.Compute)
 
   private def fuBusy(fuType: ScoreboardFuType.Type): Bool = statusOf(fuType).busy
@@ -145,10 +148,10 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
   private def computeStatuses: Seq[FuncUnitStatus] =
     if (NumComputeUnits > 0) Seq(computeStatus) else Seq.empty
 
-  private def cmlStatuses: Seq[FuncUnitStatus] =
-    if (NumCMLUnits > 0) Seq(cmlStatus) else Seq.empty
+  private def cmlStoreStatuses: Seq[FuncUnitStatus] =
+    if (NumCMLStoreUnits > 0) Seq(cmlStoreStatus) else Seq.empty
 
-  require(NumAMLUnits == 1 && NumBMLUnits == 1 && NumCMLUnits == 1 && NumComputeUnits == 1,
+  require(NumAMLUnits == 1 && NumBMLUnits == 1 && NumCMLLoadUnits == 1 && NumCMLStoreUnits == 1 && NumComputeUnits == 1,
     "Scoreboard FU ID encoding assumes a single instance per functional unit type")
 
   private val SrcAIdx = 0
@@ -192,8 +195,8 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
         val src = fu.srcs(SrcCIdx)
         fu.busy && (fuId =/= excludeFuId) && src.valid && src.readPending && (toAccIdx(src.reg.regIdx) === target)
       }
-      val fromCmlStore = cmlStatuses.map { fu =>
-        val fuId = cmlFuIdConst
+      val fromCmlStore = cmlStoreStatuses.map { fu =>
+        val fuId = cmlStoreFuIdConst
         val src = fu.srcs(SrcCIdx)
         src.valid && src.readPending && (toAccIdx(src.reg.regIdx) === target) && (fuId =/= excludeFuId)
       }
@@ -230,7 +233,7 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
         srcC.waitFu := noneFuId
       }
     }
-    cmlStatuses.foreach { fu =>
+    cmlStoreStatuses.foreach { fu =>
       val srcC = fu.srcs(SrcCIdx)
       when(srcC.valid && (srcC.waitFu === producerFuId) && (toAccIdx(srcC.reg.regIdx) === target)) {
         srcC.ready := true.B
@@ -280,10 +283,9 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
   private def canIssueReq(req: QueryReq): Bool = {
     val isAML = req.fuType === ScoreboardFuType.AML
     val isBML = req.fuType === ScoreboardFuType.BML
-    val isCML = req.fuType === ScoreboardFuType.CML
     val isCompute = req.fuType === ScoreboardFuType.Compute
-    val isCMLLoad = isCML && req.dest.valid
-    val isCMLStore = isCML && !req.dest.valid
+    val isCMLLoad = req.fuType === ScoreboardFuType.CMLLoad
+    val isCMLStore = req.fuType === ScoreboardFuType.CMLStore
     val recognized = req.fuType =/= ScoreboardFuType.None
 
     val destReg = req.dest.bits
@@ -300,16 +302,16 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
     val loadChecks =
       (isAML && fuFree(ScoreboardFuType.AML)) ||
       (isBML && fuFree(ScoreboardFuType.BML)) ||
-      (isCMLLoad && fuFree(ScoreboardFuType.CML))
+      (isCMLLoad && fuFree(ScoreboardFuType.CMLLoad))
 
     val computeChecks =
       isCompute &&
         fuFree(ScoreboardFuType.Compute)
 
-    val storeConsumersOk = !hasPendingReaders(req.src1.bits, cmlFuIdConst)
+    val storeConsumersOk = !hasPendingReaders(req.src1.bits, cmlStoreFuIdConst)
     val storeChecks =
       isCMLStore &&
-        fuFree(ScoreboardFuType.CML) &&
+        fuFree(ScoreboardFuType.CMLStore) &&
         storeConsumersOk
 
     val issueOk = (loadChecks || computeChecks || storeChecks) && srcsReady && writesOk
@@ -346,14 +348,14 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
     }
 
     when(io.update.load_alloc_has_c) {
-      val fu = cmlStatus
+      val fu = cmlLoadStatus
       assert(!fu.busy, "CML load allocation while busy")
       fu.busy := true.B
       fu.fifoIdx := fifoIdx
       fu.destValid := true.B
       fu.destReg := io.update.load_alloc_c_reg
       fu.srcs.foreach(resetSrcStatus)
-      reserveCRegister(io.update.load_alloc_c_reg, cmlFuIdConst)
+      reserveCRegister(io.update.load_alloc_c_reg, cmlLoadFuIdConst)
     }
   }
 
@@ -417,7 +419,7 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
   }
 
   when(io.update.store_issue) {
-    val fu = cmlStatus
+    val fu = cmlStoreStatus
     val srcC = fu.srcs(SrcCIdx)
     when(!fu.busy && !srcC.valid) {
       fu.busy := true.B
@@ -486,11 +488,11 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
 
   when(io.update.load_finish_c) {
     val regIdx = io.update.load_finish_c_reg
-    val fu = cmlStatus
+    val fu = cmlLoadStatus
     when(fu.busy && fu.destValid && (fu.destReg === regIdx)) {
       fu.destValid := false.B
       fu.busy := false.B
-      releaseCRegister(regIdx, cmlFuIdConst)
+      releaseCRegister(regIdx, cmlLoadFuIdConst)
     }
   }
 
@@ -507,7 +509,7 @@ class Scoreboard(implicit p: Parameters) extends CuteModule {
 
   when(io.update.store_finish) {
     val regIdx = io.update.store_finish_c_reg
-    val fu = cmlStatus
+    val fu = cmlStoreStatus
     val srcC = fu.srcs(SrcCIdx)
     when(fu.busy && srcC.valid && (srcC.reg.regIdx === regIdx)) {
       fu.busy := false.B

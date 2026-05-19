@@ -41,10 +41,13 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
 
     //按照目前的设计，可以服务所有请求
     io.MatrixRegIO.FromDataController.ReadWriteResponse := io.MatrixRegIO.FromDataController.ReadWriteRequest
-    io.MatrixRegIO.FromMemoryLoader.ReadWriteResponse := io.MatrixRegIO.FromMemoryLoader.ReadWriteRequest
+    io.MatrixRegIO.FromMemoryLoader.LoadReadWriteResponse := io.MatrixRegIO.FromMemoryLoader.LoadReadWriteRequest
+    io.MatrixRegIO.FromMemoryLoader.StoreReadWriteResponse := io.MatrixRegIO.FromMemoryLoader.StoreReadWriteRequest
 
     //记录当前拍回数应该返回给哪条数据线
-    val request = io.MatrixRegIO.FromDataController.ReadWriteRequest | io.MatrixRegIO.FromMemoryLoader.ReadWriteRequest
+    val request = io.MatrixRegIO.FromDataController.ReadWriteRequest |
+      io.MatrixRegIO.FromMemoryLoader.LoadReadWriteRequest |
+      io.MatrixRegIO.FromMemoryLoader.StoreReadWriteRequest
     val PreRequest = RegNext(request)
 
     val decode_request = new MatrixRegTaskDecode(request)
@@ -156,4 +159,3 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
         (evenBank, oddBank)
     }
 }
-
