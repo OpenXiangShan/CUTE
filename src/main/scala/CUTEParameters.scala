@@ -41,6 +41,25 @@ class DebugInfoIO()(implicit p: Parameters) extends CuteBundle{
 
 case object CuteParamsKey extends Field[CuteParams]
 
+case object MteComputeType extends Field[UInt] {
+    val ComputeTypeBitWidth = 4
+    val ComputeTypeUndef = 15.U(ComputeTypeBitWidth.W)
+
+    val I8I8I32 = 0.U(ComputeTypeBitWidth.W)
+    val F16F16F32 = 1.U(ComputeTypeBitWidth.W)
+    val BF16BF16F32 = 2.U(ComputeTypeBitWidth.W)
+    val TF32TF32F32 = 3.U(ComputeTypeBitWidth.W)
+    val I8U8I32 = 4.U(ComputeTypeBitWidth.W)
+    val U8I8I32 = 5.U(ComputeTypeBitWidth.W)
+    val U8U8I32 = 6.U(ComputeTypeBitWidth.W)
+    val Mxfp8e4m3F32 = 7.U(ComputeTypeBitWidth.W)
+    val Mxfp8e5m2F32 = 8.U(ComputeTypeBitWidth.W)
+    val Nvfp4F32 = 9.U(ComputeTypeBitWidth.W)
+    val Mxfp4F32 = 10.U(ComputeTypeBitWidth.W)
+    val Fp8e4m3F32 = 11.U(ComputeTypeBitWidth.W)
+    val Fp8e5m2F32 = 12.U(ComputeTypeBitWidth.W)
+}
+
 case class MatrixIsaParams(
     enableInt4Int32: Boolean = false,
     enableInt8Int32: Boolean = false,
@@ -589,6 +608,17 @@ case class CuteParams(
 trait CUTEImplParameters{
     implicit val p: Parameters
     def cuteParams: CuteParams = p(CuteParamsKey)
+    def cuteMatrixExtension: MatrixIsaParams = cuteParams.MatrixExtension
+
+    def enableMteInt8: Boolean = cuteMatrixExtension.enableInt8Int32
+    def enableMteFp8: Boolean = cuteMatrixExtension.enableFp8Fp32
+    def enableMteFp16: Boolean = cuteMatrixExtension.enableFp16Fp32 || cuteMatrixExtension.enableFp16Fp16
+    def enableMteBf16: Boolean = cuteMatrixExtension.enableBf16Fp32
+    def enableMteTf32: Boolean = cuteMatrixExtension.enableTf32Fp32
+    def enableMteNvfp4: Boolean = false
+    def enableMteMxfp8: Boolean = false
+    def enableMteMxfp4: Boolean = false
+
     def MMUParams: CuteMMUParams = cuteParams.MMUParams
     def DebugParams: CuteDebugParams = cuteParams.Debug
     def v3config: Cutev3extParams = cuteParams.v3config
@@ -704,14 +734,14 @@ trait CUTEImplParameters{
     def FP4P0AddNum :Int = FPEparams.FP4P0AddNum
     def FP4P1AddNum :Int = 16 / FP4P0AddNum
 
-    def ScaleVecWidth(dataType : UInt) : UInt = {
+    def ScaleVecWidth(computeType : UInt) : UInt = {
         val scaleVecWidth = Wire(UInt(4.W))
         scaleVecWidth := 0.U
-        switch(dataType){
-        is (ElementDataType.DataTypeMxfp8e4m3F32) { scaleVecWidth := (ReduceWidthByte * 8 / 8 / 32).U }
-        is (ElementDataType.DataTypeMxfp8e5m2F32) { scaleVecWidth := (ReduceWidthByte * 8 / 8 / 32).U }
-        is (ElementDataType.DataTypenvfp4F32) { scaleVecWidth := (ReduceWidthByte * 8 / 4 / 16).U }
-        is (ElementDataType.DataTypemxfp4F32) { scaleVecWidth := (ReduceWidthByte * 8 / 4 / 32).U }
+        switch(computeType){
+        is (MteComputeType.Mxfp8e4m3F32) { scaleVecWidth := (ReduceWidthByte * 8 / 8 / 32).U }
+        is (MteComputeType.Mxfp8e5m2F32) { scaleVecWidth := (ReduceWidthByte * 8 / 8 / 32).U }
+        is (MteComputeType.Nvfp4F32) { scaleVecWidth := (ReduceWidthByte * 8 / 4 / 16).U }
+        is (MteComputeType.Mxfp4F32) { scaleVecWidth := (ReduceWidthByte * 8 / 4 / 32).U }
         }
         scaleVecWidth
     }
@@ -814,13 +844,7 @@ class AfterOpsMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val CUTEuop                         = (new CUTE_uop)
 }
 
-class ADCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationTensor_A = (new Bundle{
-        // val ApplicationTensor_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
-        // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))
-        val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
-    })
-
+class ADCMicroTaskConfigBaseIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
@@ -834,13 +858,15 @@ class ADCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
 }
 
-class BDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationTensor_B = (new Bundle{
-        // val ApplicationTensor_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
-        // val BlockTensor_B_BaseVaddr         = (UInt(MMUAddrWidth.W))
-        val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
-    })
+class ADCMicroTaskConfigIO()(implicit p: Parameters) extends ADCMicroTaskConfigBaseIO {
+    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+}
 
+class ASCMicroTaskConfigIO()(implicit p: Parameters) extends ADCMicroTaskConfigBaseIO {
+    val computeType                       = UInt(MteComputeType.ComputeTypeBitWidth.W)
+}
+
+class BDCMicroTaskConfigBaseIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
@@ -852,6 +878,14 @@ class BDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
     val MicroTaskEndValid                        = Flipped(Bool())//已完成当前任务
     val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+}
+
+class BDCMicroTaskConfigIO()(implicit p: Parameters) extends BDCMicroTaskConfigBaseIO {
+    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+}
+
+class BSCMicroTaskConfigIO()(implicit p: Parameters) extends BDCMicroTaskConfigBaseIO {
+    val computeType                       = UInt(MteComputeType.ComputeTypeBitWidth.W)
 }
 
 class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -900,7 +934,7 @@ class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
 class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationScale_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockScale_A_BaseVaddr         = (UInt(MMUAddrWidth.W))  // 主要起作用的
-    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
 class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -983,7 +1017,7 @@ class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
 class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationScale_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // 主要起作用的
-    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
 class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
@@ -1036,7 +1070,7 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
 class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
-    val dataType                            = Output(UInt(ElementDataType.DataTypeBitWidth.W))
+    val computeType                         = Output(UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
 class MRegControlInfo()(implicit p: Parameters) extends CuteBundle{
@@ -1171,124 +1205,124 @@ class MMU2TLIO(implicit p: Parameters) extends CuteBundle{
 
 class FReducePEDataType {
 //0:Int8, 1:FP16, 2:BF16, 3:TF32, 4:I8 * UI8, 5:UI8 * I8, 6:UI8 * UI8
-    def AdataByteWidth(dataType : UInt) : UInt = {
+    def AdataByteWidth(computeType : UInt) : UInt = {
         val dataByteWidth = Wire(UInt(3.W))
         dataByteWidth := 0.U
-        switch(dataType){
-        is (ElementDataType.DataTypeI8I8I32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypeF16F16F32)  { dataByteWidth := 2.U }
-        is (ElementDataType.DataTypeBF16BF16F32) { dataByteWidth := 2.U }
-        is (ElementDataType.DataTypeTF32TF32F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeI8U8I32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypeU8I8I32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypeU8U8I32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypeMxfp8e4m3F32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypeMxfp8e5m2F32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypefp8e4m3F32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypefp8e5m2F32) { dataByteWidth := 1.U }
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.F16F16F32)  { dataByteWidth := 2.U }
+        is (MteComputeType.BF16BF16F32) { dataByteWidth := 2.U }
+        is (MteComputeType.TF32TF32F32) { dataByteWidth := 4.U }
+        is (MteComputeType.I8U8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.U8I8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.U8U8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Fp8e4m3F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Fp8e5m2F32) { dataByteWidth := 1.U }
         }
         dataByteWidth
     }
 
-    def BdataByteWidth(dataType : UInt) : UInt = {
+    def BdataByteWidth(computeType : UInt) : UInt = {
         val dataByteWidth = Wire(UInt(3.W))
         dataByteWidth := 0.U
-        switch(dataType){
-        is (ElementDataType.DataTypeI8I8I32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypeF16F16F32)  { dataByteWidth := 2.U }
-        is (ElementDataType.DataTypeBF16BF16F32) { dataByteWidth := 2.U }
-        is (ElementDataType.DataTypeTF32TF32F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeI8U8I32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypeU8I8I32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypeU8U8I32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypeMxfp8e4m3F32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypeMxfp8e5m2F32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypefp8e4m3F32) { dataByteWidth := 1.U }
-        is (ElementDataType.DataTypefp8e5m2F32) { dataByteWidth := 1.U }
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.F16F16F32)  { dataByteWidth := 2.U }
+        is (MteComputeType.BF16BF16F32) { dataByteWidth := 2.U }
+        is (MteComputeType.TF32TF32F32) { dataByteWidth := 4.U }
+        is (MteComputeType.I8U8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.U8I8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.U8U8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Fp8e4m3F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Fp8e5m2F32) { dataByteWidth := 1.U }
         }
         dataByteWidth
     }
 
-    def AdataBitWidth(dataType : UInt) : UInt = {
+    def AdataBitWidth(computeType : UInt) : UInt = {
         val dataBitWidth = Wire(UInt(6.W))
         dataBitWidth := 0.U
-        switch(dataType){
-        is (ElementDataType.DataTypeI8I8I32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypeF16F16F32)  { dataBitWidth := 16.U }
-        is (ElementDataType.DataTypeBF16BF16F32) { dataBitWidth := 16.U }
-        is (ElementDataType.DataTypeTF32TF32F32) { dataBitWidth := 32.U }
-        is (ElementDataType.DataTypeI8U8I32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypeU8I8I32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypeU8U8I32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypeMxfp8e4m3F32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypeMxfp8e5m2F32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypenvfp4F32) { dataBitWidth := 4.U }
-        is (ElementDataType.DataTypemxfp4F32) { dataBitWidth := 4.U }
-        is (ElementDataType.DataTypefp8e4m3F32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypefp8e5m2F32) { dataBitWidth := 8.U }
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.F16F16F32)  { dataBitWidth := 16.U }
+        is (MteComputeType.BF16BF16F32) { dataBitWidth := 16.U }
+        is (MteComputeType.TF32TF32F32) { dataBitWidth := 32.U }
+        is (MteComputeType.I8U8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.U8I8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.U8U8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Nvfp4F32) { dataBitWidth := 4.U }
+        is (MteComputeType.Mxfp4F32) { dataBitWidth := 4.U }
+        is (MteComputeType.Fp8e4m3F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Fp8e5m2F32) { dataBitWidth := 8.U }
         }
         dataBitWidth
     }
 
-    def BdataBitWidth(dataType : UInt) : UInt = {
+    def BdataBitWidth(computeType : UInt) : UInt = {
         val dataBitWidth = Wire(UInt(6.W))
         dataBitWidth := 0.U
-        switch(dataType){
-        is (ElementDataType.DataTypeI8I8I32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypeF16F16F32) { dataBitWidth := 16.U }
-        is (ElementDataType.DataTypeBF16BF16F32) { dataBitWidth := 16.U }
-        is (ElementDataType.DataTypeTF32TF32F32) { dataBitWidth := 32.U }
-        is (ElementDataType.DataTypeI8U8I32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypeU8I8I32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypeU8U8I32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypeMxfp8e4m3F32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypeMxfp8e5m2F32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypenvfp4F32) { dataBitWidth := 4.U }
-        is (ElementDataType.DataTypemxfp4F32) { dataBitWidth := 4.U }
-        is (ElementDataType.DataTypefp8e4m3F32) { dataBitWidth := 8.U }
-        is (ElementDataType.DataTypefp8e5m2F32) { dataBitWidth := 8.U }
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.F16F16F32) { dataBitWidth := 16.U }
+        is (MteComputeType.BF16BF16F32) { dataBitWidth := 16.U }
+        is (MteComputeType.TF32TF32F32) { dataBitWidth := 32.U }
+        is (MteComputeType.I8U8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.U8I8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.U8U8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Nvfp4F32) { dataBitWidth := 4.U }
+        is (MteComputeType.Mxfp4F32) { dataBitWidth := 4.U }
+        is (MteComputeType.Fp8e4m3F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Fp8e5m2F32) { dataBitWidth := 8.U }
         }
         dataBitWidth
     }
 
-    def CdataByteWidth(dataType : UInt) : UInt = {
+    def CdataByteWidth(computeType : UInt) : UInt = {
         val dataByteWidth = Wire(UInt(3.W))
         dataByteWidth := 0.U
-        switch(dataType){
-        is (ElementDataType.DataTypeI8I8I32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeF16F16F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeBF16BF16F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeTF32TF32F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeI8U8I32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeU8I8I32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeU8U8I32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeMxfp8e4m3F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeMxfp8e5m2F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypenvfp4F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypemxfp4F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypefp8e4m3F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypefp8e5m2F32) { dataByteWidth := 4.U }
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.F16F16F32) { dataByteWidth := 4.U }
+        is (MteComputeType.BF16BF16F32) { dataByteWidth := 4.U }
+        is (MteComputeType.TF32TF32F32) { dataByteWidth := 4.U }
+        is (MteComputeType.I8U8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.U8I8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.U8U8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Nvfp4F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp4F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Fp8e4m3F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Fp8e5m2F32) { dataByteWidth := 4.U }
         }
         dataByteWidth
     }
 
-    def DdataByteWidth(dataType : UInt) : UInt = {
+    def DdataByteWidth(computeType : UInt) : UInt = {
         val dataByteWidth = Wire(UInt(3.W))
         dataByteWidth := 0.U
-        switch(dataType){
-        is (ElementDataType.DataTypeI8I8I32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeF16F16F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeBF16BF16F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeTF32TF32F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeI8U8I32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeU8I8I32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeU8U8I32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeMxfp8e4m3F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypeMxfp8e5m2F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypenvfp4F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypemxfp4F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypefp8e4m3F32) { dataByteWidth := 4.U }
-        is (ElementDataType.DataTypefp8e5m2F32) { dataByteWidth := 4.U }
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.F16F16F32) { dataByteWidth := 4.U }
+        is (MteComputeType.BF16BF16F32) { dataByteWidth := 4.U }
+        is (MteComputeType.TF32TF32F32) { dataByteWidth := 4.U }
+        is (MteComputeType.I8U8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.U8I8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.U8U8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Nvfp4F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp4F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Fp8e4m3F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Fp8e5m2F32) { dataByteWidth := 4.U }
         }
         dataByteWidth
     }
@@ -1303,20 +1337,6 @@ case object  ElementDataType extends Field[UInt]{
     val DataTypeWidth16 = 2.U(DataTypeBitWidth.W)
     val DataTypeWidth8  = 1.U(DataTypeBitWidth.W)
     val DataTypeWidth4  = 7.U(DataTypeBitWidth.W)
-
-    val DataTypeI8I8I32     = 0.U(DataTypeBitWidth.W)     //I8 * I8 * I32
-    val DataTypeF16F16F32   = 1.U(DataTypeBitWidth.W)     //FP16 * FP16 * FP32
-    val DataTypeBF16BF16F32 = 2.U(DataTypeBitWidth.W)     //BF16 * BF16 * FP32
-    val DataTypeTF32TF32F32 = 3.U(DataTypeBitWidth.W)     //TF32 * TF32 * FP32
-    val DataTypeI8U8I32     = 4.U(DataTypeBitWidth.W)     //I8 * UI8 * I32
-    val DataTypeU8I8I32     = 5.U(DataTypeBitWidth.W)     //U8 * I8 * I32
-    val DataTypeU8U8I32     = 6.U(DataTypeBitWidth.W)     //U8 * U8 * I32
-    val DataTypeMxfp8e4m3F32     = 7.U(DataTypeBitWidth.W)     //Mxfp8e4m3 * Mxfp8e4m3 * FP32
-    val DataTypeMxfp8e5m2F32     = 8.U(DataTypeBitWidth.W)     //Mxfp8e5m2 * Mxfp8e5m2 * FP32
-    val DataTypenvfp4F32    = 9.U(DataTypeBitWidth.W)     //NVFP4 * NVFP4 * FP32
-    val DataTypemxfp4F32    = 10.U(DataTypeBitWidth.W)    //MXFP4 * MXFP4 * FP32
-    val DataTypefp8e4m3F32  = 11.U(DataTypeBitWidth.W)   //FP8E4M3 * FP8E4M3 * FP32
-    val DataTypefp8e5m2F32  = 12.U(DataTypeBitWidth.W)   //FP8E5M2 * FP8E5M2 * FP32
 }
 
 //工作任务的样板类

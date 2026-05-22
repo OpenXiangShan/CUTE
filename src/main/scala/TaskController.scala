@@ -4,7 +4,6 @@ import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
 import cute.Bundles._
-import cute.ElementDataType._
 import difftest._
 import utility.ChiselDB
 
@@ -12,8 +11,8 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val ygjkctrl = Flipped(new YGJKControl)
   val ADC_MicroTask_Config = new ADCMicroTaskConfigIO
   val BDC_MicroTask_Config = new BDCMicroTaskConfigIO
-  val ASC_MicroTask_Config = new ADCMicroTaskConfigIO
-  val BSC_MicroTask_Config = new BDCMicroTaskConfigIO
+  val ASC_MicroTask_Config = new ASCMicroTaskConfigIO
+  val BSC_MicroTask_Config = new BSCMicroTaskConfigIO
   val CDC_MicroTask_Config = new CDCMicroTaskConfigIO
   val AML_MicroTask_Config = new AMLMicroTaskConfigIO
   val BML_MicroTask_Config = new BMLMicroTaskConfigIO
@@ -53,7 +52,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.ygjkctrl.mrelease.bits := 0.U.asTypeOf(new MreleaseIO)
 
   // 默认输出赋值
-  io.ADC_MicroTask_Config.ApplicationTensor_A.dataType := 0.U
+  io.ADC_MicroTask_Config.dataType := 0.U
   io.ADC_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.ADC_MicroTask_Config.MatrixRegTensor_K := 0.U
   io.ADC_MicroTask_Config.MatrixRegTensor_N := 0.U
@@ -62,16 +61,16 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.ADC_MicroTask_Config.MicroTaskValid := false.B
   io.ADC_MicroTask_Config.MicroTaskEndReady := false.B
 
-  io.ASC_MicroTask_Config.ApplicationTensor_A.dataType := 0.U
   io.ASC_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.ASC_MicroTask_Config.MatrixRegTensor_K := 0.U
   io.ASC_MicroTask_Config.MatrixRegTensor_N := 0.U
   io.ASC_MicroTask_Config.MatrixRegId := 0.U
+  io.ASC_MicroTask_Config.computeType := MteComputeType.ComputeTypeUndef
   io.ASC_MicroTask_Config.Is_Transpose := false.B
   io.ASC_MicroTask_Config.MicroTaskValid := false.B
   io.ASC_MicroTask_Config.MicroTaskEndReady := false.B
 
-  io.BDC_MicroTask_Config.ApplicationTensor_B.dataType := 0.U
+  io.BDC_MicroTask_Config.dataType := 0.U
   io.BDC_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.BDC_MicroTask_Config.MatrixRegTensor_K := 0.U
   io.BDC_MicroTask_Config.MatrixRegTensor_N := 0.U
@@ -80,11 +79,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.BDC_MicroTask_Config.MicroTaskValid := false.B
   io.BDC_MicroTask_Config.MicroTaskEndReady := false.B
 
-  io.BSC_MicroTask_Config.ApplicationTensor_B.dataType := 0.U
   io.BSC_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.BSC_MicroTask_Config.MatrixRegTensor_K := 0.U
   io.BSC_MicroTask_Config.MatrixRegTensor_N := 0.U
   io.BSC_MicroTask_Config.MatrixRegId := 0.U
+  io.BSC_MicroTask_Config.computeType := MteComputeType.ComputeTypeUndef
   io.BSC_MicroTask_Config.Is_Transpose := false.B
   io.BSC_MicroTask_Config.MicroTaskValid := false.B
   io.BSC_MicroTask_Config.MicroTaskEndReady := false.B
@@ -850,8 +849,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     loadIssueEventEn := true.B
   }
 
-  val mmaDataType = WireInit(0.U.asTypeOf(io.MTE_MicroTask_Config.dataType))
-  io.MTE_MicroTask_Config.dataType := mmaDataType  // Latch inside MTE.
+  val mmaComputeType = WireInit(MteComputeType.ComputeTypeUndef)
+  io.MTE_MicroTask_Config.computeType := mmaComputeType  // Latch inside MTE.
   io.MTE_MicroTask_Config.MicroTaskValid := issueMma
 
   when(issueMma) {
@@ -874,14 +873,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       Bundles.MSew.e4 -> mmaInfo.mtilek / 2.U,
     ))
 
-    io.ADC_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
+    io.ADC_MicroTask_Config.dataType := ElementDataType.DataTypeWidth8
     io.ADC_MicroTask_Config.MatrixRegTensor_M := mVal
     io.ADC_MicroTask_Config.MatrixRegTensor_N := nVal
     io.ADC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
     io.ADC_MicroTask_Config.MatrixRegId := aReg
     io.ADC_MicroTask_Config.Is_Transpose := false.B
 
-    io.BDC_MicroTask_Config.ApplicationTensor_B.dataType := ElementDataType.DataTypeWidth8
+    io.BDC_MicroTask_Config.dataType := ElementDataType.DataTypeWidth8
     io.BDC_MicroTask_Config.MatrixRegTensor_M := mVal
     io.BDC_MicroTask_Config.MatrixRegTensor_N := nVal
     io.BDC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
@@ -1001,43 +1000,43 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       // For FP: typeBit = isE4m3(E8)/isBf16(E16)/isTf32(E32)/0(E4)
       // FP16: Cat(0, 01) = b001
       when (mmaInfo.types1 === "b001".U && mmaInfo.types2 === "b001".U) {
-        mmaDataType := DataTypeF16F16F32
+        mmaComputeType := MteComputeType.F16F16F32
       // FP8 E5M2: Cat(0, 00) = b000
       }.elsewhen (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b000".U) {
-        mmaDataType := DataTypefp8e5m2F32
+        mmaComputeType := MteComputeType.Fp8e5m2F32
       // FP8 E4M3: Cat(1, 00) = b100
       }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b100".U) {
-        mmaDataType := DataTypefp8e4m3F32
+        mmaComputeType := MteComputeType.Fp8e4m3F32
       // BF16: Cat(1, 01) = b101
       }.elsewhen (mmaInfo.types1 === "b101".U && mmaInfo.types2 === "b101".U) {
-        mmaDataType := DataTypeBF16BF16F32
+        mmaComputeType := MteComputeType.BF16BF16F32
       // FP32: Cat(0, 10) = b010
       }.elsewhen (mmaInfo.types1 === "b010".U && mmaInfo.types2 === "b010".U) {
-        mmaDataType := DataTypeUndef  // DataTypeFP32FP32FP32
+        mmaComputeType := MteComputeType.ComputeTypeUndef  // FP32FP32FP32
       // TF32: Cat(1, 10) = b110
       }.elsewhen (mmaInfo.types1 === "b110".U && mmaInfo.types2 === "b110".U) {
-        mmaDataType := DataTypeTF32TF32F32
+        mmaComputeType := MteComputeType.TF32TF32F32
       // FP4: Cat(0, 11) = b011
       }.elsewhen (mmaInfo.types1 === "b011".U && mmaInfo.types2 === "b011".U) {
         // NVFP4 vs MXFP4 need to be distinguished by other means
-        mmaDataType := DataTypenvfp4F32
+        mmaComputeType := MteComputeType.Nvfp4F32
       }.otherwise {
-        mmaDataType := DataTypeUndef
+        mmaComputeType := MteComputeType.ComputeTypeUndef
       }
     }.otherwise { // !mmaInfo.isfp - Integer types
       // types = Cat(sign, getFromType[1:0])
       // U8: Cat(0, 00) = b000
       // I8: Cat(1, 00) = b100
       when (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b000".U) {
-        mmaDataType := DataTypeU8U8I32
+        mmaComputeType := MteComputeType.U8U8I32
       }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b000".U) {
-        mmaDataType := DataTypeI8U8I32
+        mmaComputeType := MteComputeType.I8U8I32
       }.elsewhen (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b100".U) {
-        mmaDataType := DataTypeU8I8I32
+        mmaComputeType := MteComputeType.U8I8I32
       }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b100".U) {
-        mmaDataType := DataTypeI8I8I32
+        mmaComputeType := MteComputeType.I8I8I32
       }.otherwise {
-        mmaDataType := DataTypeUndef
+        mmaComputeType := MteComputeType.ComputeTypeUndef
       }
     }
 
