@@ -72,6 +72,9 @@ case class MatrixIsaParams(
     enableFp16Fp32: Boolean = false,
     enableTf32Fp32: Boolean = false,
     enableFp32Fp32: Boolean = false,
+    enableMxfp4Fp32: Boolean = false,
+    enableMxfp8Fp32: Boolean = false,
+    enableNvfp4Fp32: Boolean = false,
 ) {
     assert(enableInt84Int32 == false, "enableInt84Int32 is not supported now")
     assert(enableFp32Fp32 == false, "enableFp32Fp32 is not supported now")
@@ -80,14 +83,16 @@ case class MatrixIsaParams(
         enableInt4Int32 || enableInt8Int32 || enableInt84Int32 ||
         enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16 ||
         enableFp16Fp16 || enableBf16Fp32 || enableFp16Fp32 ||
-        enableFp32Fp32 || enableTf32Fp32
+        enableFp32Fp32 || enableTf32Fp32 ||
+        enableMxfp4Fp32 || enableMxfp8Fp32 || enableNvfp4Fp32
     
     def enable4BitSrc: Boolean =
-        enableInt4Int32
+        enableInt4Int32 || enableMxfp4Fp32 || enableNvfp4Fp32
 
     def enable8BitSrc: Boolean =
         enableInt8Int32 || enableInt84Int32 ||
-        enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16
+        enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16 ||
+        enableMxfp8Fp32
     
     def enable16BitSrc: Boolean =
         enableFp16Fp16 || enableBf16Fp32 || enableFp16Fp32
@@ -112,6 +117,11 @@ case class MatrixIsaParams(
         enableTf32Fp32
     
     def enable64BitDst: Boolean = false
+
+    def enableScalingFactor: Boolean =
+        enableNvfp4Fp32 || enableMxfp4Fp32 || enableMxfp8Fp32
+    def enableFp4withsf: Boolean =
+        enableNvfp4Fp32 || enableMxfp4Fp32
 }
 
 trait CuteParamsKey{

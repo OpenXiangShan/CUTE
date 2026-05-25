@@ -11,13 +11,13 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val ygjkctrl = Flipped(new YGJKControl)
   val ADC_MicroTask_Config = new ADCMicroTaskConfigIO
   val BDC_MicroTask_Config = new BDCMicroTaskConfigIO
-  val ASC_MicroTask_Config = new ASCMicroTaskConfigIO
-  val BSC_MicroTask_Config = new BSCMicroTaskConfigIO
+  val ASC_MicroTask_Config = Option.when(cuteMatrixExtension.enableScalingFactor)(new ASCMicroTaskConfigIO)
+  val BSC_MicroTask_Config = Option.when(cuteMatrixExtension.enableScalingFactor)(new BSCMicroTaskConfigIO)
   val CDC_MicroTask_Config = new CDCMicroTaskConfigIO
   val AML_MicroTask_Config = new AMLMicroTaskConfigIO
   val BML_MicroTask_Config = new BMLMicroTaskConfigIO
-  val ASL_MicroTask_Config = new ASLMicroTaskConfigIO
-  val BSL_MicroTask_Config = new BSLMicroTaskConfigIO
+  val ASL_MicroTask_Config = Option.when(cuteMatrixExtension.enableScalingFactor)(new ASLMicroTaskConfigIO)
+  val BSL_MicroTask_Config = Option.when(cuteMatrixExtension.enableScalingFactor)(new BSLMicroTaskConfigIO)
   val CML_MicroTask_Config = new CMLMicroTaskConfigIO
   val MTE_MicroTask_Config = new MTEMicroTaskConfigIO
   val DebugTimeStampe = Input(UInt(32.W))
@@ -61,14 +61,16 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.ADC_MicroTask_Config.MicroTaskValid := false.B
   io.ADC_MicroTask_Config.MicroTaskEndReady := false.B
 
-  io.ASC_MicroTask_Config.MatrixRegTensor_M := 0.U
-  io.ASC_MicroTask_Config.MatrixRegTensor_K := 0.U
-  io.ASC_MicroTask_Config.MatrixRegTensor_N := 0.U
-  io.ASC_MicroTask_Config.MatrixRegId := 0.U
-  io.ASC_MicroTask_Config.computeType := MteComputeType.ComputeTypeUndef
-  io.ASC_MicroTask_Config.Is_Transpose := false.B
-  io.ASC_MicroTask_Config.MicroTaskValid := false.B
-  io.ASC_MicroTask_Config.MicroTaskEndReady := false.B
+  io.ASC_MicroTask_Config.foreach { cfg =>
+    cfg.MatrixRegTensor_M := 0.U
+    cfg.MatrixRegTensor_K := 0.U
+    cfg.MatrixRegTensor_N := 0.U
+    cfg.MatrixRegId := 0.U
+    cfg.computeType := MteComputeType.ComputeTypeUndef
+    cfg.Is_Transpose := false.B
+    cfg.MicroTaskValid := false.B
+    cfg.MicroTaskEndReady := false.B
+  }
 
   io.BDC_MicroTask_Config.dataType := 0.U
   io.BDC_MicroTask_Config.MatrixRegTensor_M := 0.U
@@ -79,14 +81,16 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.BDC_MicroTask_Config.MicroTaskValid := false.B
   io.BDC_MicroTask_Config.MicroTaskEndReady := false.B
 
-  io.BSC_MicroTask_Config.MatrixRegTensor_M := 0.U
-  io.BSC_MicroTask_Config.MatrixRegTensor_K := 0.U
-  io.BSC_MicroTask_Config.MatrixRegTensor_N := 0.U
-  io.BSC_MicroTask_Config.MatrixRegId := 0.U
-  io.BSC_MicroTask_Config.computeType := MteComputeType.ComputeTypeUndef
-  io.BSC_MicroTask_Config.Is_Transpose := false.B
-  io.BSC_MicroTask_Config.MicroTaskValid := false.B
-  io.BSC_MicroTask_Config.MicroTaskEndReady := false.B
+  io.BSC_MicroTask_Config.foreach { cfg =>
+    cfg.MatrixRegTensor_M := 0.U
+    cfg.MatrixRegTensor_K := 0.U
+    cfg.MatrixRegTensor_N := 0.U
+    cfg.MatrixRegId := 0.U
+    cfg.computeType := MteComputeType.ComputeTypeUndef
+    cfg.Is_Transpose := false.B
+    cfg.MicroTaskValid := false.B
+    cfg.MicroTaskEndReady := false.B
+  }
 
   io.CDC_MicroTask_Config.ApplicationTensor_C.dataType := 0.U
   io.CDC_MicroTask_Config.ApplicationTensor_D.dataType := 0.U
@@ -120,12 +124,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.AML_MicroTask_Config.coreid.get := 0.U
   }
 
-  io.ASL_MicroTask_Config.ApplicationScale_A := 0.U.asTypeOf(io.ASL_MicroTask_Config.ApplicationScale_A)
-  io.ASL_MicroTask_Config.MatrixRegTensor_M := 0.U
-  io.ASL_MicroTask_Config.MatrixRegTensor_K := 0.U
-  io.ASL_MicroTask_Config.Conherent := false.B
-  io.ASL_MicroTask_Config.MicroTaskValid := false.B
-  io.ASL_MicroTask_Config.MicroTaskEndReady := false.B
+  io.ASL_MicroTask_Config.foreach { cfg =>
+    cfg.ApplicationScale_A := 0.U.asTypeOf(cfg.ApplicationScale_A)
+    cfg.MatrixRegTensor_M := 0.U
+    cfg.MatrixRegTensor_K := 0.U
+    cfg.Conherent := false.B
+    cfg.MicroTaskValid := false.B
+    cfg.MicroTaskEndReady := false.B
+  }
 
   io.BML_MicroTask_Config.ApplicationTensor_B := 0.U.asTypeOf(io.BML_MicroTask_Config.ApplicationTensor_B)
   io.BML_MicroTask_Config.MatrixRegTensor_N := 0.U
@@ -139,12 +145,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.BML_MicroTask_Config.coreid.get := 0.U
   }
 
-  io.BSL_MicroTask_Config.ApplicationScale_B := 0.U.asTypeOf(io.BSL_MicroTask_Config.ApplicationScale_B)
-  io.BSL_MicroTask_Config.MatrixRegTensor_N := 0.U
-  io.BSL_MicroTask_Config.MatrixRegTensor_K := 0.U
-  io.BSL_MicroTask_Config.Conherent := false.B
-  io.BSL_MicroTask_Config.MicroTaskValid := false.B
-  io.BSL_MicroTask_Config.MicroTaskEndReady := false.B
+  io.BSL_MicroTask_Config.foreach { cfg =>
+    cfg.ApplicationScale_B := 0.U.asTypeOf(cfg.ApplicationScale_B)
+    cfg.MatrixRegTensor_N := 0.U
+    cfg.MatrixRegTensor_K := 0.U
+    cfg.Conherent := false.B
+    cfg.MicroTaskValid := false.B
+    cfg.MicroTaskEndReady := false.B
+  }
 
   io.CML_MicroTask_Config.ApplicationTensor_C := 0.U.asTypeOf(io.CML_MicroTask_Config.ApplicationTensor_C)
   io.CML_MicroTask_Config.ApplicationTensor_D := 0.U.asTypeOf(io.CML_MicroTask_Config.ApplicationTensor_D)
