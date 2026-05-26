@@ -3,6 +3,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
+import freechips.rocketchip.util._
 import cute.Bundles._
 import cute.ElementDataType._
 import difftest._
@@ -488,40 +489,48 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val readAVec = VecInit(slots.map(s => s.valid && s.readADone)).asUInt
   val readBVec = VecInit(slots.map(s => s.valid && s.readBDone)).asUInt
 
-  val readyByAge = Wire(Vec(WinDepth, Bool()))
-  readyByAge.foreach(_ := false.B)
-  for (age <- 0 until WinDepth) {
-    val idx = (winHead + age.U)(SlotIdxWidth - 1, 0)
-    val inWindow = age.U < winCount
-    val slot = slots(idx)
+  val readyBySlot = Wire(Vec(WinDepth, Bool()))
+  readyBySlot.foreach(_ := false.B)
+  for (slotIdx <- 0 until WinDepth) {
+    val slot = slots(slotIdx)
+    val slotAge = (slotIdx.U + WinDepth.U - winHead)(SlotIdxWidth - 1, 0)
+    val inWindow = slotAge < winCount
+    val slotCanConsider = inWindow && slot.valid && !slot.issued
 
-    val slotDepReady =
+    val slotDepReady = Mux(
+      slotCanConsider,
       ((slot.waitCompleteMask & (~completedVec)(WinDepth - 1, 0)) === 0.U) &&
-      ((slot.waitReadAMask & (~readAVec)(WinDepth - 1, 0)) === 0.U) &&
-      ((slot.waitReadBMask & (~readBVec)(WinDepth - 1, 0)) === 0.U)
+        ((slot.waitReadAMask & (~readAVec)(WinDepth - 1, 0)) === 0.U) &&
+        ((slot.waitReadBMask & (~readBVec)(WinDepth - 1, 0)) === 0.U),
+      false.B
+    )
 
-    val slotFuReady = MuxLookup(slot.opKind.asUInt, true.B)(Seq(
-      TaskCtrlOpKind.LoadA.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
-      TaskCtrlOpKind.LoadB.asUInt -> (!fuBML.busy && io.BML_MicroTask_Config.MicroTaskReady),
-      TaskCtrlOpKind.LoadC.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
-      TaskCtrlOpKind.ZeroAcc.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
-      TaskCtrlOpKind.ZeroTr.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
-      TaskCtrlOpKind.Store.asUInt -> (!fuCMLStore.busy && io.CML_MicroTask_Config.StoreMicroTaskReady),
-      TaskCtrlOpKind.Compute.asUInt -> (!fuCompute.busy && io.ADC_MicroTask_Config.MicroTaskReady && io.BDC_MicroTask_Config.MicroTaskReady && io.CDC_MicroTask_Config.MicroTaskReady),
-      TaskCtrlOpKind.Release.asUInt -> true.B,
-      TaskCtrlOpKind.NopLike.asUInt -> true.B
-    ))
+    val slotFuReady = Mux(
+      slotCanConsider,
+      MuxLookup(slot.opKind.asUInt, true.B)(Seq(
+        TaskCtrlOpKind.LoadA.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
+        TaskCtrlOpKind.LoadB.asUInt -> (!fuBML.busy && io.BML_MicroTask_Config.MicroTaskReady),
+        TaskCtrlOpKind.LoadC.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
+        TaskCtrlOpKind.ZeroAcc.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
+        TaskCtrlOpKind.ZeroTr.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
+        TaskCtrlOpKind.Store.asUInt -> (!fuCMLStore.busy && io.CML_MicroTask_Config.StoreMicroTaskReady),
+        TaskCtrlOpKind.Compute.asUInt -> (!fuCompute.busy && io.ADC_MicroTask_Config.MicroTaskReady && io.BDC_MicroTask_Config.MicroTaskReady && io.CDC_MicroTask_Config.MicroTaskReady),
+        TaskCtrlOpKind.Release.asUInt -> true.B,
+        TaskCtrlOpKind.NopLike.asUInt -> true.B
+      )),
+      false.B
+    )
 
-    val slotIssueReady = inWindow && slot.valid && !slot.issued && slotDepReady && slotFuReady
-    readyByAge(age) := slotIssueReady
+    readyBySlot(slotIdx) := slotCanConsider && slotDepReady && slotFuReady
   }
 
+  val readyByAge = VecInit(readyBySlot.rotate(winHead))
   val issueFound = readyByAge.asUInt.orR
   val issueAgeOH = PriorityEncoderOH(readyByAge)
-  val issueAge = OHToUInt(issueAgeOH)
+  val issueSlotOH = VecInit(issueAgeOH.rotateRight(winHead))
   val issueSlotIdx = WireInit(0.U(SlotIdxWidth.W))
   when(issueFound) {
-    issueSlotIdx := (winHead + issueAge)(SlotIdxWidth - 1, 0)
+    issueSlotIdx := OHToUInt(issueSlotOH)
   }
 
   val issueFire = issueFound
