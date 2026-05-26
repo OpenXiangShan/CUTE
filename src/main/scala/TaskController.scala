@@ -44,15 +44,24 @@ class DecodedAmuCtrlEntry(implicit p: Parameters) extends CuteBundle {
   val writeValid = Vec(MaxWriteRegs, Bool())
 }
 
+object TaskCtrlOpKind extends ChiselEnum {
+  val NopLike, LoadA, LoadB, LoadC, Compute, Store, Release, ZeroAcc, ZeroTr = Value
+}
+
 class TaskController(implicit p: Parameters) extends BaseTaskController {
   import NewTaskController._
 
   dontTouch(io)
 
+  private val WinDepth = TaskCtrlIssueWindowDepth
+  private val SlotIdxWidth = log2Ceil(WinDepth)
+  private val WinCountWidth = log2Ceil(WinDepth + 1)
+  private val SeqIdWidth = 16
+
+  // ===================== 默认输出赋值 =====================
   io.ygjkctrl.mrelease.valid := false.B
   io.ygjkctrl.mrelease.bits := 0.U.asTypeOf(new MreleaseIO)
 
-  // 默认输出赋值
   io.ADC_MicroTask_Config.ApplicationTensor_A.dataType := 0.U
   io.ADC_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.ADC_MicroTask_Config.MatrixRegTensor_K := 0.U
@@ -164,8 +173,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CML_MicroTask_Config.coreid.get := 0.U
   }
 
-  // Scoreboard实例
-  private val scoreboard = Module(new Scoreboard)
+  io.MTE_MicroTask_Config.MicroTaskValid := false.B
+  io.MTE_MicroTask_Config.dataType := DataTypeUndef
 
   // ===================== ChiselDB 事件定义 =====================
   private val TileDimWidth = Bundles.Mtilex.width
@@ -182,6 +191,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val column = UInt(TileDimWidth.W)
     val transpose = Bool()
     val isAcc = Bool()
+    val slotId = UInt(SlotIdxWidth.W)
+    val seqId = UInt(SeqIdWidth.W)
   }
 
   class ComputeEventEntry extends Bundle {
@@ -195,6 +206,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val mtilek = UInt(TileDimWidth.W)
     val isMma = Bool()
     val isFp = Bool()
+    val slotId = UInt(SlotIdxWidth.W)
+    val seqId = UInt(SeqIdWidth.W)
   }
 
   class StoreEventEntry extends Bundle {
@@ -205,11 +218,15 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val column = UInt(TileDimWidth.W)
     val transpose = Bool()
     val isAcc = Bool()
+    val slotId = UInt(SlotIdxWidth.W)
+    val seqId = UInt(SeqIdWidth.W)
   }
 
   class ReleaseEventEntry extends Bundle {
     val eventType = UInt(2.W)
     val token = UInt(5.W)
+    val slotId = UInt(SlotIdxWidth.W)
+    val seqId = UInt(SeqIdWidth.W)
   }
 
   private val loadEventTable = ChiselDB.createTable("CUTELoadEvent", new LoadEventEntry, basicDB = true)
@@ -245,905 +262,1256 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private val releaseIssueEvent = WireInit(0.U.asTypeOf(new ReleaseEventEntry))
   private val releaseIssueEventEn = WireInit(false.B)
 
-  scoreboard.io.update.load_allocate := false.B
-  scoreboard.io.update.load_alloc_a_reg := 0.U
-  scoreboard.io.update.load_alloc_b_reg := 0.U
-  scoreboard.io.update.load_alloc_c_reg := 0.U
-  scoreboard.io.update.load_alloc_has_a := false.B
-  scoreboard.io.update.load_alloc_has_b := false.B
-  scoreboard.io.update.load_alloc_has_c := false.B
-  scoreboard.io.update.load_alloc_fifo_idx := 0.U
+  // ===================== shadow scoreboard（可选，不参与功能） =====================
+  private val shadowScoreboard = if (EnableTaskCtrlShadowScoreboard) Some(Module(new Scoreboard)) else None
 
-  scoreboard.io.update.load_finish_a := false.B
-  scoreboard.io.update.load_finish_a_reg := 0.U
-  scoreboard.io.update.load_finish_b := false.B
-  scoreboard.io.update.load_finish_b_reg := 0.U
-  scoreboard.io.update.load_finish_c := false.B
-  scoreboard.io.update.load_finish_c_reg := 0.U
+  private def clearShadowScoreboard(sb: Scoreboard): Unit = {
+    sb.io.query.req.valid := false.B
+    sb.io.query.req.bits := 0.U.asTypeOf(new QueryReq)
 
-  scoreboard.io.update.compute_issue := false.B
-  scoreboard.io.update.compute_issue_a_reg := 0.U
-  scoreboard.io.update.compute_issue_b_reg := 0.U
-  scoreboard.io.update.compute_issue_c_reg := 0.U
-  scoreboard.io.update.compute_issue_fifo_idx := 0.U
+    sb.io.update.load_allocate := false.B
+    sb.io.update.load_alloc_a_reg := 0.U
+    sb.io.update.load_alloc_b_reg := 0.U
+    sb.io.update.load_alloc_c_reg := 0.U
+    sb.io.update.load_alloc_has_a := false.B
+    sb.io.update.load_alloc_has_b := false.B
+    sb.io.update.load_alloc_has_c := false.B
+    sb.io.update.load_alloc_fifo_idx := 0.U
 
-  scoreboard.io.update.compute_read_finish_a := false.B
-  scoreboard.io.update.compute_read_finish_a_reg := 0.U
-  scoreboard.io.update.compute_read_finish_b := false.B
-  scoreboard.io.update.compute_read_finish_b_reg := 0.U
+    sb.io.update.load_finish_a := false.B
+    sb.io.update.load_finish_a_reg := 0.U
+    sb.io.update.load_finish_b := false.B
+    sb.io.update.load_finish_b_reg := 0.U
+    sb.io.update.load_finish_c := false.B
+    sb.io.update.load_finish_c_reg := 0.U
 
-  scoreboard.io.update.compute_write_finish_c := false.B
-  scoreboard.io.update.compute_write_finish_c_reg := 0.U
+    sb.io.update.compute_issue := false.B
+    sb.io.update.compute_issue_a_reg := 0.U
+    sb.io.update.compute_issue_b_reg := 0.U
+    sb.io.update.compute_issue_c_reg := 0.U
+    sb.io.update.compute_issue_fifo_idx := 0.U
 
-  scoreboard.io.update.store_issue := false.B
-  scoreboard.io.update.store_issue_c_reg := 0.U
-  scoreboard.io.update.store_issue_fifo_idx := 0.U
+    sb.io.update.compute_read_finish_a := false.B
+    sb.io.update.compute_read_finish_a_reg := 0.U
+    sb.io.update.compute_read_finish_b := false.B
+    sb.io.update.compute_read_finish_b_reg := 0.U
 
-  scoreboard.io.update.store_finish := false.B
-  scoreboard.io.update.store_finish_c_reg := 0.U
+    sb.io.update.compute_write_finish_c := false.B
+    sb.io.update.compute_write_finish_c_reg := 0.U
 
-  // Pending bookkeeping for outstanding micro tasks
-  val loadAllocIdx = RegInit(0.U(2.W))
-  val computeIssueIdx = RegInit(0.U(2.W))
-  val storeIssueIdx = RegInit(0.U(2.W))
+    sb.io.update.store_issue := false.B
+    sb.io.update.store_issue_c_reg := 0.U
+    sb.io.update.store_issue_fifo_idx := 0.U
 
-  val pendingLoadA = RegInit(false.B)
-  val pendingLoadAReg = RegInit(0.U(2.W))
-  val pendingLoadAFifoIdx = RegInit(0.U(LoadFifoIdxWidth.W))
-  val pendingLoadB = RegInit(false.B)
-  val pendingLoadBReg = RegInit(0.U(2.W))
-  val pendingLoadBFifoIdx = RegInit(0.U(LoadFifoIdxWidth.W))
-  val pendingLoadC = RegInit(false.B)
-  val pendingLoadCReg = RegInit(0.U(2.W))
-  val pendingLoadCFifoIdx = RegInit(0.U(LoadFifoIdxWidth.W))
-  val pendingLoadRow = RegInit(0.U(TileDimWidth.W))
-  val pendingLoadColumn = RegInit(0.U(TileDimWidth.W))
-  val pendingLoadTranspose = RegInit(false.B)
-
-  val pendingComputeA = RegInit(false.B)
-  val pendingComputeAReg = RegInit(0.U(2.W))
-  val pendingComputeAFifoIdx = RegInit(0.U(ComputeFifoIdxWidth.W))
-  val pendingComputeB = RegInit(false.B)
-  val pendingComputeBReg = RegInit(0.U(2.W))
-  val pendingComputeBFifoIdx = RegInit(0.U(ComputeFifoIdxWidth.W))
-  val pendingComputeC = RegInit(false.B)
-  val pendingComputeCReg = RegInit(0.U(2.W))
-  val pendingComputeCFifoIdx = RegInit(0.U(ComputeFifoIdxWidth.W))
-  val pendingComputeM = RegInit(0.U(TileDimWidth.W))
-  val pendingComputeN = RegInit(0.U(TileDimWidth.W))
-  val pendingComputeK = RegInit(0.U(TileDimWidth.W))
-  val pendingComputeIsMma = RegInit(false.B)
-  val pendingComputeIsFp = RegInit(false.B)
-
-  val pendingStore = RegInit(false.B)
-  val pendingStoreReg = RegInit(0.U(2.W))
-  val pendingStoreFifoIdx = RegInit(0.U(StoreFifoIdxWidth.W))
-  val pendingStoreRow = RegInit(0.U(TileDimWidth.W))
-  val pendingStoreColumn = RegInit(0.U(TileDimWidth.W))
-  val pendingStoreTranspose = RegInit(false.B)
-  val pendingStoreIsAcc = RegInit(false.B)
-
-  // Completion handshakes and scoreboard updates
-  io.AML_MicroTask_Config.MicroTaskEndReady := pendingLoadA
-  when(pendingLoadA && io.AML_MicroTask_Config.MicroTaskEndValid) {
-    scoreboard.io.update.load_finish_a := true.B
-    scoreboard.io.update.load_finish_a_reg := pendingLoadAReg
-    pendingLoadA := false.B
-    loadAFinishEvent.eventType := 2.U
-    loadAFinishEvent.regId := pendingLoadAReg
-    loadAFinishEvent.fifoIdx := pendingLoadAFifoIdx
-    loadAFinishEvent.needMask := "b001".U
-    loadAFinishEvent.row := pendingLoadRow
-    loadAFinishEvent.column := pendingLoadColumn
-    loadAFinishEvent.transpose := pendingLoadTranspose
-    loadAFinishEvent.isAcc := false.B
-    loadAFinishEventEn := true.B
+    sb.io.update.store_finish := false.B
+    sb.io.update.store_finish_c_reg := 0.U
   }
 
-  io.BML_MicroTask_Config.MicroTaskEndReady := pendingLoadB
-  when(pendingLoadB && io.BML_MicroTask_Config.MicroTaskEndValid) {
-    scoreboard.io.update.load_finish_b := true.B
-    scoreboard.io.update.load_finish_b_reg := pendingLoadBReg
-    pendingLoadB := false.B
-    loadBFinishEvent.eventType := 2.U
-    loadBFinishEvent.regId := pendingLoadBReg
-    loadBFinishEvent.fifoIdx := pendingLoadBFifoIdx
-    loadBFinishEvent.needMask := "b010".U
-    loadBFinishEvent.row := pendingLoadRow
-    loadBFinishEvent.column := pendingLoadColumn
-    loadBFinishEvent.transpose := pendingLoadTranspose
-    loadBFinishEvent.isAcc := false.B
-    loadBFinishEventEn := true.B
-  }
+  shadowScoreboard.foreach(clearShadowScoreboard)
 
-  io.CML_MicroTask_Config.LoadMicroTaskEndReady := pendingLoadC
-  when(pendingLoadC && io.CML_MicroTask_Config.LoadMicroTaskEndValid) {
-    scoreboard.io.update.load_finish_c := true.B
-    scoreboard.io.update.load_finish_c_reg := pendingLoadCReg
-    pendingLoadC := false.B
-    loadCFinishEvent.eventType := 2.U
-    loadCFinishEvent.regId := pendingLoadCReg
-    loadCFinishEvent.fifoIdx := pendingLoadCFifoIdx
-    loadCFinishEvent.needMask := "b100".U
-    loadCFinishEvent.row := pendingLoadRow
-    loadCFinishEvent.column := pendingLoadColumn
-    loadCFinishEvent.transpose := pendingLoadTranspose
-    loadCFinishEvent.isAcc := true.B
-    loadCFinishEventEn := true.B
-  }
-
-  io.CML_MicroTask_Config.StoreMicroTaskEndReady := pendingStore
-  when(pendingStore && io.CML_MicroTask_Config.StoreMicroTaskEndValid) {
-    scoreboard.io.update.store_finish := true.B
-    scoreboard.io.update.store_finish_c_reg := pendingStoreReg
-    pendingStore := false.B
-    storeFinishEvent.eventType := 1.U
-    storeFinishEvent.regId := pendingStoreReg
-    storeFinishEvent.fifoIdx := pendingStoreFifoIdx
-    storeFinishEvent.row := pendingStoreRow
-    storeFinishEvent.column := pendingStoreColumn
-    storeFinishEvent.transpose := pendingStoreTranspose
-    storeFinishEvent.isAcc := pendingStoreIsAcc
-    storeFinishEventEn := true.B
-  }
-
-  io.ADC_MicroTask_Config.MicroTaskEndReady := pendingComputeA
-  when(pendingComputeA && io.ADC_MicroTask_Config.MicroTaskEndValid) {
-    scoreboard.io.update.compute_read_finish_a := true.B
-    scoreboard.io.update.compute_read_finish_a_reg := pendingComputeAReg
-    pendingComputeA := false.B
-    computeReadAFinishEvent.eventType := 1.U
-    computeReadAFinishEvent.aReg := pendingComputeAReg
-    computeReadAFinishEvent.bReg := pendingComputeBReg
-    computeReadAFinishEvent.cReg := pendingComputeCReg
-    computeReadAFinishEvent.fifoIdx := pendingComputeAFifoIdx
-    computeReadAFinishEvent.mtilem := pendingComputeM
-    computeReadAFinishEvent.mtilen := pendingComputeN
-    computeReadAFinishEvent.mtilek := pendingComputeK
-    computeReadAFinishEvent.isMma := pendingComputeIsMma
-    computeReadAFinishEvent.isFp := pendingComputeIsFp
-    computeReadAFinishEventEn := true.B
-  }
-
-  io.BDC_MicroTask_Config.MicroTaskEndReady := pendingComputeB
-  when(pendingComputeB && io.BDC_MicroTask_Config.MicroTaskEndValid) {
-    scoreboard.io.update.compute_read_finish_b := true.B
-    scoreboard.io.update.compute_read_finish_b_reg := pendingComputeBReg
-    pendingComputeB := false.B
-    computeReadBFinishEvent.eventType := 2.U
-    computeReadBFinishEvent.aReg := pendingComputeAReg
-    computeReadBFinishEvent.bReg := pendingComputeBReg
-    computeReadBFinishEvent.cReg := pendingComputeCReg
-    computeReadBFinishEvent.fifoIdx := pendingComputeBFifoIdx
-    computeReadBFinishEvent.mtilem := pendingComputeM
-    computeReadBFinishEvent.mtilen := pendingComputeN
-    computeReadBFinishEvent.mtilek := pendingComputeK
-    computeReadBFinishEvent.isMma := pendingComputeIsMma
-    computeReadBFinishEvent.isFp := pendingComputeIsFp
-    computeReadBFinishEventEn := true.B
-  }
-
-  io.CDC_MicroTask_Config.MicroTaskEndReady := pendingComputeC
-  when(pendingComputeC && io.CDC_MicroTask_Config.MicroTaskEndValid) {
-    scoreboard.io.update.compute_write_finish_c := true.B
-    scoreboard.io.update.compute_write_finish_c_reg := pendingComputeCReg
-    pendingComputeC := false.B
-    computeWriteCFinishEvent.eventType := 3.U
-    computeWriteCFinishEvent.aReg := pendingComputeAReg
-    computeWriteCFinishEvent.bReg := pendingComputeBReg
-    computeWriteCFinishEvent.cReg := pendingComputeCReg
-    computeWriteCFinishEvent.fifoIdx := pendingComputeCFifoIdx
-    computeWriteCFinishEvent.mtilem := pendingComputeM
-    computeWriteCFinishEvent.mtilen := pendingComputeN
-    computeWriteCFinishEvent.mtilek := pendingComputeK
-    computeWriteCFinishEvent.isMma := pendingComputeIsMma
-    computeWriteCFinishEvent.isFp := pendingComputeIsFp
-    computeWriteCFinishEventEn := true.B
-  }
-
-  // 解码后的指令FIFO
+  // ===================== 指令译码FIFO =====================
   private val decodedFifo = Module(new Queue(new DecodedAmuCtrlEntry, DecodedAmuCtrlFIFODepth))
 
-  // FIFO出队暂未使用
-  decodedFifo.io.deq.ready := false.B
-
-  // AMU指令译码
   decodedFifo.io.enq.valid := io.ygjkctrl.amuCtrl.valid
   io.ygjkctrl.amuCtrl.ready := decodedFifo.io.enq.ready
 
   val amuCtrlBits = io.ygjkctrl.amuCtrl.bits
+  val decEntryEnq = Wire(new DecodedAmuCtrlEntry)
+  decEntryEnq.ctrl := amuCtrlBits
 
-  val entry = Wire(new DecodedAmuCtrlEntry)
-  entry.ctrl := amuCtrlBits
-
-  // 默认清零
   for (i <- 0 until MaxReadRegs) {
-    entry.readRegs(i) := 0.U
-    entry.readValid(i) := false.B
+    decEntryEnq.readRegs(i) := 0.U
+    decEntryEnq.readValid(i) := false.B
   }
   for (i <- 0 until MaxWriteRegs) {
-    entry.writeRegs(i) := 0.U
-    entry.writeValid(i) := false.B
+    decEntryEnq.writeRegs(i) := 0.U
+    decEntryEnq.writeValid(i) := false.B
   }
 
   when(amuCtrlBits.isMma()) {
     val mma = amuCtrlBits.data.asTypeOf(new AmuMmaIO)
-    entry.readRegs(0) := mma.ms1
-    entry.readRegs(1) := mma.ms2
-    entry.readRegs(2) := mma.md
-    entry.readValid(0) := true.B
-    entry.readValid(1) := true.B
-    entry.readValid(2) := true.B
-    entry.writeRegs(0) := mma.md
-    entry.writeValid(0) := true.B
+    decEntryEnq.readRegs(0) := mma.ms1
+    decEntryEnq.readRegs(1) := mma.ms2
+    decEntryEnq.readRegs(2) := mma.md
+    decEntryEnq.readValid(0) := true.B
+    decEntryEnq.readValid(1) := true.B
+    decEntryEnq.readValid(2) := true.B
+    decEntryEnq.writeRegs(0) := mma.md
+    decEntryEnq.writeValid(0) := true.B
   }
   when(amuCtrlBits.isMls()) {
     val lsu = amuCtrlBits.data.asTypeOf(new AmuLsuIO)
-    when(lsu.ls === 0.U) { // Load: 写寄存器
-      entry.writeRegs(0) := lsu.ms
-      entry.writeValid(0) := true.B
-    }.otherwise { // Store: 读寄存器
-      entry.readRegs(0) := lsu.ms
-      entry.readValid(0) := true.B
+    when(lsu.ls === 0.U) {
+      decEntryEnq.writeRegs(0) := lsu.ms
+      decEntryEnq.writeValid(0) := true.B
+    }.otherwise {
+      decEntryEnq.readRegs(0) := lsu.ms
+      decEntryEnq.readValid(0) := true.B
     }
   }
   when(amuCtrlBits.isArith()) {
     val arith = amuCtrlBits.data.asTypeOf(new AmuArithIO)
-    entry.readRegs(0) := arith.md
-    entry.readValid(0) := true.B
-    entry.writeRegs(0) := arith.md
-    entry.writeValid(0) := true.B
-  }
-
-  decodedFifo.io.enq.bits := entry
-
-  // 仅查询队首指令能否发射
-  val headValid = decodedFifo.io.deq.valid
-  val headEntry = decodedFifo.io.deq.bits
-
-  val isMma = headEntry.ctrl.isMma()
-  val isArith = headEntry.ctrl.isArith()
-  val isLsu = headEntry.ctrl.isMls()
-  val isRelease = headEntry.ctrl.isRelease()
-
-  val lsuInfo = headEntry.ctrl.data.asTypeOf(new AmuLsuIO)
-  val mmaInfo = headEntry.ctrl.data.asTypeOf(new AmuMmaIO)
-  val arithInfo = headEntry.ctrl.data.asTypeOf(new AmuArithIO)
-  val releaseInfo = headEntry.ctrl.data.asTypeOf(new AmuReleaseIO)
-
-  val isLoad = isLsu && headEntry.writeValid(0)
-  val isStore = isLsu && !headEntry.writeValid(0) && headEntry.readValid(0)
-  val arithDestIsAcc = arithInfo.md(2) === 1.U
-  val isMzeroAcc = isArith && arithDestIsAcc
-  val isMzeroTr = isArith && !arithDestIsAcc
-
-  val scoreboardReq = WireInit(0.U.asTypeOf(new QueryReq))
-  val scoreboardReqValid = WireInit(false.B)
-  when(headValid) {
-    when(isLoad) {
-      scoreboardReqValid := true.B
-      val fuType = MuxCase(ScoreboardFuType.AML, Seq(
-        lsuInfo.isacc -> ScoreboardFuType.CMLLoad,
-        lsuInfo.isA -> ScoreboardFuType.AML,
-        lsuInfo.isB -> ScoreboardFuType.BML
-      ))
-      scoreboardReq.fuType := fuType
-      scoreboardReq.dest.valid := true.B
-      scoreboardReq.dest.bits.is_acc := lsuInfo.isacc
-      scoreboardReq.dest.bits.accept(lsuInfo.ms)
-    }
-    when(isMma) {
-      scoreboardReqValid := true.B
-      scoreboardReq.fuType := ScoreboardFuType.Compute
-      scoreboardReq.dest.valid := true.B
-      scoreboardReq.dest.bits.is_acc := true.B
-      scoreboardReq.dest.bits.accept(mmaInfo.md)
-      scoreboardReq.src1.valid := true.B
-      scoreboardReq.src1.bits.is_acc := false.B
-      scoreboardReq.src1.bits.accept(mmaInfo.ms1)
-      scoreboardReq.src2.valid := true.B
-      scoreboardReq.src2.bits.is_acc := false.B
-      scoreboardReq.src2.bits.accept(mmaInfo.ms2)
-      scoreboardReq.src3.valid := true.B
-      scoreboardReq.src3.bits.is_acc := true.B
-      scoreboardReq.src3.bits.accept(mmaInfo.md)
-    }
-    when(isArith) {
-      scoreboardReqValid := true.B
-      scoreboardReq.fuType := Mux(arithDestIsAcc, ScoreboardFuType.CMLLoad, ScoreboardFuType.AML)
-      scoreboardReq.dest.valid := true.B
-      scoreboardReq.dest.bits.is_acc := arithDestIsAcc
-      scoreboardReq.dest.bits.accept(arithInfo.md)
-    }
-    when(isStore) {
-      scoreboardReqValid := true.B
-      scoreboardReq.fuType := ScoreboardFuType.CMLStore
-      scoreboardReq.src1.valid := true.B
-      scoreboardReq.src1.bits.is_acc := lsuInfo.isacc
-      scoreboardReq.src1.bits.accept(lsuInfo.ms)
+    // Current CUTE flow only supports mzero-style marith.
+    // Unknown marith opType is treated as NopLike (no read/write footprint).
+    val isMzeroLike = arith.opType(8, 2) === "b1101110".U
+    when(isMzeroLike) {
+      decEntryEnq.writeRegs(0) := arith.md
+      decEntryEnq.writeValid(0) := true.B
     }
   }
 
-  scoreboard.io.query.req.valid := scoreboardReqValid
-  scoreboard.io.query.req.bits := scoreboardReq
+  decodedFifo.io.enq.bits := decEntryEnq
 
-  val mmaUnitsReady = io.ADC_MicroTask_Config.MicroTaskReady &&
-    io.BDC_MicroTask_Config.MicroTaskReady &&
-    io.CDC_MicroTask_Config.MicroTaskReady
-  val storeUnitsReady = io.CML_MicroTask_Config.StoreMicroTaskReady
-  val zeroAccUnitsReady = io.CML_MicroTask_Config.LoadMicroTaskReady
-  val zeroTrUnitsReady = io.AML_MicroTask_Config.MicroTaskReady
-
-  val needA = isLoad && lsuInfo.isA
-  val needB = isLoad && lsuInfo.isB
-  val needC = isLoad && lsuInfo.isacc
-
-  val loadUnitsReady = (!needA || io.AML_MicroTask_Config.MicroTaskReady) &&
-    (!needB || io.BML_MicroTask_Config.MicroTaskReady) &&
-    (!needC || io.CML_MicroTask_Config.LoadMicroTaskReady)
-
-  // val storeReadersEmpty = scoreboard.io.debug.c_reg_reader_counts.map(_ === 0.U).reduce(_ && _)
-  val releaseReady = !pendingStore // && storeReadersEmpty
-
-  val scoreboardReqReady = !scoreboardReqValid || scoreboard.io.query.req.ready
-
-  val headReady = MuxCase(true.B, Seq(
-    (isLoad) -> (scoreboardReqReady && loadUnitsReady),
-    (isStore) -> (scoreboardReqReady && storeUnitsReady),
-    (isMma) -> (scoreboardReqReady && mmaUnitsReady),
-    (isMzeroAcc) -> (scoreboardReqReady && zeroAccUnitsReady),
-    (isMzeroTr) -> (scoreboardReqReady && zeroTrUnitsReady),
-    (isRelease) -> releaseReady
-  ))
-
-  decodedFifo.io.deq.ready := headValid && headReady
-
-  val issueFire = decodedFifo.io.deq.fire
-  val issueLoad = issueFire && isLoad
-  val issueStore = issueFire && isStore
-  val issueMma = issueFire && isMma
-  val issueZeroAcc = issueFire && isMzeroAcc
-  val issueZeroTr = issueFire && isMzeroTr
-  val issueRelease = issueFire && isRelease
-
-  when(issueLoad) {
-    val regIdx = lsuInfo.ms(1, 0)
-    val loadIdx = loadAllocIdx
-    when(needA) {
-      io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := lsuInfo.baseAddr
-      io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := lsuInfo.stride
-      io.AML_MicroTask_Config.ApplicationTensor_A.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
-        Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
-        Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
-        Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
-        Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
-      ))
-      io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
-      io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
-      io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-      io.AML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
-      io.AML_MicroTask_Config.MatrixRegTensor_K := MuxLookup(lsuInfo.widths, lsuInfo.column)(Seq(
-        Bundles.MSew.e8 -> lsuInfo.column,
-        Bundles.MSew.e16 -> lsuInfo.column * 2.U,
-        Bundles.MSew.e32 -> lsuInfo.column * 4.U,
-        Bundles.MSew.e4 -> lsuInfo.column / 2.U 
-      )) / ReduceWidthByte.U
-      io.AML_MicroTask_Config.MatrixRegId := regIdx
-      if (EnableDifftest) {
-        io.AML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
-        io.AML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
-      }
-
-      io.AML_MicroTask_Config.Conherent := true.B
-
-      io.AML_MicroTask_Config.MicroTaskValid := true.B
-      
-      pendingLoadA := true.B
-      pendingLoadAReg := regIdx
-      pendingLoadAFifoIdx := loadIdx
-    }
-    when(needB) {
-      io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr := lsuInfo.baseAddr
-      io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_Stride_N := lsuInfo.stride
-      io.BML_MicroTask_Config.ApplicationTensor_B.BlockTensor_B_BaseVaddr := lsuInfo.baseAddr
-      io.BML_MicroTask_Config.ApplicationTensor_B.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
-        Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
-        Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
-        Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
-        Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
-      ))
-      io.BML_MicroTask_Config.MatrixRegTensor_N := lsuInfo.column
-      io.BML_MicroTask_Config.MatrixRegTensor_K := MuxLookup(lsuInfo.widths, lsuInfo.row)(Seq(
-        Bundles.MSew.e8 -> lsuInfo.row,
-        Bundles.MSew.e16 -> lsuInfo.row * 2.U,
-        Bundles.MSew.e32 -> lsuInfo.row * 4.U,
-        Bundles.MSew.e4 -> lsuInfo.row / 2.U 
-      )) / ReduceWidthByte.U
-      io.BML_MicroTask_Config.MatrixRegId := regIdx
-      if (EnableDifftest) {
-        io.BML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
-        io.BML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
-      }
-      io.BML_MicroTask_Config.Conherent := true.B
-      io.BML_MicroTask_Config.MicroTaskValid := true.B
-      pendingLoadB := true.B
-      pendingLoadBReg := regIdx
-      pendingLoadBFifoIdx := loadIdx
-    }
-    when(needC) {
-      io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := lsuInfo.baseAddr
-      io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_Stride_M := lsuInfo.stride
-      io.CML_MicroTask_Config.ApplicationTensor_C.BlockTensor_C_BaseVaddr := lsuInfo.baseAddr
-      io.CML_MicroTask_Config.ApplicationTensor_C.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
-        Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
-        Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
-        Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
-        Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
-      ))
-      io.CML_MicroTask_Config.Conherent := true.B
-      io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
-      io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
-      io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-      io.CML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
-      io.CML_MicroTask_Config.MatrixRegTensor_N := lsuInfo.column
-      io.CML_MicroTask_Config.MatrixRegId := regIdx
-      if (EnableDifftest) {
-        io.CML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
-        io.CML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
-      }
-      io.CML_MicroTask_Config.LoadMicroTaskValid := true.B
-      io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
-      io.CML_MicroTask_Config.Is_Transpose := lsuInfo.transpose
-      
-      pendingLoadC := true.B
-      pendingLoadCReg := regIdx
-      pendingLoadCFifoIdx := loadIdx
-    }
-
-    when(needA || needB || needC) {
-      scoreboard.io.update.load_allocate := true.B
-      scoreboard.io.update.load_alloc_fifo_idx := loadIdx
-      scoreboard.io.update.load_alloc_a_reg := Mux(needA, regIdx, 0.U)
-      scoreboard.io.update.load_alloc_b_reg := Mux(needB, regIdx, 0.U)
-      scoreboard.io.update.load_alloc_c_reg := Mux(needC, regIdx, 0.U)
-      scoreboard.io.update.load_alloc_has_a := needA
-      scoreboard.io.update.load_alloc_has_b := needB
-      scoreboard.io.update.load_alloc_has_c := needC
-      loadAllocIdx := loadAllocIdx + 1.U
-      pendingLoadRow := lsuInfo.row
-      pendingLoadColumn := lsuInfo.column
-      pendingLoadTranspose := lsuInfo.transpose
-
-      loadAllocateEvent.eventType := 0.U
-      loadAllocateEvent.regId := regIdx
-      loadAllocateEvent.fifoIdx := loadIdx
-      loadAllocateEvent.needMask := Cat(needC.asUInt, needB.asUInt, needA.asUInt)
-      loadAllocateEvent.row := lsuInfo.row
-      loadAllocateEvent.column := lsuInfo.column
-      loadAllocateEvent.transpose := lsuInfo.transpose
-      loadAllocateEvent.isAcc := lsuInfo.isacc
-      loadAllocateEventEn := true.B
-    }
-
-    loadIssueEvent.eventType := 1.U
-    loadIssueEvent.regId := regIdx
-    loadIssueEvent.fifoIdx := loadIdx
-    loadIssueEvent.needMask := Cat(needC.asUInt, needB.asUInt, needA.asUInt)
-    loadIssueEvent.row := lsuInfo.row
-    loadIssueEvent.column := lsuInfo.column
-    loadIssueEvent.transpose := lsuInfo.transpose
-    loadIssueEvent.isAcc := lsuInfo.isacc
-    loadIssueEventEn := true.B
+  // ===================== 调度窗口状态 =====================
+  class IssueWindowSlot(implicit p: Parameters) extends CuteBundle {
+    val valid = Bool()
+    val issued = Bool()
+    val completed = Bool()
+    val readADone = Bool()
+    val readBDone = Bool()
+    val waitCompleteMask = UInt(WinDepth.W)
+    val waitReadAMask = UInt(WinDepth.W)
+    val waitReadBMask = UInt(WinDepth.W)
+    val opKind = TaskCtrlOpKind()
+    val entry = new DecodedAmuCtrlEntry
+    val seqId = UInt(SeqIdWidth.W)
+    val fifoIdx = UInt(4.W)
   }
 
-  when(issueZeroAcc) {
-    val regIdx = arithInfo.md(1, 0)
-    val loadIdx = loadAllocIdx
-
-    io.CML_MicroTask_Config.ApplicationTensor_C.dataType := ElementDataType.DataTypeWidth32
-    io.CML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
-    io.CML_MicroTask_Config.MatrixRegTensor_N := cuteParams.Tensor_MN.U
-    io.CML_MicroTask_Config.MatrixRegId := regIdx
-    io.CML_MicroTask_Config.LoadMicroTaskValid := true.B
-    io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
-    io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
-    io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
-    io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-    io.CML_MicroTask_Config.Conherent := true.B
-    io.CML_MicroTask_Config.Is_Transpose := false.B
-    if (EnableDifftest) {
-      io.CML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
-      io.CML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
-    }
-
-    scoreboard.io.update.load_allocate := true.B
-    scoreboard.io.update.load_alloc_fifo_idx := loadIdx
-    scoreboard.io.update.load_alloc_a_reg := 0.U
-    scoreboard.io.update.load_alloc_b_reg := 0.U
-    scoreboard.io.update.load_alloc_c_reg := regIdx
-    scoreboard.io.update.load_alloc_has_a := false.B
-    scoreboard.io.update.load_alloc_has_b := false.B
-    scoreboard.io.update.load_alloc_has_c := true.B
-    loadAllocIdx := loadAllocIdx + 1.U
-
-    pendingLoadC := true.B
-    pendingLoadCReg := regIdx
-    pendingLoadCFifoIdx := loadIdx
-    pendingLoadRow := 0.U
-    pendingLoadColumn := 0.U
-    pendingLoadTranspose := false.B
-
-    loadAllocateEvent.eventType := 0.U
-    loadAllocateEvent.regId := regIdx
-    loadAllocateEvent.fifoIdx := loadIdx
-    loadAllocateEvent.needMask := "b100".U
-    loadAllocateEvent.row := 0.U
-    loadAllocateEvent.column := 0.U
-    loadAllocateEvent.transpose := false.B
-    loadAllocateEvent.isAcc := true.B
-    loadAllocateEventEn := true.B
-
-    loadIssueEvent.eventType := 1.U
-    loadIssueEvent.regId := regIdx
-    loadIssueEvent.fifoIdx := loadIdx
-    loadIssueEvent.needMask := "b100".U
-    loadIssueEvent.row := 0.U
-    loadIssueEvent.column := 0.U
-    loadIssueEvent.transpose := false.B
-    loadIssueEvent.isAcc := true.B
-    loadIssueEventEn := true.B
+  class FuTracker extends Bundle {
+    val busy = Bool()
+    val ownerSlot = UInt(SlotIdxWidth.W)
   }
 
-  when(issueZeroTr) {
-    val regIdx = arithInfo.md(1, 0)
-    val loadIdx = loadAllocIdx
+  val slots = RegInit(VecInit(Seq.fill(WinDepth)(0.U.asTypeOf(new IssueWindowSlot))))
+  val winHead = RegInit(0.U(SlotIdxWidth.W))
+  val winTail = RegInit(0.U(SlotIdxWidth.W))
+  val winCount = RegInit(0.U(WinCountWidth.W))
+  val seqIdAlloc = RegInit(0.U(SeqIdWidth.W))
 
-    io.AML_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
-    io.AML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
-    io.AML_MicroTask_Config.MatrixRegTensor_K := cuteParams.Tensor_K.U / ReduceWidthByte.U
-    io.AML_MicroTask_Config.MatrixRegId := regIdx
-    io.AML_MicroTask_Config.MicroTaskValid := true.B
-    io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
-    io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
-    io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-    io.AML_MicroTask_Config.Conherent := true.B
-    if (EnableDifftest) {
-      io.AML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
-      io.AML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
-    }
+  val loadFifoIdxAlloc = RegInit(0.U(LoadFifoIdxWidth.W))
+  val computeIssueIdx = RegInit(0.U(ComputeFifoIdxWidth.W))
+  val storeIssueIdx = RegInit(0.U(StoreFifoIdxWidth.W))
 
-    scoreboard.io.update.load_allocate := true.B
-    scoreboard.io.update.load_alloc_fifo_idx := loadIdx
-    scoreboard.io.update.load_alloc_a_reg := regIdx
-    scoreboard.io.update.load_alloc_b_reg := 0.U
-    scoreboard.io.update.load_alloc_c_reg := 0.U
-    scoreboard.io.update.load_alloc_has_a := true.B
-    scoreboard.io.update.load_alloc_has_b := false.B
-    scoreboard.io.update.load_alloc_has_c := false.B
-    loadAllocIdx := loadAllocIdx + 1.U
+  val fuAML = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuBML = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuCMLLoad = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuCompute = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuCMLStore = RegInit(0.U.asTypeOf(new FuTracker))
 
-    pendingLoadA := true.B
-    pendingLoadAReg := regIdx
-    pendingLoadAFifoIdx := loadIdx
-    pendingLoadRow := 0.U
-    pendingLoadColumn := 0.U
-    pendingLoadTranspose := false.B
+  private def slotOH(idx: UInt): UInt = UIntToOH(idx, WinDepth)
+  private def abIdx(x: UInt): UInt = x(ABMatrixRegIdWidth - 1, 0)
+  private def cIdx(x: UInt): UInt = x(CMatrixRegIdWidth - 1, 0)
 
-    loadAllocateEvent.eventType := 0.U
-    loadAllocateEvent.regId := regIdx
-    loadAllocateEvent.fifoIdx := loadIdx
-    loadAllocateEvent.needMask := "b100".U
-    loadAllocateEvent.row := 0.U
-    loadAllocateEvent.column := 0.U
-    loadAllocateEvent.transpose := false.B
-    loadAllocateEvent.isAcc := false.B
-    loadAllocateEventEn := true.B
-
-    loadIssueEvent.eventType := 1.U
-    loadIssueEvent.regId := regIdx
-    loadIssueEvent.fifoIdx := loadIdx
-    loadIssueEvent.needMask := "b100".U
-    loadIssueEvent.row := 0.U
-    loadIssueEvent.column := 0.U
-    loadIssueEvent.transpose := false.B
-    loadIssueEvent.isAcc := false.B
-    loadIssueEventEn := true.B
+  private def isReadAB(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt, treatStoreAsABRead: Bool): Bool = {
+    val mma = e.ctrl.data.asTypeOf(new AmuMmaIO)
+    val lsu = e.ctrl.data.asTypeOf(new AmuLsuIO)
+    (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms1) === abIdx(reg) || abIdx(mma.ms2) === abIdx(reg)) ||
+      (op === TaskCtrlOpKind.Store) && treatStoreAsABRead && (abIdx(lsu.ms) === abIdx(reg))
   }
 
-  val mmaDataType = WireInit(0.U.asTypeOf(io.MTE_MicroTask_Config.dataType))
-  io.MTE_MicroTask_Config.dataType := mmaDataType  // Latch inside MTE.
-  io.MTE_MicroTask_Config.MicroTaskValid := issueMma
+  private def isReadC(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt, treatStoreAsCRead: Bool): Bool = {
+    val mma = e.ctrl.data.asTypeOf(new AmuMmaIO)
+    val lsu = e.ctrl.data.asTypeOf(new AmuLsuIO)
+    ((op === TaskCtrlOpKind.Compute) && (cIdx(mma.md) === cIdx(reg))) ||
+      ((op === TaskCtrlOpKind.Store) && treatStoreAsCRead && (cIdx(lsu.ms) === cIdx(reg)))
+  }
 
-  when(issueMma) {
-    val aReg = Mux(isMma, mmaInfo.ms1(1, 0), arithInfo.md(1, 0))
-    val bReg = Mux(isMma, mmaInfo.ms2(1, 0), arithInfo.md(1, 0))
-    val cReg = Mux(isMma, mmaInfo.md(1, 0), arithInfo.md(1, 0))
-    val computeIdx = computeIssueIdx
+  private def isWriteAB(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt): Bool = {
+    val lsu = e.ctrl.data.asTypeOf(new AmuLsuIO)
+    val arith = e.ctrl.data.asTypeOf(new AmuArithIO)
+    ((op === TaskCtrlOpKind.LoadA || op === TaskCtrlOpKind.LoadB) && (abIdx(lsu.ms) === abIdx(reg))) ||
+      ((op === TaskCtrlOpKind.ZeroTr) && (abIdx(arith.md) === abIdx(reg)))
+  }
 
-    io.ADC_MicroTask_Config.MicroTaskValid := true.B
-    io.BDC_MicroTask_Config.MicroTaskValid := true.B
-    io.CDC_MicroTask_Config.MicroTaskValid := true.B
+  private def isWriteC(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt): Bool = {
+    val mma = e.ctrl.data.asTypeOf(new AmuMmaIO)
+    val lsu = e.ctrl.data.asTypeOf(new AmuLsuIO)
+    val arith = e.ctrl.data.asTypeOf(new AmuArithIO)
+    ((op === TaskCtrlOpKind.Compute) && (cIdx(mma.md) === cIdx(reg))) ||
+      ((op === TaskCtrlOpKind.LoadC) && (cIdx(lsu.ms) === cIdx(reg))) ||
+      ((op === TaskCtrlOpKind.ZeroAcc) && (cIdx(arith.md) === cIdx(reg)))
+  }
 
-    val mVal = mmaInfo.mtilem
-    val nVal = mmaInfo.mtilen
-    // val kVal = mmaInfo.mtilek
-    val kVal = MuxLookup(mmaInfo.types1(1, 0), mmaInfo.mtilek)(Seq(
-      Bundles.MSew.e8 -> mmaInfo.mtilek,
-      Bundles.MSew.e16 -> mmaInfo.mtilek * 2.U,
-      Bundles.MSew.e32 -> mmaInfo.mtilek * 4.U,
-      Bundles.MSew.e4 -> mmaInfo.mtilek / 2.U,
+  private def isReadAOfCompute(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt): Bool = {
+    val mma = e.ctrl.data.asTypeOf(new AmuMmaIO)
+    (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms1) === abIdx(reg))
+  }
+
+  private def isReadBOfCompute(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt): Bool = {
+    val mma = e.ctrl.data.asTypeOf(new AmuMmaIO)
+    (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms2) === abIdx(reg))
+  }
+
+  // ===================== done握手（电平ready） =====================
+  val amlOwnerValid = fuAML.busy && slots(fuAML.ownerSlot).valid
+  val bmlOwnerValid = fuBML.busy && slots(fuBML.ownerSlot).valid
+  val cmlLoadOwnerValid = fuCMLLoad.busy && slots(fuCMLLoad.ownerSlot).valid
+  val cmlStoreOwnerValid = fuCMLStore.busy && slots(fuCMLStore.ownerSlot).valid
+  val computeOwnerValid = fuCompute.busy && slots(fuCompute.ownerSlot).valid
+
+  io.AML_MicroTask_Config.MicroTaskEndReady := amlOwnerValid
+  io.BML_MicroTask_Config.MicroTaskEndReady := bmlOwnerValid
+  io.CML_MicroTask_Config.LoadMicroTaskEndReady := cmlLoadOwnerValid
+  io.CML_MicroTask_Config.StoreMicroTaskEndReady := cmlStoreOwnerValid
+  io.ADC_MicroTask_Config.MicroTaskEndReady := computeOwnerValid
+  io.BDC_MicroTask_Config.MicroTaskEndReady := computeOwnerValid
+  io.CDC_MicroTask_Config.MicroTaskEndReady := computeOwnerValid
+
+  val amlDone = io.AML_MicroTask_Config.MicroTaskEndValid && io.AML_MicroTask_Config.MicroTaskEndReady
+  val bmlDone = io.BML_MicroTask_Config.MicroTaskEndValid && io.BML_MicroTask_Config.MicroTaskEndReady
+  val cmlLoadDone = io.CML_MicroTask_Config.LoadMicroTaskEndValid && io.CML_MicroTask_Config.LoadMicroTaskEndReady
+  val cmlStoreDone = io.CML_MicroTask_Config.StoreMicroTaskEndValid && io.CML_MicroTask_Config.StoreMicroTaskEndReady
+  val adcDone = io.ADC_MicroTask_Config.MicroTaskEndValid && io.ADC_MicroTask_Config.MicroTaskEndReady
+  val bdcDone = io.BDC_MicroTask_Config.MicroTaskEndValid && io.BDC_MicroTask_Config.MicroTaskEndReady
+  val cdcDone = io.CDC_MicroTask_Config.MicroTaskEndValid && io.CDC_MicroTask_Config.MicroTaskEndReady
+
+  when(io.AML_MicroTask_Config.MicroTaskEndValid) {
+    assert(amlOwnerValid, "TaskController: AML done without valid owner")
+  }
+  when(io.BML_MicroTask_Config.MicroTaskEndValid) {
+    assert(bmlOwnerValid, "TaskController: BML done without valid owner")
+  }
+  when(io.CML_MicroTask_Config.LoadMicroTaskEndValid) {
+    assert(cmlLoadOwnerValid, "TaskController: CML-load done without valid owner")
+  }
+  when(io.CML_MicroTask_Config.StoreMicroTaskEndValid) {
+    assert(cmlStoreOwnerValid, "TaskController: CML-store done without valid owner")
+  }
+  when(io.ADC_MicroTask_Config.MicroTaskEndValid) {
+    assert(computeOwnerValid, "TaskController: ADC done without valid owner")
+  }
+  when(io.BDC_MicroTask_Config.MicroTaskEndValid) {
+    assert(computeOwnerValid, "TaskController: BDC done without valid owner")
+  }
+  when(io.CDC_MicroTask_Config.MicroTaskEndValid) {
+    assert(computeOwnerValid, "TaskController: CDC done without valid owner")
+  }
+
+  // ===================== 入窗侧分类 =====================
+  val deqValid = decodedFifo.io.deq.valid
+  val deqEntry = decodedFifo.io.deq.bits
+
+  val deqIsMma = deqEntry.ctrl.isMma()
+  val deqIsArith = deqEntry.ctrl.isArith()
+  val deqIsLsu = deqEntry.ctrl.isMls()
+  val deqIsRelease = deqEntry.ctrl.isRelease()
+
+  val deqLsu = deqEntry.ctrl.data.asTypeOf(new AmuLsuIO)
+  val deqArith = deqEntry.ctrl.data.asTypeOf(new AmuArithIO)
+
+  val deqIsLoad = deqIsLsu && deqLsu.ls === 0.U
+  val deqLoadSelOH = Cat(deqLsu.isacc, deqLsu.isB, deqLsu.isA)
+  val deqLoadSelOneHot = PopCount(deqLoadSelOH) === 1.U
+  val deqIsMzeroLike = deqIsArith && (deqArith.opType(8, 2) === "b1101110".U)
+
+  when(deqValid && deqIsLoad) {
+    assert(deqLoadSelOneHot, "TaskController: MLS load selector must be onehot among isA/isB/isacc")
+  }
+
+  val deqOpKind = Wire(TaskCtrlOpKind())
+  deqOpKind := TaskCtrlOpKind.NopLike
+  when(deqIsMma) {
+    deqOpKind := TaskCtrlOpKind.Compute
+  }.elsewhen(deqIsLsu && deqLsu.ls === 1.U) {
+    deqOpKind := TaskCtrlOpKind.Store
+  }.elsewhen(deqIsLoad && deqLoadSelOneHot && deqLsu.isA) {
+    deqOpKind := TaskCtrlOpKind.LoadA
+  }.elsewhen(deqIsLoad && deqLoadSelOneHot && deqLsu.isB) {
+    deqOpKind := TaskCtrlOpKind.LoadB
+  }.elsewhen(deqIsLoad && deqLoadSelOneHot && deqLsu.isacc) {
+    deqOpKind := TaskCtrlOpKind.LoadC
+  }.elsewhen(deqIsRelease) {
+    deqOpKind := TaskCtrlOpKind.Release
+  }.elsewhen(deqIsMzeroLike && deqArith.md(2) === 1.U) {
+    deqOpKind := TaskCtrlOpKind.ZeroAcc
+  }.elsewhen(deqIsMzeroLike && deqArith.md(2) === 0.U) {
+    deqOpKind := TaskCtrlOpKind.ZeroTr
+  }
+
+  // ===================== oldest-ready 发射判定（基于拍初状态） =====================
+  val completedVec = VecInit(slots.map(s => s.valid && s.completed)).asUInt
+  val readAVec = VecInit(slots.map(s => s.valid && s.readADone)).asUInt
+  val readBVec = VecInit(slots.map(s => s.valid && s.readBDone)).asUInt
+
+  val readyByAge = Wire(Vec(WinDepth, Bool()))
+  readyByAge.foreach(_ := false.B)
+  for (age <- 0 until WinDepth) {
+    val idx = (winHead + age.U)(SlotIdxWidth - 1, 0)
+    val inWindow = age.U < winCount
+    val slot = slots(idx)
+
+    val depReady =
+      ((slot.waitCompleteMask & (~completedVec)(WinDepth - 1, 0)) === 0.U) &&
+      ((slot.waitReadAMask & (~readAVec)(WinDepth - 1, 0)) === 0.U) &&
+      ((slot.waitReadBMask & (~readBVec)(WinDepth - 1, 0)) === 0.U)
+
+    val fuReady = MuxLookup(slot.opKind.asUInt, true.B)(Seq(
+      TaskCtrlOpKind.LoadA.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
+      TaskCtrlOpKind.LoadB.asUInt -> (!fuBML.busy && io.BML_MicroTask_Config.MicroTaskReady),
+      TaskCtrlOpKind.LoadC.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
+      TaskCtrlOpKind.ZeroAcc.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
+      TaskCtrlOpKind.ZeroTr.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
+      TaskCtrlOpKind.Store.asUInt -> (!fuCMLStore.busy && io.CML_MicroTask_Config.StoreMicroTaskReady),
+      TaskCtrlOpKind.Compute.asUInt -> (!fuCompute.busy && io.ADC_MicroTask_Config.MicroTaskReady && io.BDC_MicroTask_Config.MicroTaskReady && io.CDC_MicroTask_Config.MicroTaskReady),
+      TaskCtrlOpKind.Release.asUInt -> true.B,
+      TaskCtrlOpKind.NopLike.asUInt -> true.B
     ))
 
-    io.ADC_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
-    io.ADC_MicroTask_Config.MatrixRegTensor_M := mVal
-    io.ADC_MicroTask_Config.MatrixRegTensor_N := nVal
-    io.ADC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
-    io.ADC_MicroTask_Config.MatrixRegId := aReg
-    io.ADC_MicroTask_Config.Is_Transpose := false.B
-
-    io.BDC_MicroTask_Config.ApplicationTensor_B.dataType := ElementDataType.DataTypeWidth8
-    io.BDC_MicroTask_Config.MatrixRegTensor_M := mVal
-    io.BDC_MicroTask_Config.MatrixRegTensor_N := nVal
-    io.BDC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
-    io.BDC_MicroTask_Config.MatrixRegId := bReg
-    io.BDC_MicroTask_Config.Is_Transpose := false.B
-
-    io.CDC_MicroTask_Config.ApplicationTensor_C.dataType := ElementDataType.DataTypeWidth32
-    io.CDC_MicroTask_Config.MatrixRegTensor_M := mVal
-    io.CDC_MicroTask_Config.MatrixRegTensor_N := nVal
-    io.CDC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U // TODO: It's not hardware-friendly, but it's ok for now
-    io.CDC_MicroTask_Config.MatrixRegId := cReg
-    io.CDC_MicroTask_Config.Is_Transpose := false.B
-    io.CDC_MicroTask_Config.Is_AfterOps_Tile := false.B
-    if (EnableDifftest) {
-      io.CDC_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
-      io.CDC_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
-    }
-
-    /* 
-        types1, types2, typed encoding refereence
-          output.typed  := Cat(
-    MmulOpType.isFloat(realFuOpType) && MmulOpType.isToE16(realFuOpType) && MmulOpType.isBf16(realFuOpType),
-    MmulOpType.getToType(realFuOpType)
-  )
-  output.types1  := Cat(
-    Mux(MmulOpType.isFloat(realFuOpType),
-      Mux1H(Seq(
-        MmulOpType.isFromE4(realFuOpType) -> "b0".U,
-        MmulOpType.isFromE8(realFuOpType) -> MmulOpType.isE4m3(realFuOpType).asUInt,
-        MmulOpType.isFromE16(realFuOpType) -> MmulOpType.isBf16(realFuOpType).asUInt,
-        MmulOpType.isFromE32(realFuOpType) -> MmulOpType.isTf32(realFuOpType).asUInt,
-      )),
-      MmulOpType.ms1sign(realFuOpType).asUInt
-    ),
-    MmulOpType.getFromType(realFuOpType)
-  )
-  output.types2  := Cat(
-    Mux(MmulOpType.isFloat(realFuOpType),
-      Mux1H(Seq(
-        MmulOpType.isToE4(realFuOpType) -> "b0".U,
-        MmulOpType.isToE8(realFuOpType) -> MmulOpType.isE4m3(realFuOpType).asUInt,
-        MmulOpType.isToE16(realFuOpType) -> MmulOpType.isBf16(realFuOpType).asUInt,
-        MmulOpType.isToE32(realFuOpType) -> MmulOpType.isTf32(realFuOpType).asUInt,
-      )),
-      MmulOpType.ms2sign(realFuOpType).asUInt
-    ),
-    MmulOpType.getFromType(realFuOpType)
-  )
-
-  object MmulOpType {
-    def placeholder = "b11_111_111".U
-
-    // bit encoding:
-    // | 7  | 6  | 5 4 3 | 2 1 | 0 |
-    // |int | sgn| from  | to  |sat|
-    // int: 0 for int, 1 for float
-    // sgn: 0 for unsigned, 1 for signed (only for int)
-    // from: source element width, 3'b100 for msew
-    // to: target element width, 2'b00 for 1W, 2'b01 for 2W, 2'b10 for 4W
-    // sat: 0 for no saturation, 1 for saturation
-
-    def hybridprec    (func: UInt) = func(8) === "b1".U
-
-    def isInt         (func: UInt) = func(7) === "b0".U
-    def isFloat       (func: UInt) = func(7) === "b1".U
-
-    def isFp16     (func: UInt) = isFloat(func) && !func(6)
-    def isBf16     (func: UInt) = isFloat(func) && func(6)
-    def isE5m2     (func: UInt) = isFloat(func) && !func(4)
-    def isE4m3     (func: UInt) = isFloat(func) && func(4)
-    def isFp32     (func: UInt) = isFloat(func) && !func(4)
-    def isTf32     (func: UInt) = isFloat(func) && func(4)
-
-    def ms1sign    (func: UInt) = isInt(func) && func(5)
-    def ms1unsigned(func: UInt) = isInt(func) && !func(5)
-    def ms2sign    (func: UInt) = isInt(func) && func(4)
-    def ms2unsigned(func: UInt) = isInt(func) && !func(4)
-
-    def isFromE4   (func: UInt) = func(3, 2) === "b11".U
-    def isFromE8   (func: UInt) = func(3, 2) === "b00".U
-    def isFromE16  (func: UInt) = func(3, 2) === "b01".U
-    def isFromE32  (func: UInt) = func(3, 2) === "b10".U
-
-    def isToE4     (func: UInt) = func(1, 0) === "b11".U
-    def isToE8     (func: UInt) = func(1, 0) === "b00".U
-    def isToE16    (func: UInt) = func(1, 0) === "b01".U
-    def isToE32    (func: UInt) = func(1, 0) === "b10".U
-
-    def mma_e5m2_fp16 = "b0_1_000_00_01".U
-    def mma_e4m3_fp16 = "b0_1_001_00_01".U
-    def mma_e5m2_bf16 = "b0_1_100_00_01".U
-    def mma_e4m3_bf16 = "b0_1_101_00_01".U
-    def mma_e5m2_fp32 = "b0_1_000_00_10".U
-    def mma_e4m3_fp32 = "b0_1_001_00_10".U
-    def mma_fp16_fp16 = "b0_1_000_01_01".U
-    def mma_fp16_fp32 = "b0_1_000_01_10".U
-    def mma_bf16_fp32 = "b0_1_100_01_10".U
-    def mma_tf32_fp32 = "b0_1_001_10_10".U
-    def mma_fp32_fp32 = "b0_1_000_10_10".U
-
-    def mma_int8_int32    = "b0_0_011_00_10".U
-    def mma_uint8_int32   = "b0_0_000_00_10".U
-    def mma_usint8_int32  = "b0_0_001_00_10".U
-    def mma_suint8_uint32 = "b0_0_010_00_10".U
-    def mma_int4_int32    = "b0_0_011_11_10".U
-    def mma_uint4_uint32  = "b0_0_000_11_10".U
-    def mma_usint4_uint32 = "b0_0_001_11_10".U
-    def mma_suint4_int32  = "b0_0_010_11_10".U
-
-    def getFromType(func: UInt) = func(3, 2)
-    def getToType(func: UInt) = func(1, 0)
-  }
-     */
-
-    when (mmaInfo.isfp) {
-      // types = Cat(isFloat?typeBit:sign, getFromType[1:0])
-      // For FP: typeBit = isE4m3(E8)/isBf16(E16)/isTf32(E32)/0(E4)
-      // FP16: Cat(0, 01) = b001
-      when (mmaInfo.types1 === "b001".U && mmaInfo.types2 === "b001".U) {
-        mmaDataType := DataTypeF16F16F32
-      // FP8 E5M2: Cat(0, 00) = b000
-      }.elsewhen (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b000".U) {
-        mmaDataType := DataTypefp8e5m2F32
-      // FP8 E4M3: Cat(1, 00) = b100
-      }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b100".U) {
-        mmaDataType := DataTypefp8e4m3F32
-      // BF16: Cat(1, 01) = b101
-      }.elsewhen (mmaInfo.types1 === "b101".U && mmaInfo.types2 === "b101".U) {
-        mmaDataType := DataTypeBF16BF16F32
-      // FP32: Cat(0, 10) = b010
-      }.elsewhen (mmaInfo.types1 === "b010".U && mmaInfo.types2 === "b010".U) {
-        mmaDataType := DataTypeUndef  // DataTypeFP32FP32FP32
-      // TF32: Cat(1, 10) = b110
-      }.elsewhen (mmaInfo.types1 === "b110".U && mmaInfo.types2 === "b110".U) {
-        mmaDataType := DataTypeTF32TF32F32
-      // FP4: Cat(0, 11) = b011
-      }.elsewhen (mmaInfo.types1 === "b011".U && mmaInfo.types2 === "b011".U) {
-        // NVFP4 vs MXFP4 need to be distinguished by other means
-        mmaDataType := DataTypenvfp4F32
-      }.otherwise {
-        mmaDataType := DataTypeUndef
-      }
-    }.otherwise { // !mmaInfo.isfp - Integer types
-      // types = Cat(sign, getFromType[1:0])
-      // U8: Cat(0, 00) = b000
-      // I8: Cat(1, 00) = b100
-      when (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b000".U) {
-        mmaDataType := DataTypeU8U8I32
-      }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b000".U) {
-        mmaDataType := DataTypeI8U8I32
-      }.elsewhen (mmaInfo.types1 === "b000".U && mmaInfo.types2 === "b100".U) {
-        mmaDataType := DataTypeU8I8I32
-      }.elsewhen (mmaInfo.types1 === "b100".U && mmaInfo.types2 === "b100".U) {
-        mmaDataType := DataTypeI8I8I32
-      }.otherwise {
-        mmaDataType := DataTypeUndef
-      }
-    }
-
-    scoreboard.io.update.compute_issue := true.B
-    scoreboard.io.update.compute_issue_a_reg := aReg
-    scoreboard.io.update.compute_issue_b_reg := bReg
-    scoreboard.io.update.compute_issue_c_reg := cReg
-    scoreboard.io.update.compute_issue_fifo_idx := computeIdx
-    computeIssueIdx := computeIssueIdx + 1.U
-
-    pendingComputeA := true.B
-    pendingComputeAReg := aReg
-    pendingComputeAFifoIdx := computeIdx
-    pendingComputeB := true.B
-    pendingComputeBReg := bReg
-    pendingComputeBFifoIdx := computeIdx
-    pendingComputeC := true.B
-    pendingComputeCReg := cReg
-    pendingComputeCFifoIdx := computeIdx
-    pendingComputeM := mVal
-    pendingComputeN := nVal
-    pendingComputeK := kVal
-    pendingComputeIsMma := isMma
-    pendingComputeIsFp := Mux(isMma, mmaInfo.isfp, false.B)
-
-    computeIssueEvent.eventType := 0.U
-    computeIssueEvent.aReg := aReg
-    computeIssueEvent.bReg := bReg
-    computeIssueEvent.cReg := cReg
-    computeIssueEvent.fifoIdx := computeIdx
-    computeIssueEvent.mtilem := mVal
-    computeIssueEvent.mtilen := nVal
-    computeIssueEvent.mtilek := kVal
-    computeIssueEvent.isMma := isMma
-    computeIssueEvent.isFp := Mux(isMma, mmaInfo.isfp, false.B)
-    computeIssueEventEn := true.B
+    readyByAge(age) := inWindow && slot.valid && !slot.issued && depReady && fuReady
   }
 
-  when(issueStore) {
-    val regIdx = lsuInfo.ms(1, 0)
-    val storeIdx = storeIssueIdx
-    
-    io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_BaseVaddr := lsuInfo.baseAddr
-    io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_Stride_M := lsuInfo.stride
-    io.CML_MicroTask_Config.ApplicationTensor_D.BlockTensor_D_BaseVaddr := lsuInfo.baseAddr
-    io.CML_MicroTask_Config.ApplicationTensor_D.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
+  val issueFound = readyByAge.asUInt.orR
+  val issueAgeOH = PriorityEncoderOH(readyByAge)
+  val issueAge = OHToUInt(issueAgeOH)
+  val issueSlotIdx = WireInit(0.U(SlotIdxWidth.W))
+  when(issueFound) {
+    issueSlotIdx := (winHead + issueAge)(SlotIdxWidth - 1, 0)
+  }
+
+  val issueFire = issueFound
+  val issueSlot = slots(issueSlotIdx)
+
+  val deqStoreReadsAB = deqIsLsu && (deqLsu.ls === 1.U) && !deqLsu.isacc
+  val deqStoreReadsC = deqIsLsu && (deqLsu.ls === 1.U) && deqLsu.isacc
+
+  // ===================== 退休前瞻（基于 done 收敛后） =====================
+  val headSlot = slots(winHead)
+
+  val headDoneByFu =
+    (amlDone && fuAML.busy && fuAML.ownerSlot === winHead) ||
+    (bmlDone && fuBML.busy && fuBML.ownerSlot === winHead) ||
+    (cmlLoadDone && fuCMLLoad.busy && fuCMLLoad.ownerSlot === winHead) ||
+    (cmlStoreDone && fuCMLStore.busy && fuCMLStore.ownerSlot === winHead) ||
+    (cdcDone && fuCompute.busy && fuCompute.ownerSlot === winHead)
+
+  val headCompletedAfterDone = headSlot.completed || headDoneByFu
+  val retireFire = headSlot.valid && headCompletedAfterDone
+
+  // 允许同拍 retire + enqueue（包括满窗复用被退休槽位）
+  val windowFull = winCount === WinDepth.U
+  val enqueueCanFire = deqValid && (!windowFull || retireFire)
+  decodedFifo.io.deq.ready := enqueueCanFire
+  val enqueueFire = decodedFifo.io.deq.fire
+
+  val enqueueSlotIdx = Mux(windowFull, winHead, winTail)
+
+  // ===================== 发射下发桥 =====================
+  val issueCtrl = issueSlot.entry.ctrl
+  val issueLsu = issueCtrl.data.asTypeOf(new AmuLsuIO)
+  val issueMma = issueCtrl.data.asTypeOf(new AmuMmaIO)
+  val issueArith = issueCtrl.data.asTypeOf(new AmuArithIO)
+  val issueRelease = issueCtrl.data.asTypeOf(new AmuReleaseIO)
+
+  private def computeKFromMsew(k: UInt, msew: UInt): UInt = {
+    MuxLookup(msew(1, 0), k)(Seq(
+      Bundles.MSew.e8 -> k,
+      Bundles.MSew.e16 -> (k << 1),
+      Bundles.MSew.e32 -> (k << 2),
+      Bundles.MSew.e4 -> (k >> 1)
+    ))
+  }
+
+  private def loadDataType(widths: UInt): UInt = {
+    MuxLookup(widths, ElementDataType.DataTypeWidth32)(Seq(
       Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
       Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
       Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
       Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
     ))
-    
-    io.CML_MicroTask_Config.Conherent := true.B
-    io.CML_MicroTask_Config.Is_Transpose := lsuInfo.transpose
-    io.CML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
-    io.CML_MicroTask_Config.MatrixRegTensor_N := lsuInfo.column
-    io.CML_MicroTask_Config.MatrixRegId := regIdx
+  }
 
-    io.CML_MicroTask_Config.LoadMicroTaskValid := false.B
-    io.CML_MicroTask_Config.StoreMicroTaskValid := true.B
-    if (EnableDifftest) {
-      io.CML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
-      io.CML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
+  private def decodeMmaDataType(mma: AmuMmaIO): UInt = {
+    val dt = WireInit(DataTypeUndef)
+    when(mma.isfp) {
+      when(mma.types1 === "b001".U && mma.types2 === "b001".U) {
+        dt := DataTypeF16F16F32
+      }.elsewhen(mma.types1 === "b000".U && mma.types2 === "b000".U) {
+        dt := DataTypefp8e5m2F32
+      }.elsewhen(mma.types1 === "b100".U && mma.types2 === "b100".U) {
+        dt := DataTypefp8e4m3F32
+      }.elsewhen(mma.types1 === "b101".U && mma.types2 === "b101".U) {
+        dt := DataTypeBF16BF16F32
+      }.elsewhen(mma.types1 === "b110".U && mma.types2 === "b110".U) {
+        dt := DataTypeTF32TF32F32
+      }.elsewhen(mma.types1 === "b011".U && mma.types2 === "b011".U) {
+        dt := DataTypenvfp4F32
+      }.otherwise {
+        dt := DataTypeUndef
+      }
+    }.otherwise {
+      when(mma.types1 === "b000".U && mma.types2 === "b000".U) {
+        dt := DataTypeU8U8I32
+      }.elsewhen(mma.types1 === "b100".U && mma.types2 === "b000".U) {
+        dt := DataTypeI8U8I32
+      }.elsewhen(mma.types1 === "b000".U && mma.types2 === "b100".U) {
+        dt := DataTypeU8I8I32
+      }.elsewhen(mma.types1 === "b100".U && mma.types2 === "b100".U) {
+        dt := DataTypeI8I8I32
+      }.otherwise {
+        dt := DataTypeUndef
+      }
+    }
+    dt
+  }
+
+  when(issueFire) {
+    switch(issueSlot.opKind) {
+      is(TaskCtrlOpKind.LoadA) {
+        val regIdx = issueLsu.ms(1, 0)
+        val kVal = computeKFromMsew(issueLsu.column, issueLsu.widths) / ReduceWidthByte.U
+
+        io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := issueLsu.baseAddr
+        io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := issueLsu.stride
+        io.AML_MicroTask_Config.ApplicationTensor_A.dataType := loadDataType(issueLsu.widths)
+        io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
+        io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
+        io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
+        io.AML_MicroTask_Config.MatrixRegTensor_M := issueLsu.row
+        io.AML_MicroTask_Config.MatrixRegTensor_K := kVal
+        io.AML_MicroTask_Config.MatrixRegId := regIdx
+        io.AML_MicroTask_Config.Conherent := true.B
+        io.AML_MicroTask_Config.MicroTaskValid := true.B
+        if (EnableDifftest) {
+          io.AML_MicroTask_Config.pc.get := issueCtrl.pc.get
+          io.AML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+        }
+
+        loadAllocateEvent.eventType := 0.U
+        loadAllocateEvent.regId := regIdx
+        loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
+        loadAllocateEvent.needMask := "b001".U
+        loadAllocateEvent.row := issueLsu.row
+        loadAllocateEvent.column := issueLsu.column
+        loadAllocateEvent.transpose := issueLsu.transpose
+        loadAllocateEvent.isAcc := false.B
+        loadAllocateEvent.slotId := issueSlotIdx
+        loadAllocateEvent.seqId := issueSlot.seqId
+        loadAllocateEventEn := true.B
+
+        loadIssueEvent.eventType := 1.U
+        loadIssueEvent.regId := regIdx
+        loadIssueEvent.fifoIdx := issueSlot.fifoIdx
+        loadIssueEvent.needMask := "b001".U
+        loadIssueEvent.row := issueLsu.row
+        loadIssueEvent.column := issueLsu.column
+        loadIssueEvent.transpose := issueLsu.transpose
+        loadIssueEvent.isAcc := false.B
+        loadIssueEvent.slotId := issueSlotIdx
+        loadIssueEvent.seqId := issueSlot.seqId
+        loadIssueEventEn := true.B
+      }
+
+      is(TaskCtrlOpKind.LoadB) {
+        val regIdx = issueLsu.ms(1, 0)
+        val kVal = computeKFromMsew(issueLsu.row, issueLsu.widths) / ReduceWidthByte.U
+
+        io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr := issueLsu.baseAddr
+        io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_Stride_N := issueLsu.stride
+        io.BML_MicroTask_Config.ApplicationTensor_B.BlockTensor_B_BaseVaddr := issueLsu.baseAddr
+        io.BML_MicroTask_Config.ApplicationTensor_B.dataType := loadDataType(issueLsu.widths)
+        io.BML_MicroTask_Config.MatrixRegTensor_N := issueLsu.column
+        io.BML_MicroTask_Config.MatrixRegTensor_K := kVal
+        io.BML_MicroTask_Config.MatrixRegId := regIdx
+        io.BML_MicroTask_Config.Conherent := true.B
+        io.BML_MicroTask_Config.MicroTaskValid := true.B
+        if (EnableDifftest) {
+          io.BML_MicroTask_Config.pc.get := issueCtrl.pc.get
+          io.BML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+        }
+
+        loadAllocateEvent.eventType := 0.U
+        loadAllocateEvent.regId := regIdx
+        loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
+        loadAllocateEvent.needMask := "b010".U
+        loadAllocateEvent.row := issueLsu.row
+        loadAllocateEvent.column := issueLsu.column
+        loadAllocateEvent.transpose := issueLsu.transpose
+        loadAllocateEvent.isAcc := false.B
+        loadAllocateEvent.slotId := issueSlotIdx
+        loadAllocateEvent.seqId := issueSlot.seqId
+        loadAllocateEventEn := true.B
+
+        loadIssueEvent.eventType := 1.U
+        loadIssueEvent.regId := regIdx
+        loadIssueEvent.fifoIdx := issueSlot.fifoIdx
+        loadIssueEvent.needMask := "b010".U
+        loadIssueEvent.row := issueLsu.row
+        loadIssueEvent.column := issueLsu.column
+        loadIssueEvent.transpose := issueLsu.transpose
+        loadIssueEvent.isAcc := false.B
+        loadIssueEvent.slotId := issueSlotIdx
+        loadIssueEvent.seqId := issueSlot.seqId
+        loadIssueEventEn := true.B
+      }
+
+      is(TaskCtrlOpKind.LoadC) {
+        val regIdx = issueLsu.ms(1, 0)
+
+        io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := issueLsu.baseAddr
+        io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_Stride_M := issueLsu.stride
+        io.CML_MicroTask_Config.ApplicationTensor_C.BlockTensor_C_BaseVaddr := issueLsu.baseAddr
+        io.CML_MicroTask_Config.ApplicationTensor_C.dataType := loadDataType(issueLsu.widths)
+        io.CML_MicroTask_Config.Conherent := true.B
+        io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
+        io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
+        io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
+        io.CML_MicroTask_Config.MatrixRegTensor_M := issueLsu.row
+        io.CML_MicroTask_Config.MatrixRegTensor_N := issueLsu.column
+        io.CML_MicroTask_Config.MatrixRegId := regIdx
+        io.CML_MicroTask_Config.Is_Transpose := issueLsu.transpose
+        io.CML_MicroTask_Config.LoadMicroTaskValid := true.B
+        io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
+        if (EnableDifftest) {
+          io.CML_MicroTask_Config.pc.get := issueCtrl.pc.get
+          io.CML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+        }
+
+        loadAllocateEvent.eventType := 0.U
+        loadAllocateEvent.regId := regIdx
+        loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
+        loadAllocateEvent.needMask := "b100".U
+        loadAllocateEvent.row := issueLsu.row
+        loadAllocateEvent.column := issueLsu.column
+        loadAllocateEvent.transpose := issueLsu.transpose
+        loadAllocateEvent.isAcc := true.B
+        loadAllocateEvent.slotId := issueSlotIdx
+        loadAllocateEvent.seqId := issueSlot.seqId
+        loadAllocateEventEn := true.B
+
+        loadIssueEvent.eventType := 1.U
+        loadIssueEvent.regId := regIdx
+        loadIssueEvent.fifoIdx := issueSlot.fifoIdx
+        loadIssueEvent.needMask := "b100".U
+        loadIssueEvent.row := issueLsu.row
+        loadIssueEvent.column := issueLsu.column
+        loadIssueEvent.transpose := issueLsu.transpose
+        loadIssueEvent.isAcc := true.B
+        loadIssueEvent.slotId := issueSlotIdx
+        loadIssueEvent.seqId := issueSlot.seqId
+        loadIssueEventEn := true.B
+      }
+
+      is(TaskCtrlOpKind.ZeroAcc) {
+        val regIdx = issueArith.md(1, 0)
+
+        io.CML_MicroTask_Config.ApplicationTensor_C.dataType := ElementDataType.DataTypeWidth32
+        io.CML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
+        io.CML_MicroTask_Config.MatrixRegTensor_N := cuteParams.Tensor_MN.U
+        io.CML_MicroTask_Config.MatrixRegId := regIdx
+        io.CML_MicroTask_Config.LoadMicroTaskValid := true.B
+        io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
+        io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
+        io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
+        io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
+        io.CML_MicroTask_Config.Conherent := true.B
+        io.CML_MicroTask_Config.Is_Transpose := false.B
+        if (EnableDifftest) {
+          io.CML_MicroTask_Config.pc.get := issueCtrl.pc.get
+          io.CML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+        }
+
+        loadAllocateEvent.eventType := 0.U
+        loadAllocateEvent.regId := regIdx
+        loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
+        loadAllocateEvent.needMask := "b100".U
+        loadAllocateEvent.row := 0.U
+        loadAllocateEvent.column := 0.U
+        loadAllocateEvent.transpose := false.B
+        loadAllocateEvent.isAcc := true.B
+        loadAllocateEvent.slotId := issueSlotIdx
+        loadAllocateEvent.seqId := issueSlot.seqId
+        loadAllocateEventEn := true.B
+
+        loadIssueEvent.eventType := 1.U
+        loadIssueEvent.regId := regIdx
+        loadIssueEvent.fifoIdx := issueSlot.fifoIdx
+        loadIssueEvent.needMask := "b100".U
+        loadIssueEvent.row := 0.U
+        loadIssueEvent.column := 0.U
+        loadIssueEvent.transpose := false.B
+        loadIssueEvent.isAcc := true.B
+        loadIssueEvent.slotId := issueSlotIdx
+        loadIssueEvent.seqId := issueSlot.seqId
+        loadIssueEventEn := true.B
+      }
+
+      is(TaskCtrlOpKind.ZeroTr) {
+        val regIdx = issueArith.md(1, 0)
+
+        io.AML_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
+        io.AML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
+        io.AML_MicroTask_Config.MatrixRegTensor_K := cuteParams.Tensor_K.U / ReduceWidthByte.U
+        io.AML_MicroTask_Config.MatrixRegId := regIdx
+        io.AML_MicroTask_Config.MicroTaskValid := true.B
+        io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
+        io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
+        io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
+        io.AML_MicroTask_Config.Conherent := true.B
+        if (EnableDifftest) {
+          io.AML_MicroTask_Config.pc.get := issueCtrl.pc.get
+          io.AML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+        }
+
+        loadAllocateEvent.eventType := 0.U
+        loadAllocateEvent.regId := regIdx
+        loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
+        loadAllocateEvent.needMask := "b001".U
+        loadAllocateEvent.row := 0.U
+        loadAllocateEvent.column := 0.U
+        loadAllocateEvent.transpose := false.B
+        loadAllocateEvent.isAcc := false.B
+        loadAllocateEvent.slotId := issueSlotIdx
+        loadAllocateEvent.seqId := issueSlot.seqId
+        loadAllocateEventEn := true.B
+
+        loadIssueEvent.eventType := 1.U
+        loadIssueEvent.regId := regIdx
+        loadIssueEvent.fifoIdx := issueSlot.fifoIdx
+        loadIssueEvent.needMask := "b001".U
+        loadIssueEvent.row := 0.U
+        loadIssueEvent.column := 0.U
+        loadIssueEvent.transpose := false.B
+        loadIssueEvent.isAcc := false.B
+        loadIssueEvent.slotId := issueSlotIdx
+        loadIssueEvent.seqId := issueSlot.seqId
+        loadIssueEventEn := true.B
+      }
+
+      is(TaskCtrlOpKind.Compute) {
+        val aReg = issueMma.ms1(1, 0)
+        val bReg = issueMma.ms2(1, 0)
+        val cReg = issueMma.md(1, 0)
+        val mVal = issueMma.mtilem
+        val nVal = issueMma.mtilen
+        val kVal = computeKFromMsew(issueMma.mtilek, issueMma.types1)
+
+        io.ADC_MicroTask_Config.MicroTaskValid := true.B
+        io.BDC_MicroTask_Config.MicroTaskValid := true.B
+        io.CDC_MicroTask_Config.MicroTaskValid := true.B
+
+        io.ADC_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
+        io.ADC_MicroTask_Config.MatrixRegTensor_M := mVal
+        io.ADC_MicroTask_Config.MatrixRegTensor_N := nVal
+        io.ADC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U
+        io.ADC_MicroTask_Config.MatrixRegId := aReg
+        io.ADC_MicroTask_Config.Is_Transpose := false.B
+
+        io.BDC_MicroTask_Config.ApplicationTensor_B.dataType := ElementDataType.DataTypeWidth8
+        io.BDC_MicroTask_Config.MatrixRegTensor_M := mVal
+        io.BDC_MicroTask_Config.MatrixRegTensor_N := nVal
+        io.BDC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U
+        io.BDC_MicroTask_Config.MatrixRegId := bReg
+        io.BDC_MicroTask_Config.Is_Transpose := false.B
+
+        io.CDC_MicroTask_Config.ApplicationTensor_C.dataType := ElementDataType.DataTypeWidth32
+        io.CDC_MicroTask_Config.MatrixRegTensor_M := mVal
+        io.CDC_MicroTask_Config.MatrixRegTensor_N := nVal
+        io.CDC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U
+        io.CDC_MicroTask_Config.MatrixRegId := cReg
+        io.CDC_MicroTask_Config.Is_Transpose := false.B
+        io.CDC_MicroTask_Config.Is_AfterOps_Tile := false.B
+        if (EnableDifftest) {
+          io.CDC_MicroTask_Config.pc.get := issueCtrl.pc.get
+          io.CDC_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+        }
+
+        io.MTE_MicroTask_Config.MicroTaskValid := true.B
+        io.MTE_MicroTask_Config.dataType := decodeMmaDataType(issueMma)
+
+        computeIssueEvent.eventType := 0.U
+        computeIssueEvent.aReg := aReg
+        computeIssueEvent.bReg := bReg
+        computeIssueEvent.cReg := cReg
+        computeIssueEvent.fifoIdx := issueSlot.fifoIdx
+        computeIssueEvent.mtilem := mVal
+        computeIssueEvent.mtilen := nVal
+        computeIssueEvent.mtilek := kVal
+        computeIssueEvent.isMma := true.B
+        computeIssueEvent.isFp := issueMma.isfp
+        computeIssueEvent.slotId := issueSlotIdx
+        computeIssueEvent.seqId := issueSlot.seqId
+        computeIssueEventEn := true.B
+      }
+
+      is(TaskCtrlOpKind.Store) {
+        val regIdx = issueLsu.ms(1, 0)
+
+        io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_BaseVaddr := issueLsu.baseAddr
+        io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_Stride_M := issueLsu.stride
+        io.CML_MicroTask_Config.ApplicationTensor_D.BlockTensor_D_BaseVaddr := issueLsu.baseAddr
+        io.CML_MicroTask_Config.ApplicationTensor_D.dataType := loadDataType(issueLsu.widths)
+        io.CML_MicroTask_Config.Conherent := true.B
+        io.CML_MicroTask_Config.Is_Transpose := issueLsu.transpose
+        io.CML_MicroTask_Config.MatrixRegTensor_M := issueLsu.row
+        io.CML_MicroTask_Config.MatrixRegTensor_N := issueLsu.column
+        io.CML_MicroTask_Config.MatrixRegId := regIdx
+        io.CML_MicroTask_Config.LoadMicroTaskValid := false.B
+        io.CML_MicroTask_Config.StoreMicroTaskValid := true.B
+        if (EnableDifftest) {
+          io.CML_MicroTask_Config.pc.get := issueCtrl.pc.get
+          io.CML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+        }
+
+        storeIssueEvent.eventType := 0.U
+        storeIssueEvent.regId := regIdx
+        storeIssueEvent.fifoIdx := issueSlot.fifoIdx
+        storeIssueEvent.row := issueLsu.row
+        storeIssueEvent.column := issueLsu.column
+        storeIssueEvent.transpose := issueLsu.transpose
+        storeIssueEvent.isAcc := issueLsu.isacc
+        storeIssueEvent.slotId := issueSlotIdx
+        storeIssueEvent.seqId := issueSlot.seqId
+        storeIssueEventEn := true.B
+      }
+
+      is(TaskCtrlOpKind.Release) {
+        io.ygjkctrl.mrelease.valid := true.B
+        io.ygjkctrl.mrelease.bits.tokenRd(issueRelease.tokenRd) := true.B
+
+        releaseIssueEvent.eventType := 0.U
+        releaseIssueEvent.token := issueRelease.tokenRd
+        releaseIssueEvent.slotId := issueSlotIdx
+        releaseIssueEvent.seqId := issueSlot.seqId
+        releaseIssueEventEn := true.B
+      }
+
+      is(TaskCtrlOpKind.NopLike) {
+        // NopLike no-op: issue/complete in scheduler only.
+      }
+    }
+  }
+
+  // ===================== 状态更新：done -> retire -> enqueue -> issue =====================
+  when(amlDone) {
+    val owner = fuAML.ownerSlot
+    assert(slots(owner).valid, "TaskController: AML owner slot invalid on done")
+    slots(owner).completed := true.B
+    fuAML.busy := false.B
+  }
+
+  when(bmlDone) {
+    val owner = fuBML.ownerSlot
+    assert(slots(owner).valid, "TaskController: BML owner slot invalid on done")
+    slots(owner).completed := true.B
+    fuBML.busy := false.B
+  }
+
+  when(cmlLoadDone) {
+    val owner = fuCMLLoad.ownerSlot
+    assert(slots(owner).valid, "TaskController: CML-load owner slot invalid on done")
+    slots(owner).completed := true.B
+    fuCMLLoad.busy := false.B
+  }
+
+  when(cmlStoreDone) {
+    val owner = fuCMLStore.ownerSlot
+    assert(slots(owner).valid, "TaskController: CML-store owner slot invalid on done")
+    slots(owner).completed := true.B
+    fuCMLStore.busy := false.B
+  }
+
+  when(adcDone) {
+    val owner = fuCompute.ownerSlot
+    assert(slots(owner).valid, "TaskController: ADC owner slot invalid on done")
+    assert(!slots(owner).readADone, "TaskController: duplicated ADC done")
+    slots(owner).readADone := true.B
+
+    val slot = slots(owner)
+    val mma = slot.entry.ctrl.data.asTypeOf(new AmuMmaIO)
+    computeReadAFinishEvent.eventType := 1.U
+    computeReadAFinishEvent.aReg := mma.ms1(1, 0)
+    computeReadAFinishEvent.bReg := mma.ms2(1, 0)
+    computeReadAFinishEvent.cReg := mma.md(1, 0)
+    computeReadAFinishEvent.fifoIdx := slot.fifoIdx
+    computeReadAFinishEvent.mtilem := mma.mtilem
+    computeReadAFinishEvent.mtilen := mma.mtilen
+    computeReadAFinishEvent.mtilek := computeKFromMsew(mma.mtilek, mma.types1)
+    computeReadAFinishEvent.isMma := true.B
+    computeReadAFinishEvent.isFp := mma.isfp
+    computeReadAFinishEvent.slotId := owner
+    computeReadAFinishEvent.seqId := slot.seqId
+    computeReadAFinishEventEn := true.B
+  }
+
+  when(bdcDone) {
+    val owner = fuCompute.ownerSlot
+    assert(slots(owner).valid, "TaskController: BDC owner slot invalid on done")
+    assert(!slots(owner).readBDone, "TaskController: duplicated BDC done")
+    slots(owner).readBDone := true.B
+
+    val slot = slots(owner)
+    val mma = slot.entry.ctrl.data.asTypeOf(new AmuMmaIO)
+    computeReadBFinishEvent.eventType := 2.U
+    computeReadBFinishEvent.aReg := mma.ms1(1, 0)
+    computeReadBFinishEvent.bReg := mma.ms2(1, 0)
+    computeReadBFinishEvent.cReg := mma.md(1, 0)
+    computeReadBFinishEvent.fifoIdx := slot.fifoIdx
+    computeReadBFinishEvent.mtilem := mma.mtilem
+    computeReadBFinishEvent.mtilen := mma.mtilen
+    computeReadBFinishEvent.mtilek := computeKFromMsew(mma.mtilek, mma.types1)
+    computeReadBFinishEvent.isMma := true.B
+    computeReadBFinishEvent.isFp := mma.isfp
+    computeReadBFinishEvent.slotId := owner
+    computeReadBFinishEvent.seqId := slot.seqId
+    computeReadBFinishEventEn := true.B
+  }
+
+  when(cdcDone) {
+    val owner = fuCompute.ownerSlot
+    assert(slots(owner).valid, "TaskController: CDC owner slot invalid on done")
+    slots(owner).completed := true.B
+    fuCompute.busy := false.B
+
+    val slot = slots(owner)
+    val mma = slot.entry.ctrl.data.asTypeOf(new AmuMmaIO)
+    computeWriteCFinishEvent.eventType := 3.U
+    computeWriteCFinishEvent.aReg := mma.ms1(1, 0)
+    computeWriteCFinishEvent.bReg := mma.ms2(1, 0)
+    computeWriteCFinishEvent.cReg := mma.md(1, 0)
+    computeWriteCFinishEvent.fifoIdx := slot.fifoIdx
+    computeWriteCFinishEvent.mtilem := mma.mtilem
+    computeWriteCFinishEvent.mtilen := mma.mtilen
+    computeWriteCFinishEvent.mtilek := computeKFromMsew(mma.mtilek, mma.types1)
+    computeWriteCFinishEvent.isMma := true.B
+    computeWriteCFinishEvent.isFp := mma.isfp
+    computeWriteCFinishEvent.slotId := owner
+    computeWriteCFinishEvent.seqId := slot.seqId
+    computeWriteCFinishEventEn := true.B
+  }
+
+  when(cdcDone) {
+    val owner = fuCompute.ownerSlot
+    // CDC can legally arrive in the same cycle as ADC/BDC.
+    assert(slots(owner).readADone || adcDone, "TaskController: CDC done before ADC done")
+    assert(slots(owner).readBDone || bdcDone, "TaskController: CDC done before BDC done")
+  }
+
+  when(retireFire) {
+    val retireOH = slotOH(winHead)
+
+    for (i <- 0 until WinDepth) {
+      when(slots(i).valid) {
+        slots(i).waitCompleteMask := slots(i).waitCompleteMask & (~retireOH)(WinDepth - 1, 0)
+        slots(i).waitReadAMask := slots(i).waitReadAMask & (~retireOH)(WinDepth - 1, 0)
+        slots(i).waitReadBMask := slots(i).waitReadBMask & (~retireOH)(WinDepth - 1, 0)
+      }
     }
 
-    scoreboard.io.update.store_issue := true.B
-    scoreboard.io.update.store_issue_c_reg := regIdx
-    scoreboard.io.update.store_issue_fifo_idx := storeIdx
-    storeIssueIdx := storeIssueIdx + 1.U
-
-    pendingStore := true.B
-    pendingStoreReg := regIdx
-    pendingStoreFifoIdx := storeIdx
-    pendingStoreRow := lsuInfo.row
-    pendingStoreColumn := lsuInfo.column
-    pendingStoreTranspose := lsuInfo.transpose
-    pendingStoreIsAcc := lsuInfo.isacc
-
-    storeIssueEvent.eventType := 0.U
-    storeIssueEvent.regId := regIdx
-    storeIssueEvent.fifoIdx := storeIdx
-    storeIssueEvent.row := lsuInfo.row
-    storeIssueEvent.column := lsuInfo.column
-    storeIssueEvent.transpose := lsuInfo.transpose
-    storeIssueEvent.isAcc := lsuInfo.isacc
-    storeIssueEventEn := true.B
+    slots(winHead).valid := false.B
+    slots(winHead).issued := false.B
+    slots(winHead).completed := false.B
+    slots(winHead).readADone := false.B
+    slots(winHead).readBDone := false.B
+    slots(winHead).waitCompleteMask := 0.U
+    slots(winHead).waitReadAMask := 0.U
+    slots(winHead).waitReadBMask := 0.U
+    slots(winHead).opKind := TaskCtrlOpKind.NopLike
+    slots(winHead).entry := 0.U.asTypeOf(new DecodedAmuCtrlEntry)
+    slots(winHead).seqId := 0.U
+    slots(winHead).fifoIdx := 0.U
   }
 
-  when(issueRelease) {
-    io.ygjkctrl.mrelease.valid := true.B
-    io.ygjkctrl.mrelease.bits.tokenRd(releaseInfo.tokenRd) := true.B
-    releaseIssueEvent.eventType := 0.U
-    releaseIssueEvent.token := releaseInfo.tokenRd
-    releaseIssueEventEn := true.B
+  when(enqueueFire) {
+    val newSlot = WireInit(0.U.asTypeOf(new IssueWindowSlot))
+    newSlot.valid := true.B
+    newSlot.issued := false.B
+    newSlot.completed := false.B
+    newSlot.readADone := false.B
+    newSlot.readBDone := false.B
+    newSlot.waitCompleteMask := 0.U
+    newSlot.waitReadAMask := 0.U
+    newSlot.waitReadBMask := 0.U
+    newSlot.opKind := deqOpKind
+    newSlot.entry := deqEntry
+    newSlot.seqId := seqIdAlloc
+    newSlot.fifoIdx := 0.U
+
+    when(
+      deqOpKind === TaskCtrlOpKind.LoadA ||
+      deqOpKind === TaskCtrlOpKind.LoadB ||
+      deqOpKind === TaskCtrlOpKind.LoadC ||
+      deqOpKind === TaskCtrlOpKind.ZeroAcc ||
+      deqOpKind === TaskCtrlOpKind.ZeroTr
+    ) {
+      newSlot.fifoIdx := loadFifoIdxAlloc
+    }.elsewhen(deqOpKind === TaskCtrlOpKind.Compute) {
+      newSlot.fifoIdx := computeIssueIdx
+    }.elsewhen(deqOpKind === TaskCtrlOpKind.Store) {
+      newSlot.fifoIdx := storeIssueIdx
+    }
+
+    val newReadsAB = deqOpKind === TaskCtrlOpKind.Compute || (deqOpKind === TaskCtrlOpKind.Store && deqStoreReadsAB)
+    val newReadsC = deqOpKind === TaskCtrlOpKind.Compute || (deqOpKind === TaskCtrlOpKind.Store && deqStoreReadsC)
+    val newWritesAB =
+      deqOpKind === TaskCtrlOpKind.LoadA ||
+      deqOpKind === TaskCtrlOpKind.LoadB ||
+      deqOpKind === TaskCtrlOpKind.ZeroTr
+    val newWritesC =
+      deqOpKind === TaskCtrlOpKind.LoadC ||
+      deqOpKind === TaskCtrlOpKind.ZeroAcc ||
+      deqOpKind === TaskCtrlOpKind.Compute
+
+    val depCompleteBits = Wire(Vec(WinDepth, Bool()))
+    val depReadABits = Wire(Vec(WinDepth, Bool()))
+    val depReadBBits = Wire(Vec(WinDepth, Bool()))
+
+    // Build dependencies only against strictly older in-window slots (ring age from head).
+    // Age base is post-retire view because state update priority is done -> retire -> enqueue -> issue.
+    val depOlderMask = Wire(Vec(WinDepth, Bool()))
+    depOlderMask.foreach(_ := false.B)
+    val depHead = Mux(retireFire, (winHead + 1.U)(SlotIdxWidth - 1, 0), winHead)
+    val depCount = winCount - retireFire.asUInt
+    for (age <- 0 until WinDepth) {
+      val idx = (depHead + age.U)(SlotIdxWidth - 1, 0)
+      when(age.U < depCount) {
+        depOlderMask(idx) := true.B
+      }
+    }
+
+    for (j <- 0 until WinDepth) {
+      val older = slots(j)
+      val olderValid = older.valid && depOlderMask(j)
+
+      val olderIsStore = older.opKind === TaskCtrlOpKind.Store
+      val olderStoreReadsAB = olderIsStore && !older.entry.ctrl.data.asTypeOf(new AmuLsuIO).isacc
+      val olderStoreReadsC = olderIsStore && older.entry.ctrl.data.asTypeOf(new AmuLsuIO).isacc
+
+      val olderReadABHit =
+        isReadAB(older.opKind, older.entry, deqEntry.writeRegs(0), olderStoreReadsAB)
+      val olderReadCHit =
+        isReadC(older.opKind, older.entry, deqEntry.writeRegs(0), olderStoreReadsC)
+
+      val olderWriteABHitForNewRead =
+        (deqEntry.readValid(0) && isWriteAB(older.opKind, older.entry, deqEntry.readRegs(0))) ||
+        (deqEntry.readValid(1) && isWriteAB(older.opKind, older.entry, deqEntry.readRegs(1))) ||
+        (deqEntry.readValid(2) && isWriteAB(older.opKind, older.entry, deqEntry.readRegs(2)))
+      val olderWriteCHitForNewRead =
+        (deqEntry.readValid(0) && isWriteC(older.opKind, older.entry, deqEntry.readRegs(0))) ||
+        (deqEntry.readValid(1) && isWriteC(older.opKind, older.entry, deqEntry.readRegs(1))) ||
+        (deqEntry.readValid(2) && isWriteC(older.opKind, older.entry, deqEntry.readRegs(2)))
+      val olderWriteABHitForNewWrite = deqEntry.writeValid(0) && isWriteAB(older.opKind, older.entry, deqEntry.writeRegs(0))
+      val olderWriteCHitForNewWrite = deqEntry.writeValid(0) && isWriteC(older.opKind, older.entry, deqEntry.writeRegs(0))
+
+      val olderWritesAB =
+        older.opKind === TaskCtrlOpKind.LoadA ||
+        older.opKind === TaskCtrlOpKind.LoadB ||
+        older.opKind === TaskCtrlOpKind.ZeroTr
+      val olderWritesC =
+        older.opKind === TaskCtrlOpKind.LoadC ||
+        older.opKind === TaskCtrlOpKind.ZeroAcc ||
+        older.opKind === TaskCtrlOpKind.Compute
+
+      val olderReadsABByComputeA = isReadAOfCompute(older.opKind, older.entry, deqEntry.writeRegs(0))
+      val olderReadsABByComputeB = isReadBOfCompute(older.opKind, older.entry, deqEntry.writeRegs(0))
+
+      val depCompleteJ = Mux(
+        deqOpKind === TaskCtrlOpKind.Release,
+        olderValid && (older.opKind === TaskCtrlOpKind.Store),
+        olderValid && (
+          (olderWritesAB && newReadsAB && olderWriteABHitForNewRead) ||
+          (olderWritesC && newReadsC && olderWriteCHitForNewRead) ||
+          (olderWritesAB && newWritesAB && olderWriteABHitForNewWrite) ||
+          (olderWritesC && newWritesC && olderWriteCHitForNewWrite) ||
+          (newWritesAB && olderReadABHit && !olderReadsABByComputeA && !olderReadsABByComputeB) ||
+          (newWritesC && olderReadCHit)
+        )
+      )
+
+      depCompleteBits(j) := depCompleteJ
+      depReadABits(j) := (deqOpKind =/= TaskCtrlOpKind.Release) && olderValid && newWritesAB && olderReadsABByComputeA
+      depReadBBits(j) := (deqOpKind =/= TaskCtrlOpKind.Release) && olderValid && newWritesAB && olderReadsABByComputeB
+    }
+
+    newSlot.waitCompleteMask := depCompleteBits.asUInt
+    newSlot.waitReadAMask := depReadABits.asUInt
+    newSlot.waitReadBMask := depReadBBits.asUInt
+
+    slots(enqueueSlotIdx) := newSlot
   }
 
+  when(issueFire) {
+    slots(issueSlotIdx).issued := true.B
+
+    switch(issueSlot.opKind) {
+      is(TaskCtrlOpKind.LoadA) {
+        fuAML.busy := true.B
+        fuAML.ownerSlot := issueSlotIdx
+      }
+      is(TaskCtrlOpKind.LoadB) {
+        fuBML.busy := true.B
+        fuBML.ownerSlot := issueSlotIdx
+      }
+      is(TaskCtrlOpKind.LoadC) {
+        fuCMLLoad.busy := true.B
+        fuCMLLoad.ownerSlot := issueSlotIdx
+      }
+      is(TaskCtrlOpKind.ZeroAcc) {
+        fuCMLLoad.busy := true.B
+        fuCMLLoad.ownerSlot := issueSlotIdx
+      }
+      is(TaskCtrlOpKind.ZeroTr) {
+        fuAML.busy := true.B
+        fuAML.ownerSlot := issueSlotIdx
+      }
+      is(TaskCtrlOpKind.Compute) {
+        fuCompute.busy := true.B
+        fuCompute.ownerSlot := issueSlotIdx
+      }
+      is(TaskCtrlOpKind.Store) {
+        fuCMLStore.busy := true.B
+        fuCMLStore.ownerSlot := issueSlotIdx
+      }
+      is(TaskCtrlOpKind.Release) {
+        slots(issueSlotIdx).completed := true.B
+      }
+      is(TaskCtrlOpKind.NopLike) {
+        slots(issueSlotIdx).completed := true.B
+      }
+    }
+  }
+
+  // 指针与计数更新（retire + enqueue）
+  when(retireFire && !enqueueFire) {
+    winHead := (winHead + 1.U)(SlotIdxWidth - 1, 0)
+    winCount := winCount - 1.U
+  }.elsewhen(!retireFire && enqueueFire) {
+    winTail := (winTail + 1.U)(SlotIdxWidth - 1, 0)
+    winCount := winCount + 1.U
+  }.elsewhen(retireFire && enqueueFire) {
+    val nextHead = (winHead + 1.U)(SlotIdxWidth - 1, 0)
+    when(windowFull) {
+      // retire slot is immediately reused by enqueue; head/tail advance together by one.
+      winHead := nextHead
+      winTail := nextHead
+      winCount := winCount
+    }.otherwise {
+      winHead := nextHead
+      winTail := (winTail + 1.U)(SlotIdxWidth - 1, 0)
+      winCount := winCount
+    }
+  }
+
+  when(enqueueFire) {
+    seqIdAlloc := seqIdAlloc + 1.U
+    when(
+      deqOpKind === TaskCtrlOpKind.LoadA ||
+      deqOpKind === TaskCtrlOpKind.LoadB ||
+      deqOpKind === TaskCtrlOpKind.LoadC ||
+      deqOpKind === TaskCtrlOpKind.ZeroAcc ||
+      deqOpKind === TaskCtrlOpKind.ZeroTr
+    ) {
+      loadFifoIdxAlloc := loadFifoIdxAlloc + 1.U
+    }.elsewhen(deqOpKind === TaskCtrlOpKind.Compute) {
+      computeIssueIdx := computeIssueIdx + 1.U
+    }.elsewhen(deqOpKind === TaskCtrlOpKind.Store) {
+      storeIssueIdx := storeIssueIdx + 1.U
+    }
+  }
+
+  // ===================== finish 事件（load/store） =====================
+  when(amlDone) {
+    val owner = fuAML.ownerSlot
+    val slot = slots(owner)
+    val op = slot.opKind
+    val reg = Mux(op === TaskCtrlOpKind.ZeroTr, slot.entry.ctrl.data.asTypeOf(new AmuArithIO).md(1, 0), slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).ms(1, 0))
+    val lsu = slot.entry.ctrl.data.asTypeOf(new AmuLsuIO)
+
+    loadAFinishEvent.eventType := 2.U
+    loadAFinishEvent.regId := reg
+    loadAFinishEvent.fifoIdx := slot.fifoIdx
+    loadAFinishEvent.needMask := "b001".U
+    loadAFinishEvent.row := Mux(op === TaskCtrlOpKind.ZeroTr, 0.U, slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).row)
+    loadAFinishEvent.column := Mux(op === TaskCtrlOpKind.ZeroTr, 0.U, slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).column)
+    loadAFinishEvent.transpose := Mux(op === TaskCtrlOpKind.ZeroTr, false.B, lsu.transpose)
+    loadAFinishEvent.isAcc := false.B
+    loadAFinishEvent.slotId := owner
+    loadAFinishEvent.seqId := slot.seqId
+    loadAFinishEventEn := true.B
+  }
+
+  when(bmlDone) {
+    val owner = fuBML.ownerSlot
+    val slot = slots(owner)
+    val lsu = slot.entry.ctrl.data.asTypeOf(new AmuLsuIO)
+
+    loadBFinishEvent.eventType := 2.U
+    loadBFinishEvent.regId := lsu.ms(1, 0)
+    loadBFinishEvent.fifoIdx := slot.fifoIdx
+    loadBFinishEvent.needMask := "b010".U
+    loadBFinishEvent.row := lsu.row
+    loadBFinishEvent.column := lsu.column
+    loadBFinishEvent.transpose := lsu.transpose
+    loadBFinishEvent.isAcc := false.B
+    loadBFinishEvent.slotId := owner
+    loadBFinishEvent.seqId := slot.seqId
+    loadBFinishEventEn := true.B
+  }
+
+  when(cmlLoadDone) {
+    val owner = fuCMLLoad.ownerSlot
+    val slot = slots(owner)
+    val op = slot.opKind
+    val lsu = slot.entry.ctrl.data.asTypeOf(new AmuLsuIO)
+
+    val reg = Mux(op === TaskCtrlOpKind.ZeroAcc, slot.entry.ctrl.data.asTypeOf(new AmuArithIO).md(1, 0), slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).ms(1, 0))
+    val row = Mux(op === TaskCtrlOpKind.ZeroAcc, 0.U, slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).row)
+    val col = Mux(op === TaskCtrlOpKind.ZeroAcc, 0.U, slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).column)
+
+    loadCFinishEvent.eventType := 2.U
+    loadCFinishEvent.regId := reg
+    loadCFinishEvent.fifoIdx := slot.fifoIdx
+    loadCFinishEvent.needMask := "b100".U
+    loadCFinishEvent.row := row
+    loadCFinishEvent.column := col
+    loadCFinishEvent.transpose := Mux(op === TaskCtrlOpKind.ZeroAcc, false.B, lsu.transpose)
+    loadCFinishEvent.isAcc := true.B
+    loadCFinishEvent.slotId := owner
+    loadCFinishEvent.seqId := slot.seqId
+    loadCFinishEventEn := true.B
+  }
+
+  when(cmlStoreDone) {
+    val owner = fuCMLStore.ownerSlot
+    val slot = slots(owner)
+    val lsu = slot.entry.ctrl.data.asTypeOf(new AmuLsuIO)
+
+    storeFinishEvent.eventType := 1.U
+    storeFinishEvent.regId := lsu.ms(1, 0)
+    storeFinishEvent.fifoIdx := slot.fifoIdx
+    storeFinishEvent.row := lsu.row
+    storeFinishEvent.column := lsu.column
+    storeFinishEvent.transpose := lsu.transpose
+    storeFinishEvent.isAcc := lsu.isacc
+    storeFinishEvent.slotId := owner
+    storeFinishEvent.seqId := slot.seqId
+    storeFinishEventEn := true.B
+  }
+
+  // ===================== shadow scoreboard 更新（仅调试） =====================
+  shadowScoreboard.foreach { sb =>
+    when(issueFire) {
+      switch(issueSlot.opKind) {
+        is(TaskCtrlOpKind.LoadA) {
+          val lsu = issueCtrl.data.asTypeOf(new AmuLsuIO)
+          sb.io.update.load_allocate := true.B
+          sb.io.update.load_alloc_a_reg := lsu.ms(1, 0)
+          sb.io.update.load_alloc_b_reg := 0.U
+          sb.io.update.load_alloc_c_reg := 0.U
+          sb.io.update.load_alloc_has_a := true.B
+          sb.io.update.load_alloc_has_b := false.B
+          sb.io.update.load_alloc_has_c := false.B
+          sb.io.update.load_alloc_fifo_idx := issueSlot.fifoIdx(1, 0)
+        }
+        is(TaskCtrlOpKind.LoadB) {
+          val lsu = issueCtrl.data.asTypeOf(new AmuLsuIO)
+          sb.io.update.load_allocate := true.B
+          sb.io.update.load_alloc_a_reg := 0.U
+          sb.io.update.load_alloc_b_reg := lsu.ms(1, 0)
+          sb.io.update.load_alloc_c_reg := 0.U
+          sb.io.update.load_alloc_has_a := false.B
+          sb.io.update.load_alloc_has_b := true.B
+          sb.io.update.load_alloc_has_c := false.B
+          sb.io.update.load_alloc_fifo_idx := issueSlot.fifoIdx(1, 0)
+        }
+        is(TaskCtrlOpKind.LoadC) {
+          val lsu = issueCtrl.data.asTypeOf(new AmuLsuIO)
+          sb.io.update.load_allocate := true.B
+          sb.io.update.load_alloc_a_reg := 0.U
+          sb.io.update.load_alloc_b_reg := 0.U
+          sb.io.update.load_alloc_c_reg := lsu.ms(1, 0)
+          sb.io.update.load_alloc_has_a := false.B
+          sb.io.update.load_alloc_has_b := false.B
+          sb.io.update.load_alloc_has_c := true.B
+          sb.io.update.load_alloc_fifo_idx := issueSlot.fifoIdx(1, 0)
+        }
+        is(TaskCtrlOpKind.ZeroAcc) {
+          val reg = issueCtrl.data.asTypeOf(new AmuArithIO).md(1, 0)
+          sb.io.update.load_allocate := true.B
+          sb.io.update.load_alloc_a_reg := 0.U
+          sb.io.update.load_alloc_b_reg := 0.U
+          sb.io.update.load_alloc_c_reg := reg
+          sb.io.update.load_alloc_has_a := false.B
+          sb.io.update.load_alloc_has_b := false.B
+          sb.io.update.load_alloc_has_c := true.B
+          sb.io.update.load_alloc_fifo_idx := issueSlot.fifoIdx(1, 0)
+        }
+        is(TaskCtrlOpKind.ZeroTr) {
+          val arith = issueCtrl.data.asTypeOf(new AmuArithIO)
+          sb.io.update.load_allocate := true.B
+          sb.io.update.load_alloc_a_reg := arith.md(1, 0)
+          sb.io.update.load_alloc_b_reg := 0.U
+          sb.io.update.load_alloc_c_reg := 0.U
+          sb.io.update.load_alloc_has_a := true.B
+          sb.io.update.load_alloc_has_b := false.B
+          sb.io.update.load_alloc_has_c := false.B
+          sb.io.update.load_alloc_fifo_idx := issueSlot.fifoIdx(1, 0)
+        }
+        is(TaskCtrlOpKind.Compute) {
+          val mma = issueCtrl.data.asTypeOf(new AmuMmaIO)
+          sb.io.update.compute_issue := true.B
+          sb.io.update.compute_issue_a_reg := mma.ms1(1, 0)
+          sb.io.update.compute_issue_b_reg := mma.ms2(1, 0)
+          sb.io.update.compute_issue_c_reg := mma.md(1, 0)
+          sb.io.update.compute_issue_fifo_idx := issueSlot.fifoIdx(1, 0)
+        }
+        is(TaskCtrlOpKind.Store) {
+          val lsu = issueCtrl.data.asTypeOf(new AmuLsuIO)
+          sb.io.update.store_issue := true.B
+          sb.io.update.store_issue_c_reg := lsu.ms(1, 0)
+          sb.io.update.store_issue_fifo_idx := issueSlot.fifoIdx(1, 0)
+        }
+      }
+    }
+
+    when(amlDone) {
+      sb.io.update.load_finish_a := true.B
+      sb.io.update.load_finish_a_reg := loadAFinishEvent.regId(1, 0)
+    }
+    when(bmlDone) {
+      sb.io.update.load_finish_b := true.B
+      sb.io.update.load_finish_b_reg := loadBFinishEvent.regId(1, 0)
+    }
+    when(cmlLoadDone) {
+      sb.io.update.load_finish_c := true.B
+      sb.io.update.load_finish_c_reg := loadCFinishEvent.regId(1, 0)
+    }
+    when(adcDone) {
+      sb.io.update.compute_read_finish_a := true.B
+      sb.io.update.compute_read_finish_a_reg := computeReadAFinishEvent.aReg(1, 0)
+    }
+    when(bdcDone) {
+      sb.io.update.compute_read_finish_b := true.B
+      sb.io.update.compute_read_finish_b_reg := computeReadBFinishEvent.bReg(1, 0)
+    }
+    when(cdcDone) {
+      sb.io.update.compute_write_finish_c := true.B
+      sb.io.update.compute_write_finish_c_reg := computeWriteCFinishEvent.cReg(1, 0)
+    }
+    when(cmlStoreDone) {
+      sb.io.update.store_finish := true.B
+      sb.io.update.store_finish_c_reg := storeFinishEvent.regId(1, 0)
+    }
+  }
+
+  // ===================== release DiffTest 对齐 =====================
   if (EnableDifftest) {
-    val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
-    difftestAmuFinish.coreid := io.ygjkctrl.amuCtrl.bits.coreid.get
-    difftestAmuFinish.index := 4.U
-    difftestAmuFinish.valid := io.ygjkctrl.mrelease.valid
-    difftestAmuFinish.pc := headEntry.ctrl.pc.get
-    difftestAmuFinish.bankValid.foreach(_ := false.B)
-    difftestAmuFinish.bankAddr.foreach(_ := 0.U)
-    difftestAmuFinish.data.foreach(_ := 0.U)
-    difftestAmuFinish.finish := io.ygjkctrl.mrelease.valid
+    val releaseFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+    val releaseIssueOwnerSlot = issueSlotIdx
+    val releaseIssueOwnerEntry = issueSlot.entry
+
+    releaseFinish.coreid := Mux(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release, releaseIssueOwnerEntry.ctrl.coreid.get, 0.U)
+    releaseFinish.index := 4.U
+    releaseFinish.valid := issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
+    releaseFinish.pc := Mux(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release, releaseIssueOwnerEntry.ctrl.pc.get, 0.U)
+    releaseFinish.bankValid.foreach(_ := false.B)
+    releaseFinish.bankAddr.foreach(_ := 0.U)
+    releaseFinish.data.foreach(_ := 0.U)
+    releaseFinish.finish := issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
+
+    when(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release) {
+      dontTouch(releaseIssueOwnerSlot)
+    }
   }
 
   // ===================== ChiselDB 日志提交 =====================

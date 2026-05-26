@@ -481,6 +481,11 @@ case class CuteParams(
     val VecTaskInstBufferSize :Int = 8, //VecTask的指令缓冲的数量
     val VecTaskDataBufferDepth :Int = 4, //VecTask的指令缓冲深度掩盖从VecInterface到VPU的数据传输延迟即可
 
+    // TaskController issue window depth (compile-time only)
+    val TaskCtrlIssueWindowDepth :Int = 8,
+    // If true, keep Scoreboard as a shadow debug checker (not used for issue decisions).
+    val EnableTaskCtrlShadowScoreboard: Boolean = false,
+
     val EnableDifftest: Boolean = false, //是否启用DiffTest
 
     val Debug : CuteDebugParams = CuteDebugParams.NoDebug, //调试参数
@@ -523,6 +528,7 @@ case class CuteParams(
     require((VecTaskInstBufferDepth & (VecTaskInstBufferDepth - 1)) == 0, "VecTaskInstBufferDepth must be power of 2")
     require((VecTaskInstBufferSize & (VecTaskInstBufferSize - 1)) == 0, "VecTaskInstBufferSize must be power of 2")
     require((VecTaskDataBufferDepth & (VecTaskDataBufferDepth - 1)) == 0, "VecTaskDataBufferDepth must be power of 2")
+    require(Seq(4, 8, 16).contains(TaskCtrlIssueWindowDepth), "TaskCtrlIssueWindowDepth only supports 4/8/16")
     require((FPEparams.MinGroupSize == 16), "FPEparams.MinGroupSize must be 16")
     require((FPEparams.MinDataTypeWidth == 4), "FPEparams.MinDataTypeWidth must be 4")
     require((FPEparams.ScaleElementWidth == 8), "FPEparams.ScaleElementWidth must be 8")
@@ -594,8 +600,12 @@ trait CUTEImplParameters{
     def v3config: Cutev3extParams = cuteParams.v3config
     def FPEparams: CuteFPEParams = cuteParams.FPEparams
 
-    def DecodedAmuCtrlFIFODepth = 8  //解码后的AMU指令FIFO的深度
+    def TaskCtrlIssueWindowDepth = cuteParams.TaskCtrlIssueWindowDepth
+    def TaskCtrlIssueWindowDepthBitSize = log2Ceil(TaskCtrlIssueWindowDepth)
+
+    def DecodedAmuCtrlFIFODepth = TaskCtrlIssueWindowDepth  //解码后的AMU指令FIFO的深度，与issue window绑定
     def DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) //解码后的AMU指令FIFO的深度
+    def EnableTaskCtrlShadowScoreboard = cuteParams.EnableTaskCtrlShadowScoreboard
 
     def ABMatrixRegCount = 4
     def CMatrixRegCount = 4
