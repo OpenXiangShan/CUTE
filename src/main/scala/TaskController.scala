@@ -53,6 +53,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   dontTouch(io)
 
+  // Scheduler flow: decode -> window/dependency build -> oldest-ready issue -> done/retire/enqueue.
+  // Release/NopLike stay scheduler-local; ZeroAcc/ZeroTr remain mzero-like load aliases.
+
   private val WinDepth = TaskCtrlIssueWindowDepth
   private val SlotIdxWidth = log2Ceil(WinDepth)
   private val WinCountWidth = log2Ceil(WinDepth + 1)
@@ -262,53 +265,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private val releaseIssueEvent = WireInit(0.U.asTypeOf(new ReleaseEventEntry))
   private val releaseIssueEventEn = WireInit(false.B)
 
-  // ===================== shadow scoreboard（可选，不参与功能） =====================
-  private val shadowScoreboard = if (EnableTaskCtrlShadowScoreboard) Some(Module(new Scoreboard)) else None
-
-  private def clearShadowScoreboard(sb: Scoreboard): Unit = {
-    sb.io.query.req.valid := false.B
-    sb.io.query.req.bits := 0.U.asTypeOf(new QueryReq)
-
-    sb.io.update.load_allocate := false.B
-    sb.io.update.load_alloc_a_reg := 0.U
-    sb.io.update.load_alloc_b_reg := 0.U
-    sb.io.update.load_alloc_c_reg := 0.U
-    sb.io.update.load_alloc_has_a := false.B
-    sb.io.update.load_alloc_has_b := false.B
-    sb.io.update.load_alloc_has_c := false.B
-    sb.io.update.load_alloc_fifo_idx := 0.U
-
-    sb.io.update.load_finish_a := false.B
-    sb.io.update.load_finish_a_reg := 0.U
-    sb.io.update.load_finish_b := false.B
-    sb.io.update.load_finish_b_reg := 0.U
-    sb.io.update.load_finish_c := false.B
-    sb.io.update.load_finish_c_reg := 0.U
-
-    sb.io.update.compute_issue := false.B
-    sb.io.update.compute_issue_a_reg := 0.U
-    sb.io.update.compute_issue_b_reg := 0.U
-    sb.io.update.compute_issue_c_reg := 0.U
-    sb.io.update.compute_issue_fifo_idx := 0.U
-
-    sb.io.update.compute_read_finish_a := false.B
-    sb.io.update.compute_read_finish_a_reg := 0.U
-    sb.io.update.compute_read_finish_b := false.B
-    sb.io.update.compute_read_finish_b_reg := 0.U
-
-    sb.io.update.compute_write_finish_c := false.B
-    sb.io.update.compute_write_finish_c_reg := 0.U
-
-    sb.io.update.store_issue := false.B
-    sb.io.update.store_issue_c_reg := 0.U
-    sb.io.update.store_issue_fifo_idx := 0.U
-
-    sb.io.update.store_finish := false.B
-    sb.io.update.store_finish_c_reg := 0.U
-  }
-
-  shadowScoreboard.foreach(clearShadowScoreboard)
-
   // ===================== 指令译码FIFO =====================
   private val decodedFifo = Module(new Queue(new DecodedAmuCtrlEntry, DecodedAmuCtrlFIFODepth))
 
@@ -328,8 +284,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     decEntryEnq.writeValid(i) := false.B
   }
 
+  val enqMma = decodeMma(amuCtrlBits)
+  val enqLsu = decodeLsu(amuCtrlBits)
+  val enqArith = decodeArith(amuCtrlBits)
+
   when(amuCtrlBits.isMma()) {
-    val mma = amuCtrlBits.data.asTypeOf(new AmuMmaIO)
+    val mma = enqMma
     decEntryEnq.readRegs(0) := mma.ms1
     decEntryEnq.readRegs(1) := mma.ms2
     decEntryEnq.readRegs(2) := mma.md
@@ -340,7 +300,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     decEntryEnq.writeValid(0) := true.B
   }
   when(amuCtrlBits.isMls()) {
-    val lsu = amuCtrlBits.data.asTypeOf(new AmuLsuIO)
+    val lsu = enqLsu
     when(lsu.ls === 0.U) {
       decEntryEnq.writeRegs(0) := lsu.ms
       decEntryEnq.writeValid(0) := true.B
@@ -350,11 +310,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     }
   }
   when(amuCtrlBits.isArith()) {
-    val arith = amuCtrlBits.data.asTypeOf(new AmuArithIO)
+    val arith = enqArith
     // Current CUTE flow only supports mzero-style marith.
     // Unknown marith opType is treated as NopLike (no read/write footprint).
-    val isMzeroLike = arith.opType(8, 2) === "b1101110".U
-    when(isMzeroLike) {
+    when(isMzeroLike(arith)) {
       decEntryEnq.writeRegs(0) := arith.md
       decEntryEnq.writeValid(0) := true.B
     }
@@ -403,43 +362,37 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private def abIdx(x: UInt): UInt = x(ABMatrixRegIdWidth - 1, 0)
   private def cIdx(x: UInt): UInt = x(CMatrixRegIdWidth - 1, 0)
 
-  private def isReadAB(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt, treatStoreAsABRead: Bool): Bool = {
-    val mma = e.ctrl.data.asTypeOf(new AmuMmaIO)
-    val lsu = e.ctrl.data.asTypeOf(new AmuLsuIO)
+  private def decodeMma(ctrl: AmuCtrlIO): AmuMmaIO = ctrl.data.asTypeOf(new AmuMmaIO)
+  private def decodeLsu(ctrl: AmuCtrlIO): AmuLsuIO = ctrl.data.asTypeOf(new AmuLsuIO)
+  private def decodeArith(ctrl: AmuCtrlIO): AmuArithIO = ctrl.data.asTypeOf(new AmuArithIO)
+  private def isMzeroLike(arith: AmuArithIO): Bool = arith.opType(8, 2) === "b1101110".U
+
+  private def isReadAB(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, lsu: AmuLsuIO, reg: UInt, treatStoreAsABRead: Bool): Bool = {
     (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms1) === abIdx(reg) || abIdx(mma.ms2) === abIdx(reg)) ||
       (op === TaskCtrlOpKind.Store) && treatStoreAsABRead && (abIdx(lsu.ms) === abIdx(reg))
   }
 
-  private def isReadC(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt, treatStoreAsCRead: Bool): Bool = {
-    val mma = e.ctrl.data.asTypeOf(new AmuMmaIO)
-    val lsu = e.ctrl.data.asTypeOf(new AmuLsuIO)
+  private def isReadC(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, lsu: AmuLsuIO, reg: UInt, treatStoreAsCRead: Bool): Bool = {
     ((op === TaskCtrlOpKind.Compute) && (cIdx(mma.md) === cIdx(reg))) ||
       ((op === TaskCtrlOpKind.Store) && treatStoreAsCRead && (cIdx(lsu.ms) === cIdx(reg)))
   }
 
-  private def isWriteAB(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt): Bool = {
-    val lsu = e.ctrl.data.asTypeOf(new AmuLsuIO)
-    val arith = e.ctrl.data.asTypeOf(new AmuArithIO)
+  private def isWriteAB(op: TaskCtrlOpKind.Type, lsu: AmuLsuIO, arith: AmuArithIO, reg: UInt): Bool = {
     ((op === TaskCtrlOpKind.LoadA || op === TaskCtrlOpKind.LoadB) && (abIdx(lsu.ms) === abIdx(reg))) ||
       ((op === TaskCtrlOpKind.ZeroTr) && (abIdx(arith.md) === abIdx(reg)))
   }
 
-  private def isWriteC(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt): Bool = {
-    val mma = e.ctrl.data.asTypeOf(new AmuMmaIO)
-    val lsu = e.ctrl.data.asTypeOf(new AmuLsuIO)
-    val arith = e.ctrl.data.asTypeOf(new AmuArithIO)
+  private def isWriteC(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, lsu: AmuLsuIO, arith: AmuArithIO, reg: UInt): Bool = {
     ((op === TaskCtrlOpKind.Compute) && (cIdx(mma.md) === cIdx(reg))) ||
       ((op === TaskCtrlOpKind.LoadC) && (cIdx(lsu.ms) === cIdx(reg))) ||
       ((op === TaskCtrlOpKind.ZeroAcc) && (cIdx(arith.md) === cIdx(reg)))
   }
 
-  private def isReadAOfCompute(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt): Bool = {
-    val mma = e.ctrl.data.asTypeOf(new AmuMmaIO)
+  private def isReadAOfCompute(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, reg: UInt): Bool = {
     (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms1) === abIdx(reg))
   }
 
-  private def isReadBOfCompute(op: TaskCtrlOpKind.Type, e: DecodedAmuCtrlEntry, reg: UInt): Bool = {
-    val mma = e.ctrl.data.asTypeOf(new AmuMmaIO)
+  private def isReadBOfCompute(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, reg: UInt): Bool = {
     (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms2) === abIdx(reg))
   }
 
@@ -492,18 +445,19 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val deqValid = decodedFifo.io.deq.valid
   val deqEntry = decodedFifo.io.deq.bits
 
-  val deqIsMma = deqEntry.ctrl.isMma()
-  val deqIsArith = deqEntry.ctrl.isArith()
-  val deqIsLsu = deqEntry.ctrl.isMls()
-  val deqIsRelease = deqEntry.ctrl.isRelease()
+  val deqCtrl = deqEntry.ctrl
+  val deqIsMma = deqCtrl.isMma()
+  val deqIsArith = deqCtrl.isArith()
+  val deqIsLsu = deqCtrl.isMls()
+  val deqIsRelease = deqCtrl.isRelease()
 
-  val deqLsu = deqEntry.ctrl.data.asTypeOf(new AmuLsuIO)
-  val deqArith = deqEntry.ctrl.data.asTypeOf(new AmuArithIO)
+  val deqLsu = decodeLsu(deqCtrl)
+  val deqArith = decodeArith(deqCtrl)
 
   val deqIsLoad = deqIsLsu && deqLsu.ls === 0.U
   val deqLoadSelOH = Cat(deqLsu.isacc, deqLsu.isB, deqLsu.isA)
   val deqLoadSelOneHot = PopCount(deqLoadSelOH) === 1.U
-  val deqIsMzeroLike = deqIsArith && (deqArith.opType(8, 2) === "b1101110".U)
+  val deqIsMzeroLike = deqIsArith && isMzeroLike(deqArith)
 
   when(deqValid && deqIsLoad) {
     assert(deqLoadSelOneHot, "TaskController: MLS load selector must be onehot among isA/isB/isacc")
@@ -541,12 +495,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val inWindow = age.U < winCount
     val slot = slots(idx)
 
-    val depReady =
+    val slotDepReady =
       ((slot.waitCompleteMask & (~completedVec)(WinDepth - 1, 0)) === 0.U) &&
       ((slot.waitReadAMask & (~readAVec)(WinDepth - 1, 0)) === 0.U) &&
       ((slot.waitReadBMask & (~readBVec)(WinDepth - 1, 0)) === 0.U)
 
-    val fuReady = MuxLookup(slot.opKind.asUInt, true.B)(Seq(
+    val slotFuReady = MuxLookup(slot.opKind.asUInt, true.B)(Seq(
       TaskCtrlOpKind.LoadA.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
       TaskCtrlOpKind.LoadB.asUInt -> (!fuBML.busy && io.BML_MicroTask_Config.MicroTaskReady),
       TaskCtrlOpKind.LoadC.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
@@ -558,7 +512,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       TaskCtrlOpKind.NopLike.asUInt -> true.B
     ))
 
-    readyByAge(age) := inWindow && slot.valid && !slot.issued && depReady && fuReady
+    val slotIssueReady = inWindow && slot.valid && !slot.issued && slotDepReady && slotFuReady
+    readyByAge(age) := slotIssueReady
   }
 
   val issueFound = readyByAge.asUInt.orR
@@ -598,11 +553,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   // ===================== 发射下发桥 =====================
   val issueCtrl = issueSlot.entry.ctrl
-  val issueLsu = issueCtrl.data.asTypeOf(new AmuLsuIO)
-  val issueMma = issueCtrl.data.asTypeOf(new AmuMmaIO)
-  val issueArith = issueCtrl.data.asTypeOf(new AmuArithIO)
-  val issueRelease = issueCtrl.data.asTypeOf(new AmuReleaseIO)
-
+  val issueLsu = decodeLsu(issueCtrl)
+  val issueMma = decodeMma(issueCtrl)
+  val issueArith = decodeArith(issueCtrl)
   private def computeKFromMsew(k: UInt, msew: UInt): UInt = {
     MuxLookup(msew(1, 0), k)(Seq(
       Bundles.MSew.e8 -> k,
@@ -966,6 +919,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       }
 
       is(TaskCtrlOpKind.Release) {
+        val issueRelease = issueCtrl.data.asTypeOf(new AmuReleaseIO)
         io.ygjkctrl.mrelease.valid := true.B
         io.ygjkctrl.mrelease.bits.tokenRd(issueRelease.tokenRd) := true.B
 
@@ -1018,7 +972,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     slots(owner).readADone := true.B
 
     val slot = slots(owner)
-    val mma = slot.entry.ctrl.data.asTypeOf(new AmuMmaIO)
+    val mma = decodeMma(slot.entry.ctrl)
     computeReadAFinishEvent.eventType := 1.U
     computeReadAFinishEvent.aReg := mma.ms1(1, 0)
     computeReadAFinishEvent.bReg := mma.ms2(1, 0)
@@ -1041,7 +995,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     slots(owner).readBDone := true.B
 
     val slot = slots(owner)
-    val mma = slot.entry.ctrl.data.asTypeOf(new AmuMmaIO)
+    val mma = decodeMma(slot.entry.ctrl)
     computeReadBFinishEvent.eventType := 2.U
     computeReadBFinishEvent.aReg := mma.ms1(1, 0)
     computeReadBFinishEvent.bReg := mma.ms2(1, 0)
@@ -1064,7 +1018,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     fuCompute.busy := false.B
 
     val slot = slots(owner)
-    val mma = slot.entry.ctrl.data.asTypeOf(new AmuMmaIO)
+    val mma = decodeMma(slot.entry.ctrl)
     computeWriteCFinishEvent.eventType := 3.U
     computeWriteCFinishEvent.aReg := mma.ms1(1, 0)
     computeWriteCFinishEvent.bReg := mma.ms2(1, 0)
@@ -1172,26 +1126,30 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     for (j <- 0 until WinDepth) {
       val older = slots(j)
       val olderValid = older.valid && depOlderMask(j)
+      val olderCtrl = older.entry.ctrl
+      val olderMma = decodeMma(olderCtrl)
+      val olderLsu = decodeLsu(olderCtrl)
+      val olderArith = decodeArith(olderCtrl)
 
       val olderIsStore = older.opKind === TaskCtrlOpKind.Store
-      val olderStoreReadsAB = olderIsStore && !older.entry.ctrl.data.asTypeOf(new AmuLsuIO).isacc
-      val olderStoreReadsC = olderIsStore && older.entry.ctrl.data.asTypeOf(new AmuLsuIO).isacc
+      val olderStoreReadsAB = olderIsStore && !olderLsu.isacc
+      val olderStoreReadsC = olderIsStore && olderLsu.isacc
 
       val olderReadABHit =
-        isReadAB(older.opKind, older.entry, deqEntry.writeRegs(0), olderStoreReadsAB)
+        isReadAB(older.opKind, olderMma, olderLsu, deqEntry.writeRegs(0), olderStoreReadsAB)
       val olderReadCHit =
-        isReadC(older.opKind, older.entry, deqEntry.writeRegs(0), olderStoreReadsC)
+        isReadC(older.opKind, olderMma, olderLsu, deqEntry.writeRegs(0), olderStoreReadsC)
 
       val olderWriteABHitForNewRead =
-        (deqEntry.readValid(0) && isWriteAB(older.opKind, older.entry, deqEntry.readRegs(0))) ||
-        (deqEntry.readValid(1) && isWriteAB(older.opKind, older.entry, deqEntry.readRegs(1))) ||
-        (deqEntry.readValid(2) && isWriteAB(older.opKind, older.entry, deqEntry.readRegs(2)))
+        (deqEntry.readValid(0) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.readRegs(0))) ||
+        (deqEntry.readValid(1) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.readRegs(1))) ||
+        (deqEntry.readValid(2) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.readRegs(2)))
       val olderWriteCHitForNewRead =
-        (deqEntry.readValid(0) && isWriteC(older.opKind, older.entry, deqEntry.readRegs(0))) ||
-        (deqEntry.readValid(1) && isWriteC(older.opKind, older.entry, deqEntry.readRegs(1))) ||
-        (deqEntry.readValid(2) && isWriteC(older.opKind, older.entry, deqEntry.readRegs(2)))
-      val olderWriteABHitForNewWrite = deqEntry.writeValid(0) && isWriteAB(older.opKind, older.entry, deqEntry.writeRegs(0))
-      val olderWriteCHitForNewWrite = deqEntry.writeValid(0) && isWriteC(older.opKind, older.entry, deqEntry.writeRegs(0))
+        (deqEntry.readValid(0) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.readRegs(0))) ||
+        (deqEntry.readValid(1) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.readRegs(1))) ||
+        (deqEntry.readValid(2) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.readRegs(2)))
+      val olderWriteABHitForNewWrite = deqEntry.writeValid(0) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.writeRegs(0))
+      val olderWriteCHitForNewWrite = deqEntry.writeValid(0) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.writeRegs(0))
 
       val olderWritesAB =
         older.opKind === TaskCtrlOpKind.LoadA ||
@@ -1202,8 +1160,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         older.opKind === TaskCtrlOpKind.ZeroAcc ||
         older.opKind === TaskCtrlOpKind.Compute
 
-      val olderReadsABByComputeA = isReadAOfCompute(older.opKind, older.entry, deqEntry.writeRegs(0))
-      val olderReadsABByComputeB = isReadBOfCompute(older.opKind, older.entry, deqEntry.writeRegs(0))
+      val olderReadsABByComputeA = isReadAOfCompute(older.opKind, olderMma, deqEntry.writeRegs(0))
+      val olderReadsABByComputeB = isReadBOfCompute(older.opKind, olderMma, deqEntry.writeRegs(0))
 
       val depCompleteJ = Mux(
         deqOpKind === TaskCtrlOpKind.Release,
@@ -1314,15 +1272,16 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val owner = fuAML.ownerSlot
     val slot = slots(owner)
     val op = slot.opKind
-    val reg = Mux(op === TaskCtrlOpKind.ZeroTr, slot.entry.ctrl.data.asTypeOf(new AmuArithIO).md(1, 0), slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).ms(1, 0))
-    val lsu = slot.entry.ctrl.data.asTypeOf(new AmuLsuIO)
+    val lsu = decodeLsu(slot.entry.ctrl)
+    val arith = decodeArith(slot.entry.ctrl)
+    val reg = Mux(op === TaskCtrlOpKind.ZeroTr, arith.md(1, 0), lsu.ms(1, 0))
 
     loadAFinishEvent.eventType := 2.U
     loadAFinishEvent.regId := reg
     loadAFinishEvent.fifoIdx := slot.fifoIdx
     loadAFinishEvent.needMask := "b001".U
-    loadAFinishEvent.row := Mux(op === TaskCtrlOpKind.ZeroTr, 0.U, slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).row)
-    loadAFinishEvent.column := Mux(op === TaskCtrlOpKind.ZeroTr, 0.U, slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).column)
+    loadAFinishEvent.row := Mux(op === TaskCtrlOpKind.ZeroTr, 0.U, lsu.row)
+    loadAFinishEvent.column := Mux(op === TaskCtrlOpKind.ZeroTr, 0.U, lsu.column)
     loadAFinishEvent.transpose := Mux(op === TaskCtrlOpKind.ZeroTr, false.B, lsu.transpose)
     loadAFinishEvent.isAcc := false.B
     loadAFinishEvent.slotId := owner
@@ -1333,7 +1292,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   when(bmlDone) {
     val owner = fuBML.ownerSlot
     val slot = slots(owner)
-    val lsu = slot.entry.ctrl.data.asTypeOf(new AmuLsuIO)
+    val lsu = decodeLsu(slot.entry.ctrl)
 
     loadBFinishEvent.eventType := 2.U
     loadBFinishEvent.regId := lsu.ms(1, 0)
@@ -1352,11 +1311,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val owner = fuCMLLoad.ownerSlot
     val slot = slots(owner)
     val op = slot.opKind
-    val lsu = slot.entry.ctrl.data.asTypeOf(new AmuLsuIO)
-
-    val reg = Mux(op === TaskCtrlOpKind.ZeroAcc, slot.entry.ctrl.data.asTypeOf(new AmuArithIO).md(1, 0), slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).ms(1, 0))
-    val row = Mux(op === TaskCtrlOpKind.ZeroAcc, 0.U, slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).row)
-    val col = Mux(op === TaskCtrlOpKind.ZeroAcc, 0.U, slot.entry.ctrl.data.asTypeOf(new AmuLsuIO).column)
+    val lsu = decodeLsu(slot.entry.ctrl)
+    val arith = decodeArith(slot.entry.ctrl)
+    val reg = Mux(op === TaskCtrlOpKind.ZeroAcc, arith.md(1, 0), lsu.ms(1, 0))
+    val row = Mux(op === TaskCtrlOpKind.ZeroAcc, 0.U, lsu.row)
+    val col = Mux(op === TaskCtrlOpKind.ZeroAcc, 0.U, lsu.column)
 
     loadCFinishEvent.eventType := 2.U
     loadCFinishEvent.regId := reg
@@ -1374,7 +1333,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   when(cmlStoreDone) {
     val owner = fuCMLStore.ownerSlot
     val slot = slots(owner)
-    val lsu = slot.entry.ctrl.data.asTypeOf(new AmuLsuIO)
+    val lsu = decodeLsu(slot.entry.ctrl)
 
     storeFinishEvent.eventType := 1.U
     storeFinishEvent.regId := lsu.ms(1, 0)
@@ -1386,112 +1345,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     storeFinishEvent.slotId := owner
     storeFinishEvent.seqId := slot.seqId
     storeFinishEventEn := true.B
-  }
-
-  // ===================== shadow scoreboard 更新（仅调试） =====================
-  shadowScoreboard.foreach { sb =>
-    when(issueFire) {
-      switch(issueSlot.opKind) {
-        is(TaskCtrlOpKind.LoadA) {
-          val lsu = issueCtrl.data.asTypeOf(new AmuLsuIO)
-          sb.io.update.load_allocate := true.B
-          sb.io.update.load_alloc_a_reg := lsu.ms(1, 0)
-          sb.io.update.load_alloc_b_reg := 0.U
-          sb.io.update.load_alloc_c_reg := 0.U
-          sb.io.update.load_alloc_has_a := true.B
-          sb.io.update.load_alloc_has_b := false.B
-          sb.io.update.load_alloc_has_c := false.B
-          sb.io.update.load_alloc_fifo_idx := issueSlot.fifoIdx(1, 0)
-        }
-        is(TaskCtrlOpKind.LoadB) {
-          val lsu = issueCtrl.data.asTypeOf(new AmuLsuIO)
-          sb.io.update.load_allocate := true.B
-          sb.io.update.load_alloc_a_reg := 0.U
-          sb.io.update.load_alloc_b_reg := lsu.ms(1, 0)
-          sb.io.update.load_alloc_c_reg := 0.U
-          sb.io.update.load_alloc_has_a := false.B
-          sb.io.update.load_alloc_has_b := true.B
-          sb.io.update.load_alloc_has_c := false.B
-          sb.io.update.load_alloc_fifo_idx := issueSlot.fifoIdx(1, 0)
-        }
-        is(TaskCtrlOpKind.LoadC) {
-          val lsu = issueCtrl.data.asTypeOf(new AmuLsuIO)
-          sb.io.update.load_allocate := true.B
-          sb.io.update.load_alloc_a_reg := 0.U
-          sb.io.update.load_alloc_b_reg := 0.U
-          sb.io.update.load_alloc_c_reg := lsu.ms(1, 0)
-          sb.io.update.load_alloc_has_a := false.B
-          sb.io.update.load_alloc_has_b := false.B
-          sb.io.update.load_alloc_has_c := true.B
-          sb.io.update.load_alloc_fifo_idx := issueSlot.fifoIdx(1, 0)
-        }
-        is(TaskCtrlOpKind.ZeroAcc) {
-          val reg = issueCtrl.data.asTypeOf(new AmuArithIO).md(1, 0)
-          sb.io.update.load_allocate := true.B
-          sb.io.update.load_alloc_a_reg := 0.U
-          sb.io.update.load_alloc_b_reg := 0.U
-          sb.io.update.load_alloc_c_reg := reg
-          sb.io.update.load_alloc_has_a := false.B
-          sb.io.update.load_alloc_has_b := false.B
-          sb.io.update.load_alloc_has_c := true.B
-          sb.io.update.load_alloc_fifo_idx := issueSlot.fifoIdx(1, 0)
-        }
-        is(TaskCtrlOpKind.ZeroTr) {
-          val arith = issueCtrl.data.asTypeOf(new AmuArithIO)
-          sb.io.update.load_allocate := true.B
-          sb.io.update.load_alloc_a_reg := arith.md(1, 0)
-          sb.io.update.load_alloc_b_reg := 0.U
-          sb.io.update.load_alloc_c_reg := 0.U
-          sb.io.update.load_alloc_has_a := true.B
-          sb.io.update.load_alloc_has_b := false.B
-          sb.io.update.load_alloc_has_c := false.B
-          sb.io.update.load_alloc_fifo_idx := issueSlot.fifoIdx(1, 0)
-        }
-        is(TaskCtrlOpKind.Compute) {
-          val mma = issueCtrl.data.asTypeOf(new AmuMmaIO)
-          sb.io.update.compute_issue := true.B
-          sb.io.update.compute_issue_a_reg := mma.ms1(1, 0)
-          sb.io.update.compute_issue_b_reg := mma.ms2(1, 0)
-          sb.io.update.compute_issue_c_reg := mma.md(1, 0)
-          sb.io.update.compute_issue_fifo_idx := issueSlot.fifoIdx(1, 0)
-        }
-        is(TaskCtrlOpKind.Store) {
-          val lsu = issueCtrl.data.asTypeOf(new AmuLsuIO)
-          sb.io.update.store_issue := true.B
-          sb.io.update.store_issue_c_reg := lsu.ms(1, 0)
-          sb.io.update.store_issue_fifo_idx := issueSlot.fifoIdx(1, 0)
-        }
-      }
-    }
-
-    when(amlDone) {
-      sb.io.update.load_finish_a := true.B
-      sb.io.update.load_finish_a_reg := loadAFinishEvent.regId(1, 0)
-    }
-    when(bmlDone) {
-      sb.io.update.load_finish_b := true.B
-      sb.io.update.load_finish_b_reg := loadBFinishEvent.regId(1, 0)
-    }
-    when(cmlLoadDone) {
-      sb.io.update.load_finish_c := true.B
-      sb.io.update.load_finish_c_reg := loadCFinishEvent.regId(1, 0)
-    }
-    when(adcDone) {
-      sb.io.update.compute_read_finish_a := true.B
-      sb.io.update.compute_read_finish_a_reg := computeReadAFinishEvent.aReg(1, 0)
-    }
-    when(bdcDone) {
-      sb.io.update.compute_read_finish_b := true.B
-      sb.io.update.compute_read_finish_b_reg := computeReadBFinishEvent.bReg(1, 0)
-    }
-    when(cdcDone) {
-      sb.io.update.compute_write_finish_c := true.B
-      sb.io.update.compute_write_finish_c_reg := computeWriteCFinishEvent.cReg(1, 0)
-    }
-    when(cmlStoreDone) {
-      sb.io.update.store_finish := true.B
-      sb.io.update.store_finish_c_reg := storeFinishEvent.regId(1, 0)
-    }
   }
 
   // ===================== release DiffTest 对齐 =====================

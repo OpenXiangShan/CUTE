@@ -483,8 +483,6 @@ case class CuteParams(
 
     // TaskController issue window depth (compile-time only)
     val TaskCtrlIssueWindowDepth :Int = 8,
-    // If true, keep Scoreboard as a shadow debug checker (not used for issue decisions).
-    val EnableTaskCtrlShadowScoreboard: Boolean = false,
 
     val EnableDifftest: Boolean = false, //是否启用DiffTest
 
@@ -605,7 +603,6 @@ trait CUTEImplParameters{
 
     def DecodedAmuCtrlFIFODepth = TaskCtrlIssueWindowDepth  //解码后的AMU指令FIFO的深度，与issue window绑定
     def DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) //解码后的AMU指令FIFO的深度
-    def EnableTaskCtrlShadowScoreboard = cuteParams.EnableTaskCtrlShadowScoreboard
 
     def ABMatrixRegCount = 4
     def CMatrixRegCount = 4
