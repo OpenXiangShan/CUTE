@@ -10,6 +10,7 @@ import org.chipsalliance.cde.config._
 class CUTETopIO()(implicit p: Parameters) extends CuteBundle{
     val mmu2llc = Flipped(new MMU2TLIO)
     val ctrl2top = Flipped(new YGJKControl)
+    val perf = new CutePerfIO
 }
 class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val io = IO(new CUTETopIO)
@@ -41,6 +42,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val MTE = Module(new MatrixTE)
 
     val MMU = Module(new LocalMMU)
+    val PMU = Module(new CUTEPMU)
 
     //debug reg
     val DebugTimeStampe = RegInit(0.U(32.W))
@@ -126,6 +128,10 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     MMU.io.LastLevelCacheTLIO <> io.mmu2llc
 
     io.ctrl2top <> TaskCtrl.io.ygjkctrl
+    PMU.io.fromCSR <> io.perf.fromCSR
+    PMU.io.taskProbe := TaskCtrl.io.perfProbe
+    PMU.io.mmuProbe := MMU.io.perfProbe
+    io.perf.toCore <> PMU.io.toCore
 
     //给每个 MatrixReg 的输入进行默认赋值
     

@@ -23,6 +23,7 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val CML_MicroTask_Config = new CMLMicroTaskConfigIO
   val MTE_MicroTask_Config = new MTEMicroTaskConfigIO
   val DebugTimeStampe = Input(UInt(32.W))
+  val perfProbe = Output(new TaskControllerPerfProbe)
 }
 
 abstract class BaseTaskController(implicit p: Parameters) extends CuteModule {
@@ -116,6 +117,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.CDC_MicroTask_Config.MicroTaskValid := false.B
   io.CDC_MicroTask_Config.MicroTaskEndReady := false.B
   io.CDC_MicroTask_Config.MicroTask_TEComputeEndReady := false.B
+  io.perfProbe := 0.U.asTypeOf(new TaskControllerPerfProbe)
   if (EnableDifftest) {
     io.CDC_MicroTask_Config.pc.get := 0.U
     io.CDC_MicroTask_Config.coreid.get := 0.U
@@ -560,6 +562,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   val enqueueSlotIdx = Mux(windowFull, winHead, winTail)
 
+  val ownedWork = decodedFifo.io.deq.valid || (winCount =/= 0.U)
+
   // ===================== 发射下发桥 =====================
   val issueCtrl = issueSlot.entry.ctrl
   val issueLsu = decodeLsu(issueCtrl)
@@ -944,6 +948,26 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       }
     }
   }
+
+  val mmaDoneType = decodeMmaDataType(decodeMma(slots(fuCompute.ownerSlot).entry.ctrl))
+  val releaseDone = issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
+  io.perfProbe.ownedWork := ownedWork
+  io.perfProbe.retire := retireFire
+  io.perfProbe.loadADone := loadAFinishEventEn
+  io.perfProbe.loadBDone := loadBFinishEventEn
+  io.perfProbe.loadCDone := loadCFinishEventEn
+  io.perfProbe.storeDone := storeFinishEventEn
+  io.perfProbe.compDone := computeWriteCFinishEventEn
+  io.perfProbe.releaseDone := releaseDone
+  io.perfProbe.mmaNonfpDone := computeWriteCFinishEventEn && !decodeMma(slots(fuCompute.ownerSlot).entry.ctrl).isfp
+  io.perfProbe.mmaFp16Done := computeWriteCFinishEventEn && (mmaDoneType === DataTypeF16F16F32)
+  io.perfProbe.mmaBf16Done := computeWriteCFinishEventEn && (mmaDoneType === DataTypeBF16BF16F32)
+  io.perfProbe.mmaTf32Done := computeWriteCFinishEventEn && (mmaDoneType === DataTypeTF32TF32F32)
+  io.perfProbe.amlActive := fuAML.busy
+  io.perfProbe.bmlActive := fuBML.busy
+  io.perfProbe.cmlLoadActive := fuCMLLoad.busy
+  io.perfProbe.mteActive := fuCompute.busy
+  io.perfProbe.cmlStoreActive := fuCMLStore.busy
 
   // ===================== 状态更新：done -> retire -> enqueue -> issue =====================
   when(amlDone) {

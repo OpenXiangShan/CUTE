@@ -484,6 +484,9 @@ case class CuteParams(
     // TaskController issue window depth (compile-time only)
     val TaskCtrlIssueWindowDepth :Int = 8,
 
+    // AME programmable counter slot number, mapped to mhpmcounter3..(2+N)
+    val AmeCounterNum: Int = 29,
+
     val EnableDifftest: Boolean = false, //是否启用DiffTest
 
     val Debug : CuteDebugParams = CuteDebugParams.NoDebug, //调试参数
@@ -527,6 +530,7 @@ case class CuteParams(
     require((VecTaskInstBufferSize & (VecTaskInstBufferSize - 1)) == 0, "VecTaskInstBufferSize must be power of 2")
     require((VecTaskDataBufferDepth & (VecTaskDataBufferDepth - 1)) == 0, "VecTaskDataBufferDepth must be power of 2")
     require(Seq(4, 8, 16).contains(TaskCtrlIssueWindowDepth), "TaskCtrlIssueWindowDepth only supports 4/8/16")
+    require(AmeCounterNum >= 1 && AmeCounterNum <= 29, "AmeCounterNum only supports 1..29")
     require((FPEparams.MinGroupSize == 16), "FPEparams.MinGroupSize must be 16")
     require((FPEparams.MinDataTypeWidth == 4), "FPEparams.MinDataTypeWidth must be 4")
     require((FPEparams.ScaleElementWidth == 8), "FPEparams.ScaleElementWidth must be 8")
@@ -600,6 +604,7 @@ trait CUTEImplParameters{
 
     def TaskCtrlIssueWindowDepth = cuteParams.TaskCtrlIssueWindowDepth
     def TaskCtrlIssueWindowDepthBitSize = log2Ceil(TaskCtrlIssueWindowDepth)
+    def AmeCounterNum = cuteParams.AmeCounterNum
 
     def DecodedAmuCtrlFIFODepth = TaskCtrlIssueWindowDepth  //解码后的AMU指令FIFO的深度，与issue window绑定
     def DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) //解码后的AMU指令FIFO的深度

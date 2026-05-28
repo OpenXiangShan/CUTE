@@ -206,3 +206,53 @@ object Bundles {
     def arithOp()   : UInt = "b11".U
   }
 }
+
+class PerfEventAme extends Bundle {
+  val value = UInt(8.W)
+}
+
+class AmeCSRWriteBundle extends Bundle {
+  val addr = UInt(12.W)
+  val data = UInt(64.W)
+}
+
+class AmePerfFromCSRIO extends Bundle {
+  val csrW = ValidIO(new AmeCSRWriteBundle)
+}
+
+class AmePerfToCoreIO(implicit p: Parameters) extends CuteBundle {
+  val perfEventsAme = Vec(AmeCounterNum, new PerfEventAme)
+  val fixedPerfAme = Vec(2, new PerfEventAme)
+}
+
+class CutePerfIO(implicit p: Parameters) extends CuteBundle {
+  val fromCSR = Flipped(new AmePerfFromCSRIO)
+  val toCore = new AmePerfToCoreIO
+}
+
+class TaskControllerPerfProbe(implicit p: Parameters) extends CuteBundle {
+  val ownedWork = Bool()
+  val retire = Bool()
+  val loadADone = Bool()
+  val loadBDone = Bool()
+  val loadCDone = Bool()
+  val storeDone = Bool()
+  val compDone = Bool()
+  val releaseDone = Bool()
+  val mmaNonfpDone = Bool()
+  val mmaFp16Done = Bool()
+  val mmaBf16Done = Bool()
+  val mmaTf32Done = Bool()
+  val amlActive = Bool()
+  val bmlActive = Bool()
+  val cmlLoadActive = Bool()
+  val mteActive = Bool()
+  val cmlStoreActive = Bool()
+}
+
+class LocalMMUPerfProbe extends Bundle {
+  val rdReq = Bool()
+  val wrReq = Bool()
+  val rdBytesReq = UInt(8.W)
+  val wrBytesReq = UInt(8.W)
+}
