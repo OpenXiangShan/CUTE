@@ -259,9 +259,9 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 if (YJPBMLDebugEnable)
                 {
                     //输出id和request的信息
-                    printf("[BML<%d>]sourceId:%d,MatrixRegBankId:%d,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,sourceId.bits,TableItem.MatrixRegBankId,TableItem.MatrixRegAddr)
+                    printf("[BML][%d] Req.map sourceId=%d, bankId=%d, regAddr=%d\n", io.DebugInfo.DebugTimeStampe, sourceId.bits, TableItem.MatrixRegBankId, TableItem.MatrixRegAddr)
                     //输出这次request的信息
-                    printf("[BML<%d>]RequestAddr:%x,RequestConherent:%d,RequestSourceID:%d,RequestType_isWrite:%d\n",io.DebugInfo.DebugTimeStampe,Request.bits.RequestAddr,Request.bits.RequestConherent,Request.bits.RequestSourceID,Request.bits.RequestType_isWrite)
+                    printf("[BML][%d] Req.fire addr=%x, coherent=%d, sourceId=%d, isWrite=%d\n", io.DebugInfo.DebugTimeStampe, Request.bits.RequestAddr, Request.bits.RequestConherent, Request.bits.RequestSourceID, Request.bits.RequestType_isWrite)
                 }
                 when(CurrentLoaded_BlockTensor_N < MaxBlockTensor_N_Index){
                     when(CurrentLoaded_BlockTensor_K + MAX_Fill_Times.U < MaxBlockTensor_K_Index){
@@ -331,7 +331,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 if (YJPBMLDebugEnable)
                 {
                     //输出这次response的信息
-                    printf("[BML<%d>]ResponseData:%x,MatrixRegBankId:%d,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,ResponseData,MatrixRegBankId,MatrixRegAddr)
+                    printf("[BML][%d] Resp.fire sourceId=%d, data=%x, bankId=%d, regAddr=%d\n", io.DebugInfo.DebugTimeStampe, sourceId, ResponseData, MatrixRegBankId, MatrixRegAddr)
                 }
             }
 

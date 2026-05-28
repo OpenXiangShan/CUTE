@@ -101,7 +101,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
 
     // Assign MatrixKey for AML channels (A matrix: "b01")
     tlABits.user.lift(MatrixKey).foreach { matrixKey =>
-      matrixKey := Mux(io.mmu.Request(0).bits.MatrixIsAcc, "b11".U, "b01".U)
+      matrixKey := Mux(mmuReqBits.MatrixIsAcc, "b11".U, "b01".U)
     }
 
     tlABits.user.lift(AmeIndexKey).foreach { ameIndex =>
@@ -131,7 +131,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     when(mmuReq.fire){
       if (YJPDebugEnable)
       {
-        printf("[CUTE2TL][%d] Channel %d: A.fire, AmeIndex=%d, useAllocId=%d, addr=0x%x, isWrite=%d, MatrixIsAcc=%d\n",
+        printf("[CUTE2TL][%d] Ch%d Req.fire sourceId=%d, useAllocId=%d, addr=0x%x, isWrite=%d, matrixIsAcc=%d\n",
           time_stamp, channel.U, mmuReqBits.RequestSourceID, useAllocId,
           mmuReqBits.RequestAddr, mmuReqBits.RequestType_isWrite, mmuReqBits.MatrixIsAcc)
       }
@@ -141,7 +141,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     when(mmuResp.fire){
       if (YJPDebugEnable)
       {
-        printf("[CUTE2TL][%d] Channel %d: Resp.fire, source=%d, matrixDataIn.valid=%d, tlD.valid=%d, data=0x%x\n",
+        printf("[CUTE2TL][%d] Ch%d Resp.fire sourceId=%d, matrixDataIn.valid=%d, tlD.valid=%d, data=0x%x\n",
           time_stamp, channel.U, mmuRespBits.ReseponseSourceID, matrixDataIn.valid, tlD.valid, mmuRespBits.ReseponseData)
       }
     }
@@ -150,7 +150,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     when(tlD.valid){
       if (YJPDebugEnable)
       {
-        printf("[CUTE2TL][%d] Channel %d TL-D: valid=%x, ready=%x, source=%x, AmeIndex(user)=%x\n",
+        printf("[CUTE2TL][%d] Ch%d TL-D valid=%x, ready=%x, source=%x, ameIndexUser=%x\n",
           time_stamp, channel.U, tlD.valid, tlD.ready, tlDBits.source,
           tlDBits.user.lift(AmeIndexKey).getOrElse(0.U))
       }

@@ -16,6 +16,9 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         val LastLevelCacheTLIO = Flipped(new MMU2TLIO)
     })
 
+    val logTime = RegInit(0.U(64.W))
+    logTime := logTime + 1.U
+
     //8通道并行访存：同时处理所有8个通道的请求
     //每个通道独立处理，不需要仲裁
 
@@ -58,14 +61,15 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
     val AllocatedOrigIdFlagBit = 60
     def markAllocatedOrigId(id: UInt): UInt = {
-        Cat(1.U(1.W), 0.U((AllocatedOrigIdFlagBit - LLCSourceMaxNumBitSize).W), id)
+        Cat(1.U(1.W), 0.U((AllocatedOrigIdFlagBit - LLCSourceMaxNumBitSize).W), id.pad(LLCSourceMaxNumBitSize))
     }
-    def isAllocatedOrigId(id: UInt): Bool = id(AllocatedOrigIdFlagBit)
+    def isAllocatedOrigId(id: UInt): Bool = id.pad(64)(AllocatedOrigIdFlagBit)
     def restoreLoaderSourceId(id: UInt): UInt = {
+        val id64 = id.pad(64)
         Mux(
-            isAllocatedOrigId(id),
-            Cat(0.U((64 - LLCSourceMaxNumBitSize).W), id(LLCSourceMaxNumBitSize - 1, 0)),
-            id
+            isAllocatedOrigId(id64),
+            Cat(0.U((64 - LLCSourceMaxNumBitSize).W), id64(LLCSourceMaxNumBitSize - 1, 0)),
+            id64
         )
     }
 
@@ -136,7 +140,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
                 when(llcReq.fire) {
                     if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU] Channel[$i] AReq fire: origId=${reqLoaderOrigId}, useAlloc=${useAllocId}, encoded=${llcReq.bits.RequestSourceID}\n")
+                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} A Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
                     }
                 }
             }
@@ -164,7 +168,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
                 when(llcReq.fire) {
                     if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU] Channel[$i] ASReq fire: origId=${reqLoaderOrigId}, useAlloc=${useAllocId}, encoded=${llcReq.bits.RequestSourceID}\n")
+                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} AS Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
                     }
                 }
             }
@@ -192,7 +196,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
                 when(llcReq.fire) {
                     if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU] Channel[$i] BReq fire: origId=${reqLoaderOrigId}, useAlloc=${useAllocId}, encoded=${llcReq.bits.RequestSourceID}\n")
+                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} B Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
                     }
                 }
             }
@@ -220,7 +224,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
                 when(llcReq.fire) {
                     if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU] Channel[$i] BSReq fire: origId=${reqLoaderOrigId}, useAlloc=${useAllocId}, encoded=${llcReq.bits.RequestSourceID}\n")
+                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} BS Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
                     }
                 }
             }
@@ -248,7 +252,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
                 when(llcReq.fire) {
                     if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU] Channel[$i] CLoadReq fire: origId=${reqLoaderOrigId}, useAlloc=${useAllocId}, encoded=${llcReq.bits.RequestSourceID}\n")
+                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} CLoad Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
                     }
                 }
             }
@@ -276,7 +280,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
                 when(llcReq.fire) {
                     if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU] Channel[$i] CStoreReq fire: origId=${reqLoaderOrigId}, useAlloc=${useAllocId}, encoded=${llcReq.bits.RequestSourceID}\n")
+                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} CStore Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
                     }
                 }
             }
@@ -284,16 +288,16 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
         // 握手监控日志：请求侧
         when(io.LastLevelCacheTLIO.Request(i).fire) {
-            printf(cf"[LocalMMU] Channel[$i] Request fired! encoded SourceID: ${io.LastLevelCacheTLIO.Request(i).bits.RequestSourceID}, Addr: ${Hexadecimal(io.LastLevelCacheTLIO.Request(i).bits.RequestAddr)}\n")
+            printf(cf"[LocalMMU][${logTime}] Ch${i.U} TL Req.fire encodedSourceId=${io.LastLevelCacheTLIO.Request(i).bits.RequestSourceID}, addr=${Hexadecimal(io.LastLevelCacheTLIO.Request(i).bits.RequestAddr)}, isWrite=${io.LastLevelCacheTLIO.Request(i).bits.RequestType_isWrite}, matrixIsAcc=${io.LastLevelCacheTLIO.Request(i).bits.MatrixIsAcc}\n")
         }
     }
 
     //8通道并行响应处理：按 encodedId 低位标签路由到对应的 MMU IO
     // 握手监控日志：响应侧
-    def logResponse(channel: Int, tagStr: String, tag: UInt, origId: UInt, data: UInt): Unit = {
+    def logResponse(channel: Int, tagStr: String, tag: UInt, encodedId: UInt, shiftedOrigId: UInt, loaderSourceId: UInt, data: UInt): Unit = {
         val resp = io.LastLevelCacheTLIO.Response(channel)
          when(resp.fire) {
-            printf(cf"[LocalMMU] Channel[$channel] to ${tagStr}ML Response fired! encodedId: ${resp.bits.ReseponseSourceID} tag: ${tag}, origId: ${origId}, data: ${Hexadecimal(data)}\n")
+            printf(cf"[LocalMMU][${logTime}] Ch${channel.U} -> ${tagStr} Resp.fire encodedSourceId=${encodedId}, tag=${tag}, shiftedOrigId=${shiftedOrigId}, loaderSourceId=${loaderSourceId}, allocatedOrigId=${isAllocatedOrigId(shiftedOrigId)}, data=${Hexadecimal(data)}\n")
         }
     }
 
@@ -307,7 +311,10 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
         val encodedId = llc_response.bits.ReseponseSourceID
         val tag = encodedId(SourceTagWidth - 1, 0)
-        val origId = encodedId >> SourceTagWidth
+        val origId = Wire(UInt(64.W))
+        origId := encodedId >> SourceTagWidth
+        val loaderSourceId = Wire(UInt(64.W))
+        loaderSourceId := restoreLoaderSourceId(origId)
         val data = llc_response.bits.ReseponseData
 
         // 默认保持 ready 低电平，后续根据路由目的端覆盖
@@ -333,7 +340,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 // 需要区分 A 和 AS - 通过检查哪个请求在飞行中
                 a_mmu_response.valid := true.B
                 a_mmu_response.bits := llc_response.bits
-                a_mmu_response.bits.ReseponseSourceID := restoreLoaderSourceId(origId)
+                a_mmu_response.bits.ReseponseSourceID := loaderSourceId
                 llc_response.ready := a_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
@@ -341,11 +348,11 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "A", tag, origId, data)
+                logResponse(i, "A", tag, encodedId, origId, loaderSourceId, data)
             }.elsewhen(tag === BReadTag) {
                 b_mmu_response.valid := true.B
                 b_mmu_response.bits := llc_response.bits
-                b_mmu_response.bits.ReseponseSourceID := restoreLoaderSourceId(origId)
+                b_mmu_response.bits.ReseponseSourceID := loaderSourceId
                 llc_response.ready := b_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
@@ -353,11 +360,11 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "B", tag, origId, data)
+                logResponse(i, "B", tag, encodedId, origId, loaderSourceId, data)
             }.elsewhen(tag === ASReadTag) {
                 as_mmu_response.valid := true.B
                 as_mmu_response.bits := llc_response.bits
-                as_mmu_response.bits.ReseponseSourceID := restoreLoaderSourceId(origId)
+                as_mmu_response.bits.ReseponseSourceID := loaderSourceId
                 llc_response.ready := as_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
@@ -365,11 +372,11 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "AS", tag, origId, data)
+                logResponse(i, "AS", tag, encodedId, origId, loaderSourceId, data)
             }.elsewhen(tag === BSReadTag) {
                 bs_mmu_response.valid := true.B
                 bs_mmu_response.bits := llc_response.bits
-                bs_mmu_response.bits.ReseponseSourceID := restoreLoaderSourceId(origId)
+                bs_mmu_response.bits.ReseponseSourceID := loaderSourceId
                 llc_response.ready := bs_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
@@ -377,11 +384,11 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "BS", tag, origId, data)
+                logResponse(i, "BS", tag, encodedId, origId, loaderSourceId, data)
             }.elsewhen(tag === CReadTag) {
                 c_mmu_response.valid := true.B
                 c_mmu_response.bits := llc_response.bits
-                c_mmu_response.bits.ReseponseSourceID := restoreLoaderSourceId(origId)
+                c_mmu_response.bits.ReseponseSourceID := loaderSourceId
                 llc_response.ready := c_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
@@ -389,12 +396,12 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "CLoad", tag, origId, data)
+                logResponse(i, "CLoad", tag, encodedId, origId, loaderSourceId, data)
             }.elsewhen(tag === CWriteTag) {
                 val c_store_mmu_response = io.CStoreLocalMMUIO.Response(i)
                 c_store_mmu_response.valid := true.B
                 c_store_mmu_response.bits := llc_response.bits
-                c_store_mmu_response.bits.ReseponseSourceID := restoreLoaderSourceId(origId)
+                c_store_mmu_response.bits.ReseponseSourceID := loaderSourceId
                 llc_response.ready := c_store_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
@@ -402,7 +409,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "CStore", tag, origId, data)
+                logResponse(i, "CStore", tag, encodedId, origId, loaderSourceId, data)
             }.otherwise{
                 assert(false.B, cf"Unsupported tag ${tag} in LLC response routing")
             }

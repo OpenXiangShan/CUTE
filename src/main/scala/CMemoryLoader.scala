@@ -338,6 +338,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 ReadRequest.bits.RequestConherent := IsLoadConherent
                 ReadRequest.bits.RequestSourceID := sourceId.bits
                 ReadRequest.bits.RequestType_isWrite := false.B
+                ReadRequest.bits.UseAllocatedSourceID := true.B
                 ReadRequest.valid := (TotalRequestSize < MaxRequestIter)
 
                 //确定这个访存请求一定会发出
@@ -367,7 +368,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                     //输出request的次数
                     if (YJPCMLDebugEnable)
                     {
-                        printf("[CMemoryLoader_Load<%d>]RequestMatrixRegAddr: %x,RequestMatrixRegBankId: %x,CurrentLoaded_BlockTensor_N_Iter: %x,CurrentLoaded_BlockTensor_M_Iter: %x,Request_M_Iter_Time: %x,RequestAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x, RequestTimes: %d\n", io.DebugInfo.DebugTimeStampe, RequestMatrixRegAddr,RequestMatrixRegBankId,CurrentLoaded_BlockTensor_N_Iter,CurrentLoaded_BlockTensor_M_Iter,Request_M_Iter_Time,ReadRequest.bits.RequestAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite, TotalRequestSize)
+                        printf("[CML.Load][%d] Req.fire regAddr=%x, bankId=%x, nIter=%x, mIter=%x, reqTime=%x, addr=%x, sourceId=%x, coherent=%x, isWrite=%x, reqCount=%d\n", io.DebugInfo.DebugTimeStampe, RequestMatrixRegAddr, RequestMatrixRegBankId, CurrentLoaded_BlockTensor_N_Iter, CurrentLoaded_BlockTensor_M_Iter, Request_M_Iter_Time, ReadRequest.bits.RequestAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite, TotalRequestSize)
                     }
                     when(TotalRequestSize === MaxRequestIter){
                         //assert!
@@ -406,7 +407,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                     //输出回填的数据
                     if (YJPCMLDebugEnable)
                     {
-                        printf("[CMemoryLoader_Load<%d>]ResponseData: %x, MatrixRegBankId: %x, MatrixRegAddr: %x, FIFOIndex: %x\n",io.DebugInfo.DebugTimeStampe, ResponseData, MatrixRegBankId, MatrixRegAddr, FIFOIndex)
+                        printf("[CML.Load][%d] Resp.fire sourceId=%x, data=%x, bankId=%x, regAddr=%x, fifoIndex=%x\n", io.DebugInfo.DebugTimeStampe, sourceId, ResponseData, MatrixRegBankId, MatrixRegAddr, FIFOIndex)
                     }
                 }
 
@@ -699,6 +700,9 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     when(io.StoreLocalMMUIO.Response(0).fire){
         val sourceId = io.StoreLocalMMUIO.Response(0).bits.ReseponseSourceID
         Write_Mem_Wait_Table(sourceId) := false.B
+        if (YJPCMLDebugEnable) {
+            printf("[CML.Store][%d] Resp.fire sourceId=%x\n", io.DebugInfo.DebugTimeStampe, sourceId)
+        }
     }
 
     val M_Get_IteratorMax = Mux(IsStoreTranspose, (StoreMatrixRegTensor_M / (Matrix_MN.U * 2.U) + (StoreMatrixRegTensor_M % (Matrix_MN.U * 2.U) =/= 0.U)) * 2.U, (StoreMatrixRegTensor_M / Matrix_MN.U) + ((StoreMatrixRegTensor_M % Matrix_MN.U) =/= 0.U))
@@ -862,6 +866,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 WriteRequest.bits.RequestConherent := IsStoreConherent
                 WriteRequest.bits.RequestSourceID := io.StoreLocalMMUIO.ConherentRequsetSourceID.bits
                 WriteRequest.bits.RequestType_isWrite := true.B
+                WriteRequest.bits.UseAllocatedSourceID := true.B
                 WriteRequest.bits.RequestData := Request_Data.asUInt
                 WriteRequest.valid := true.B
                 //只有fire了才能继续
@@ -889,7 +894,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
 
                     if (YJPCMLDebugEnable)
                     {
-                        printf("[CMemoryLoader_Store<%d>]WriteRequest: RequestAddr= %x, RequestConherent= %x,RequestSourceID= %x,RequestType_isWrite= %x,CurrentStore_BlockTensor_Major_DIM_Iter: %x, CurrentStore_BlockTensor_Reduce_DIM_Iter: %x,RequestData:%x\n", io.DebugInfo.DebugTimeStampe, WriteRequest.bits.RequestAddr, WriteRequest.bits.RequestConherent, WriteRequest.bits.RequestSourceID, WriteRequest.bits.RequestType_isWrite, CurrentStore_BlockTensor_Major_DIM_Iter, CurrentStore_BlockTensor_Reduce_DIM_Iter,WriteRequest.bits.RequestData)
+                        printf("[CML.Store][%d] Req.fire addr=%x, coherent=%x, sourceId=%x, isWrite=%x, majorIter=%x, reduceIter=%x, data=%x\n", io.DebugInfo.DebugTimeStampe, WriteRequest.bits.RequestAddr, WriteRequest.bits.RequestConherent, WriteRequest.bits.RequestSourceID, WriteRequest.bits.RequestType_isWrite, CurrentStore_BlockTensor_Major_DIM_Iter, CurrentStore_BlockTensor_Reduce_DIM_Iter, WriteRequest.bits.RequestData)
                     }
                     
 

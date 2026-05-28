@@ -220,9 +220,9 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                         TotalRequestSize := TotalRequestSize + 1.U
                     }
                     if (YJPAMLDebugEnable){
-                        printf("[AML<%d>]FullLoad Request, M_Iter:%d, K_Iter:%d, ReqTime:%d, Addr:%x, BankId:%d, RegAddr:%d\n",
+                        printf("[AML][%d] Req.fire mIter=%d, kIter=%d, reqTime=%d, addr=%x, sourceId=%d, bankId=%d, regAddr=%d\n",
                           io.DebugInfo.DebugTimeStampe, CurrentLoaded_BlockTensor_M_Iter, CurrentLoaded_BlockTensor_K_Iter,
-                          Request_M_Iter_Time, Request.bits.RequestAddr, RequestMatrixRegBankId, RequestMatrixRegAddr)
+                          Request_M_Iter_Time, Request.bits.RequestAddr, Request.bits.RequestSourceID, RequestMatrixRegBankId, RequestMatrixRegAddr)
                     }
                 }
 
@@ -247,7 +247,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                     Bank_Fill_Search_FIFO(MatrixRegBankId)(FIFOIndex) := MReg_Fill_Table_Insert_Index
                     Bank_Fill_Search_FIFO_Head(MatrixRegBankId) := WrapInc(Bank_Fill_Search_FIFO_Head(MatrixRegBankId), AMemoryLoaderReadFromMemoryFIFODepth)
                     if (YJPAMLDebugEnable){
-                        printf("[AML<%d>]Response, Data:%x, BankId:%d, RegAddr:%d\n", io.DebugInfo.DebugTimeStampe, ResponseData, MatrixRegBankId, MatrixRegAddr)
+                        printf("[AML][%d] Resp.fire sourceId=%d, data=%x, bankId=%d, regAddr=%d\n", io.DebugInfo.DebugTimeStampe, sourceId, ResponseData, MatrixRegBankId, MatrixRegAddr)
                     }
                 }
 

@@ -522,8 +522,8 @@ case class CuteParams(
     val MatrixExtension: MatrixIsaParams = MatrixIsaParams(),
 
     val EnableEightChannelAML: Boolean = false, // true: AML 八通道并行访存; false: AML 单通道轮询访存
-    val EnableEightChannelBML: Boolean = true, // true: BML 八通道并行访存; false: BML 单通道轮询访存
-    val EnableEightChannelCML: Boolean = true // true: CML 八通道并行访存; false: CML 单通道轮询访存
+    val EnableEightChannelBML: Boolean = true,  // true: BML 八通道并行访存; false: BML 单通道轮询访存
+    val EnableEightChannelCML: Boolean = true   // true: CML 八通道并行访存; false: CML 单通道轮询访存
 ) {
 
     //所有参数都必须是2的n次方
@@ -1177,7 +1177,7 @@ class MMURequestIO(implicit p: Parameters) extends CuteBundle{
     val RequestAddr = UInt(MMUAddrWidth.W)
     val RequestConherent = Bool()
     val RequestData = UInt(MMUDataWidth.W)
-    val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
+    val RequestSourceID = UInt(64.W)
     val RequestType_isWrite = Bool()
     val UseAllocatedSourceID = Bool()
     val isA = Bool()
@@ -1188,7 +1188,7 @@ class MMURequestIO(implicit p: Parameters) extends CuteBundle{
 class MMUResponseIO(implicit p: Parameters) extends CuteBundle{
     val ReseponseData = UInt(MMUDataWidth.W)
     val ReseponseConherent = Bool()
-    val ReseponseSourceID = UInt(SoureceMaxNumBitSize.W)
+    val ReseponseSourceID = UInt(64.W)
 }
 
 //LocalMMU的接口
