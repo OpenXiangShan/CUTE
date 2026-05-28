@@ -40,7 +40,7 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
 
     val ConfigInfo = io.ConfigInfo
 
-    val dataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W)) //数据类型，float16、int8等，由TaskController提供
+    val computeType = RegInit(MteComputeType.ComputeTypeUndef)
 
     val MatrixRegTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
@@ -76,7 +76,7 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
             state := s_mm_task
             memoryload_state := s_load_init
             // ApplicationTensor_M := io.ConfigInfo.bits.ApplicationTensor_M
-            dataType := io.ConfigInfo.ApplicationScale_A.dataType
+            computeType := io.ConfigInfo.ApplicationScale_A.computeType
             MatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_M
             MatrixRegTensor_K := io.ConfigInfo.MatrixRegTensor_K
             Scale_A_BaseVaddr := io.ConfigInfo.ApplicationScale_A.ApplicationScale_A_BaseVaddr //这个不重要
@@ -138,8 +138,8 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
         TotalLoadSize := 0.U
         CurrentLoaded_BlockTensor_M := 0.U
         CurrentLoaded_BlockTensor_K := 0.U
-        MaxRequestIter := MatrixRegTensor_K * MatrixRegTensor_M * ScaleVecWidth(dataType) / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
-        printf("[bSL] MaxRequestIter:%d. MatrixRegTensor_K:%d,MatrixRegTensor_M:%d,ScaleVecWidth:%d,outsideDataWidthByte:%d\n",MaxRequestIter,MatrixRegTensor_K,MatrixRegTensor_M,ScaleVecWidth(dataType), outsideDataWidthByte.U)
+        MaxRequestIter := MatrixRegTensor_K * MatrixRegTensor_M * ScaleVecWidth(computeType) / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
+        printf("[bSL] MaxRequestIter:%d. MatrixRegTensor_K:%d,MatrixRegTensor_M:%d,ScaleVecWidth:%d,outsideDataWidthByte:%d\n",MaxRequestIter,MatrixRegTensor_K,MatrixRegTensor_M,ScaleVecWidth(computeType), outsideDataWidthByte.U)
     }.elsewhen(memoryload_state === s_load_working){
         //根据不同的MemoryOrder，执行不同的访存模式
 

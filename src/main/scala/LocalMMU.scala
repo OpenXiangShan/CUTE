@@ -9,8 +9,8 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val ALocalMMUIO = (new LocalMMUIO)
         val BLocalMMUIO = (new LocalMMUIO)
-        val BSLocalMMUIO = (new LocalMMUIO)
-        val ASLocalMMUIO = (new LocalMMUIO)
+        val BSLocalMMUIO = Option.when(cuteMatrixExtension.enableScalingFactor)(new LocalMMUIO)
+        val ASLocalMMUIO = Option.when(cuteMatrixExtension.enableScalingFactor)(new LocalMMUIO)
         val CLoadLocalMMUIO = (new LocalMMUIO)
         val CStoreLocalMMUIO = (new LocalMMUIO)
         val LastLevelCacheTLIO = Flipped(new MMU2TLIO)
@@ -26,8 +26,8 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
     // Bit index follows LocalMMUTaskType encoding directly.
     val AllRequestValid = Cat(
-      io.ASLocalMMUIO.Request.valid,
-      io.BSLocalMMUIO.Request.valid,
+      io.ASLocalMMUIO.map(_.Request.valid).getOrElse(false.B),
+      io.BSLocalMMUIO.map(_.Request.valid).getOrElse(false.B),
       io.CStoreLocalMMUIO.Request.valid,
       io.CLoadLocalMMUIO.Request.valid,
       io.BLocalMMUIO.Request.valid,
@@ -45,36 +45,36 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
     io.ALocalMMUIO.Request.ready := false.B
     io.BLocalMMUIO.Request.ready := false.B
-    io.ASLocalMMUIO.Request.ready := false.B
-    io.BSLocalMMUIO.Request.ready := false.B
+    io.ASLocalMMUIO.foreach(_.Request.ready := false.B)
+    io.BSLocalMMUIO.foreach(_.Request.ready := false.B)
     io.CLoadLocalMMUIO.Request.ready := false.B
     io.CStoreLocalMMUIO.Request.ready := false.B
 
     io.ALocalMMUIO.ConherentRequsetSourceID.valid := false.B
     io.BLocalMMUIO.ConherentRequsetSourceID.valid := false.B
-    io.ASLocalMMUIO.ConherentRequsetSourceID.valid := false.B
-    io.BSLocalMMUIO.ConherentRequsetSourceID.valid := false.B
+    io.ASLocalMMUIO.foreach(_.ConherentRequsetSourceID.valid := false.B)
+    io.BSLocalMMUIO.foreach(_.ConherentRequsetSourceID.valid := false.B)
     io.CLoadLocalMMUIO.ConherentRequsetSourceID.valid := false.B
     io.CStoreLocalMMUIO.ConherentRequsetSourceID.valid := false.B
 
     io.ALocalMMUIO.ConherentRequsetSourceID.bits := DontCare
     io.BLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
-    io.ASLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
-    io.BSLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
+    io.ASLocalMMUIO.foreach(_.ConherentRequsetSourceID.bits := DontCare)
+    io.BSLocalMMUIO.foreach(_.ConherentRequsetSourceID.bits := DontCare)
     io.CLoadLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
     io.CStoreLocalMMUIO.ConherentRequsetSourceID.bits := DontCare
 
     io.ALocalMMUIO.nonConherentRequsetSourceID.valid := false.B
     io.BLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
-    io.ASLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
-    io.BSLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
+    io.ASLocalMMUIO.foreach(_.nonConherentRequsetSourceID.valid := false.B)
+    io.BSLocalMMUIO.foreach(_.nonConherentRequsetSourceID.valid := false.B)
     io.CLoadLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
     io.CStoreLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
 
     io.ALocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
     io.BLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
-    io.ASLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
-    io.BSLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
+    io.ASLocalMMUIO.foreach(_.nonConherentRequsetSourceID.bits := DontCare)
+    io.BSLocalMMUIO.foreach(_.nonConherentRequsetSourceID.bits := DontCare)
     io.CLoadLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
     io.CStoreLocalMMUIO.nonConherentRequsetSourceID.bits := DontCare
 
@@ -96,12 +96,14 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
             }
             is(LocalMMUTaskType.AScaleFirst){
-                io.ASLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
-                io.ASLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
-                io.LastLevelCacheTLIO.Request.bits.RequestData := io.ASLocalMMUIO.Request.bits.RequestData
-                io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.ASLocalMMUIO.Request.bits.RequestType_isWrite
-                sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.AScaleFirst
-                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
+                io.ASLocalMMUIO.foreach { asLocalMMUIO =>
+                    asLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
+                    asLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
+                    io.LastLevelCacheTLIO.Request.bits.RequestData := asLocalMMUIO.Request.bits.RequestData
+                    io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := asLocalMMUIO.Request.bits.RequestType_isWrite
+                    sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.AScaleFirst
+                    io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
+                }
             }
             is(LocalMMUTaskType.BFirst) {
                 io.BLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
@@ -112,12 +114,14 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
             }
             is(LocalMMUTaskType.BScaleFirst) {
-                io.BSLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
-                io.BSLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
-                io.LastLevelCacheTLIO.Request.bits.RequestData := io.BSLocalMMUIO.Request.bits.RequestData
-                io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.BSLocalMMUIO.Request.bits.RequestType_isWrite
-                sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.BScaleFirst
-                io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
+                io.BSLocalMMUIO.foreach { bsLocalMMUIO =>
+                    bsLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
+                    bsLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
+                    io.LastLevelCacheTLIO.Request.bits.RequestData := bsLocalMMUIO.Request.bits.RequestData
+                    io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := bsLocalMMUIO.Request.bits.RequestType_isWrite
+                    sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.BScaleFirst
+                    io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
+                }
             }
             is(LocalMMUTaskType.CLoadFirst) {
                 io.CLoadLocalMMUIO.Request.ready := io.LastLevelCacheTLIO.Request.ready
@@ -147,15 +151,15 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
     io.ALocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
     io.BLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
-    io.ASLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
-    io.BSLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
+    io.ASLocalMMUIO.foreach(_.Response.bits := io.LastLevelCacheTLIO.Response.bits)
+    io.BSLocalMMUIO.foreach(_.Response.bits := io.LastLevelCacheTLIO.Response.bits)
     io.CLoadLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
     io.CStoreLocalMMUIO.Response.bits := io.LastLevelCacheTLIO.Response.bits
 
     io.ALocalMMUIO.Response.valid := false.B
     io.BLocalMMUIO.Response.valid := false.B
-    io.ASLocalMMUIO.Response.valid := false.B
-    io.BSLocalMMUIO.Response.valid := false.B
+    io.ASLocalMMUIO.foreach(_.Response.valid := false.B)
+    io.BSLocalMMUIO.foreach(_.Response.valid := false.B)
     io.CLoadLocalMMUIO.Response.valid := false.B
     io.CStoreLocalMMUIO.Response.valid := false.B
 
@@ -165,16 +169,20 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
             io.LastLevelCacheTLIO.Response.ready := io.ALocalMMUIO.Response.ready
         }
         is(LocalMMUTaskType.AScaleFirst) {
-            io.ASLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
-            io.LastLevelCacheTLIO.Response.ready := io.ASLocalMMUIO.Response.ready
+            io.ASLocalMMUIO.foreach { asLocalMMUIO =>
+                asLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
+                io.LastLevelCacheTLIO.Response.ready := asLocalMMUIO.Response.ready
+            }
         }
         is(LocalMMUTaskType.BFirst) {
             io.BLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
             io.LastLevelCacheTLIO.Response.ready := io.BLocalMMUIO.Response.ready
         }
         is(LocalMMUTaskType.BScaleFirst){
-            io.BSLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
-            io.LastLevelCacheTLIO.Response.ready := io.BSLocalMMUIO.Response.ready
+            io.BSLocalMMUIO.foreach { bsLocalMMUIO =>
+                bsLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid
+                io.LastLevelCacheTLIO.Response.ready := bsLocalMMUIO.Response.ready
+            }
         }
         is(LocalMMUTaskType.CLoadFirst) {
             io.CLoadLocalMMUIO.Response.valid := io.LastLevelCacheTLIO.Response.valid

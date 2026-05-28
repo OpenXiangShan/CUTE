@@ -10,7 +10,7 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
 
         //先整一个MatrixReg的接口的总体设计
         val FromMatrixRegIO = Flipped(new ABScaleControlMatrixRegIO)
-        val ConfigInfo = Flipped(new BDCMicroTaskConfigIO)
+        val ConfigInfo = Flipped(new BSCMicroTaskConfigIO)
         val ScaleB = DecoupledIO(UInt((ScaleWidth*Matrix_MN).W))
         val ComputeGo = Input(Bool())//由TE发出的计算同步锁步信号，指可以接收新的数据了
         val DebugInfo = Input(new DebugInfoIO)
@@ -36,7 +36,7 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
     val MatrixRegWorkingTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegWorkingTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
-    val dataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
+    val computeType = RegInit(MteComputeType.ComputeTypeUndef)
     val sliceid = RegInit(0.U(log2Ceil(ABScaleNSlices).W))
 
     val CurrentSpadId = RegInit(0.U(1.W))
@@ -70,7 +70,7 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
             MatrixRegWorkingTensor_N := ConfigInfo.MatrixRegTensor_N    //当前执行的矩阵乘任务的N
             MatrixRegWorkingTensor_K := ConfigInfo.MatrixRegTensor_K    //当前执行的矩阵乘任务的K的ReduceVector的数量
 
-            dataType := ConfigInfo.ApplicationTensor_B.dataType
+            computeType := ConfigInfo.computeType
             
             //阶段0，让计算状态机开始初始化，开始计算状态机开始工作
             calculate_state := s_cal_init
@@ -109,7 +109,7 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
 
     val bit_index = RegInit(VecInit(Seq.fill(Matrix_MN)(0.U(log2Ceil(MatrixRegMaxTensorDimBitSize * ScaleWidth).W))))
     for (i <- 0 until Matrix_MN){
-        bit_index(i) := ((i * ReduceGroupSize).U + K_Iterator) * (ScaleVecWidth(dataType) * 8.U)
+        bit_index(i) := ((i * ReduceGroupSize).U + K_Iterator) * (ScaleVecWidth(computeType) * 8.U)
     }
 
     //如果是mm_task,且计算状态机是init，那么就开始初始化
@@ -136,8 +136,8 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
             // }
             //MTE循环的最外层是M，然后是N，最后是K,所以这里在同步信号的ComputeGo的协同下，执行Max_Caculate_Iter次取数
             val next_addr = Wire(UInt(ABMatrixRegBankNEntries.W))
-            next_addr := (N_Iterator * Matrix_MN.U * K_IteratorMax) * ScaleVecWidth(dataType) * 8.U / outsideDataWidth.U 
-            sliceid := ((N_Iterator * Matrix_MN.U * K_IteratorMax) * ScaleVecWidth(dataType) * 8.U / (ScaleWidth * ReduceGroupSize).U) % ABScaleNSlices.U
+            next_addr := (N_Iterator * Matrix_MN.U * K_IteratorMax) * ScaleVecWidth(computeType) * 8.U / outsideDataWidth.U 
+            sliceid := ((N_Iterator * Matrix_MN.U * K_IteratorMax) * ScaleVecWidth(computeType) * 8.U / (ScaleWidth * ReduceGroupSize).U) % ABScaleNSlices.U
             MatrixRegRequestBankAddr.bits := next_addr
             
             //只要ComputeGo有效，就表示一定会有一个数据被消耗，我们可以继续取数
@@ -177,7 +177,7 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
                     val mxfp8SlutId = (bit_index(i) % (ScaleWidth * ReduceGroupSize).U) / mxfp8ScaleWidth.U
                     val mxfp4SlutId = (bit_index(i) % (ScaleWidth * ReduceGroupSize).U) / mxfp4ScaleWidth.U
                     val nvfp4SlutId = (bit_index(i) % (ScaleWidth * ReduceGroupSize).U) / nvfp4ScaleWidth.U
-                    scaleb_vec(i) := Mux(dataType === ElementDataType.DataTypeMxfp8e4m3F32 || dataType === ElementDataType.DataTypeMxfp8e5m2F32, mxfp8ScaleSlut(mxfp8SlutId), Mux(dataType === ElementDataType.DataTypemxfp4F32, mxfp4ScaleSlut(mxfp4SlutId), nvfp4ScaleSlut(nvfp4SlutId))).asUInt.pad(ScaleWidth)
+                    scaleb_vec(i) := Mux(computeType === MteComputeType.Mxfp8e4m3F32 || computeType === MteComputeType.Mxfp8e5m2F32, mxfp8ScaleSlut(mxfp8SlutId), Mux(computeType === MteComputeType.Mxfp4F32, mxfp4ScaleSlut(mxfp4SlutId), nvfp4ScaleSlut(nvfp4SlutId))).asUInt.pad(ScaleWidth)
                 }
             }
 
