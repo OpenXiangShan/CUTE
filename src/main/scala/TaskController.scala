@@ -8,6 +8,14 @@ import cute.Bundles._
 import difftest._
 import utility.ChiselDB
 
+/*
+ * TaskController scheduling overview:
+ * - Decode AMU instructions into a fixed-size issue window.
+ * - Build dependencies at enqueue time from static read/write footprints.
+ * - Scan the window oldest-first and issue at most one ready slot per cycle.
+ * - Route completion back through FU ownerSlot; retire only from the window head.
+ * - Release and NopLike stay local; ZeroAcc and ZeroTr map to load-like aliases.
+ */
 class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val ygjkctrl = Flipped(new YGJKControl)
   val ADC_MicroTask_Config = new ADCMicroTaskConfigIO
@@ -61,7 +69,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private val WinCountWidth = log2Ceil(WinDepth + 1)
   private val SeqIdWidth = 16
 
-  // ===================== 默认输出赋值 =====================
+  // ===================== Default output assignments =====================
   io.ygjkctrl.mrelease.valid := false.B
   io.ygjkctrl.mrelease.bits := 0.U.asTypeOf(new MreleaseIO)
 
@@ -187,7 +195,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.MTE_MicroTask_Config.MicroTaskValid := false.B
   io.MTE_MicroTask_Config.computeType := MteComputeType.ComputeTypeUndef
 
-  // ===================== ChiselDB 事件定义 =====================
+  // ===================== ChiselDB event definitions =====================
   private val TileDimWidth = Bundles.Mtilex.width
   private val LoadFifoIdxWidth = 4
   private val ComputeFifoIdxWidth = 4
@@ -273,7 +281,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private val releaseIssueEvent = WireInit(0.U.asTypeOf(new ReleaseEventEntry))
   private val releaseIssueEventEn = WireInit(false.B)
 
-  // ===================== 指令译码FIFO =====================
+  // ===================== Decoded instruction FIFO =====================
   private val decodedFifo = Module(new Queue(new DecodedAmuCtrlEntry, DecodedAmuCtrlFIFODepth))
 
   decodedFifo.io.enq.valid := io.ygjkctrl.amuCtrl.valid
@@ -329,7 +337,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   decodedFifo.io.enq.bits := decEntryEnq
 
-  // ===================== 调度窗口状态 =====================
+  // ===================== Issue window state =====================
   class IssueWindowSlot(implicit p: Parameters) extends CuteBundle {
     val valid = Bool()
     val issued = Bool()
@@ -404,7 +412,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms2) === abIdx(reg))
   }
 
-  // ===================== done握手（电平ready） =====================
+  // ===================== Done handshakes (level-ready) =====================
   val amlOwnerValid = fuAML.busy && slots(fuAML.ownerSlot).valid
   val bmlOwnerValid = fuBML.busy && slots(fuBML.ownerSlot).valid
   val cmlLoadOwnerValid = fuCMLLoad.busy && slots(fuCMLLoad.ownerSlot).valid
@@ -449,7 +457,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     assert(computeOwnerValid, "TaskController: CDC done without valid owner")
   }
 
-  // ===================== 入窗侧分类 =====================
+  // ===================== Enqueue-side classification =====================
   val deqValid = decodedFifo.io.deq.valid
   val deqEntry = decodedFifo.io.deq.bits
 
@@ -491,7 +499,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     deqOpKind := TaskCtrlOpKind.ZeroTr
   }
 
-  // ===================== oldest-ready 发射判定（基于拍初状态） =====================
+  // ===================== Oldest-ready issue selection (based on cycle-start state) =====================
   val completedVec = VecInit(slots.map(s => s.valid && s.completed)).asUInt
   val readAVec = VecInit(slots.map(s => s.valid && s.readADone)).asUInt
   val readBVec = VecInit(slots.map(s => s.valid && s.readBDone)).asUInt
@@ -546,7 +554,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val deqStoreReadsAB = deqIsLsu && (deqLsu.ls === 1.U) && !deqLsu.isacc
   val deqStoreReadsC = deqIsLsu && (deqLsu.ls === 1.U) && deqLsu.isacc
 
-  // ===================== 退休前瞻（基于 done 收敛后） =====================
+  // ===================== Retirement lookahead (after done convergence) =====================
   val headSlot = slots(winHead)
 
   val headDoneByFu =
@@ -559,7 +567,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val headCompletedAfterDone = headSlot.completed || headDoneByFu
   val retireFire = headSlot.valid && headCompletedAfterDone
 
-  // 允许同拍 retire + enqueue（包括满窗复用被退休槽位）
+  // Allow retire + enqueue in the same cycle, including full-window reuse of the retired slot
   val windowFull = winCount === WinDepth.U
   val enqueueCanFire = deqValid && (!windowFull || retireFire)
   decodedFifo.io.deq.ready := enqueueCanFire
@@ -567,7 +575,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   val enqueueSlotIdx = Mux(windowFull, winHead, winTail)
 
-  // ===================== 发射下发桥 =====================
+  // ===================== Issue dispatch bridge =====================
   val issueCtrl = issueSlot.entry.ctrl
   val issueLsu = decodeLsu(issueCtrl)
   val issueMma = decodeMma(issueCtrl)
@@ -956,7 +964,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     }
   }
 
-  // ===================== 状态更新：done -> retire -> enqueue -> issue =====================
+  // ===================== State update: done -> retire -> enqueue -> issue =====================
   when(amlDone) {
     val owner = fuAML.ownerSlot
     assert(slots(owner).valid, "TaskController: AML owner slot invalid on done")
@@ -1249,7 +1257,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     }
   }
 
-  // 指针与计数更新（retire + enqueue）
+  // Pointer and count updates (retire + enqueue)
   when(retireFire && !enqueueFire) {
     winHead := (winHead + 1.U)(SlotIdxWidth - 1, 0)
     winCount := winCount - 1.U
@@ -1287,7 +1295,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     }
   }
 
-  // ===================== finish 事件（load/store） =====================
+  // ===================== Finish events (load/store) =====================
   when(amlDone) {
     val owner = fuAML.ownerSlot
     val slot = slots(owner)
@@ -1367,7 +1375,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     storeFinishEventEn := true.B
   }
 
-  // ===================== release DiffTest 对齐 =====================
+  // ===================== Release DiffTest alignment =====================
   if (EnableDifftest) {
     val releaseFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
     val releaseIssueOwnerSlot = issueSlotIdx
@@ -1387,7 +1395,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     }
   }
 
-  // ===================== ChiselDB 日志提交 =====================
+  // ===================== ChiselDB log commit =====================
   loadEventTable.log(loadAllocateEvent, loadAllocateEventEn, "LoadAllocate", clock, reset)
   loadEventTable.log(loadIssueEvent, loadIssueEventEn, "LoadIssue", clock, reset)
   loadEventTable.log(loadAFinishEvent, loadAFinishEventEn, "LoadFinish", clock, reset)
