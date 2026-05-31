@@ -99,6 +99,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         //MemoryLoader的请求
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
+        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ByteMask := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ByteMask)
     }
 
     // C MatrixReg
@@ -113,6 +114,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             dest.BankAddr(b).bits := DontCare
             dest.Data(b).valid := false.B
             dest.Data(b).bits := DontCare
+            dest.ByteMask(b).valid := false.B
+            dest.ByteMask(b).bits := DontCare
         }
     }
 
@@ -122,6 +125,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             dest.BankAddr(b).bits := src.BankAddr(b).bits
             dest.Data(b).valid := src.Data(b).valid
             dest.Data(b).bits := src.Data(b).bits
+            dest.ByteMask(b).valid := src.ByteMask(b).valid
+            dest.ByteMask(b).bits := src.ByteMask(b).bits
         }
     }
     
@@ -199,6 +204,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
                 dest.ReadRequestToMatrixReg.BankAddr(bank).valid := CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).valid
                 dest.WriteRequestToMatrixReg.BankAddr(bank).valid := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(bank).valid
                 dest.WriteRequestToMatrixReg.Data(bank).valid := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(bank).valid
+                dest.WriteRequestToMatrixReg.ByteMask(bank).valid := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask(bank).valid
             }
             dest.ReadWriteRequest := CML.io.ToMatrixRegIO.ReadWriteRequest
         }.otherwise {
@@ -206,6 +212,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
                 dest.ReadRequestToMatrixReg.BankAddr(bank).valid := false.B
                 dest.WriteRequestToMatrixReg.BankAddr(bank).valid := false.B
                 dest.WriteRequestToMatrixReg.Data(bank).valid := false.B
+                dest.WriteRequestToMatrixReg.ByteMask(bank).valid := false.B
             }
         }
 
@@ -213,6 +220,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             dest.ReadRequestToMatrixReg.BankAddr(bank).bits := CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).bits
             dest.WriteRequestToMatrixReg.BankAddr(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(bank).bits
             dest.WriteRequestToMatrixReg.Data(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(bank).bits
+            dest.WriteRequestToMatrixReg.ByteMask(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask(bank).bits
         }
     }
 
@@ -238,6 +246,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
                 dest.ReadBankAddr(bank).valid := CDC.io.FromMatrixRegIO.ReadBankAddr(bank).valid
                 dest.WriteBankAddr(bank).valid := CDC.io.FromMatrixRegIO.WriteBankAddr(bank).valid
                 dest.WriteRequestData(bank).valid := CDC.io.FromMatrixRegIO.WriteRequestData(bank).valid
+                dest.WriteRequestByteMask(bank).valid := CDC.io.FromMatrixRegIO.WriteRequestByteMask(bank).valid
             }
             dest.ReadWriteRequest := CDC.io.FromMatrixRegIO.ReadWriteRequest
         }.otherwise {
@@ -245,6 +254,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
                 dest.ReadBankAddr(bank).valid := false.B
                 dest.WriteBankAddr(bank).valid := false.B
                 dest.WriteRequestData(bank).valid := false.B
+                dest.WriteRequestByteMask(bank).valid := false.B
             }
         }
 
@@ -252,6 +262,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             dest.ReadBankAddr(bank).bits := CDC.io.FromMatrixRegIO.ReadBankAddr(bank).bits
             dest.WriteBankAddr(bank).bits := CDC.io.FromMatrixRegIO.WriteBankAddr(bank).bits
             dest.WriteRequestData(bank).bits := CDC.io.FromMatrixRegIO.WriteRequestData(bank).bits
+            dest.WriteRequestByteMask(bank).bits := CDC.io.FromMatrixRegIO.WriteRequestByteMask(bank).bits
         }
     }
 

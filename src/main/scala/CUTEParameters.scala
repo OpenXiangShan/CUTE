@@ -80,7 +80,7 @@ case class MatrixIsaParams(
 
     def enable4BitDst: Boolean = false
     
-    def enable8BitDst: Boolean = false
+    def enable8BitDst: Boolean = true //开启8位类型，仅仅用于load测试
 
     def enable16BitDst: Boolean =
         enableFp8Fp16 || enableFp8Bf16 || enableFp16Fp16
@@ -750,6 +750,10 @@ class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
     // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))//可能没有了
     val ApplicationTensor_A_Stride_M    = (UInt(MMUAddrWidth.W))//下一个M需要增加多少的地址偏移量
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    //细粒度控制参数增加
+    val HasTail                         = Bool()
+    val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+    val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
 class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -778,6 +782,10 @@ class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
     val BlockTensor_B_BaseVaddr         = (UInt(MMUAddrWidth.W))
     val ApplicationTensor_B_Stride_N    = (UInt(MMUAddrWidth.W))//下一个N需要增加多少的地址偏移量
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    //细粒度控制参数增加
+    val HasTail                         = Bool()
+    val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+    val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
 class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -804,6 +812,9 @@ class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
     val BlockTensor_C_BaseVaddr         = (UInt(MMUAddrWidth.W))
     val ApplicationTensor_C_Stride_M    = (UInt(MMUAddrWidth.W))//下一个M需要增加多少的地址偏移量
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    val HasTail                         = Bool()
+    val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+    val N_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
 class ApplicationTensor_D_Info()(implicit p: Parameters) extends CuteBundle{
@@ -887,6 +898,8 @@ class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val BankAddr = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntrys).W))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
     val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))
+    // 每个bit控制对应1个byte是否写入
+    val ByteMask = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryByteSize.W))))
 }
 
 class CDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
@@ -896,6 +909,7 @@ class CDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt
     val ReadResponseData = (Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W))))
     val WriteRequestData = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W)))))
+    val WriteRequestByteMask = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryByteSize.W)))))
     //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
     val ReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     val ReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
@@ -910,6 +924,7 @@ class CMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val WriteRequestToMatrixReg = (new Bundle{
         val BankAddr = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(log2Ceil(CMatrixRegBankNEntrys).W)))))
         val Data = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(CMatrixRegEntryBitSize.W)))))
+        val ByteMask = Flipped(Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryByteSize.W))))
     })
 
     val ReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))

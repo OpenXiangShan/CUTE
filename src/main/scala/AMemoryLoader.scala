@@ -12,6 +12,7 @@ import org.chipsalliance.cde.config._
 class ASourceIdSearch(implicit p: Parameters) extends CuteBundle{
     val MatrixRegBankId = UInt(log2Ceil(ABMatrixRegNBanks).W)
     val MatrixRegAddr = UInt(log2Ceil(ABMatrixRegBankNEntrys).W)
+    val MatrixRegisTail = Bool()
 }
 
 class AMemoryLoader(implicit p: Parameters) extends CuteModule{
@@ -28,6 +29,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ToMatrixRegIO.BankAddr.map(_.bits := DontCare)
     io.ToMatrixRegIO.Data.map(_.valid := false.B)
     io.ToMatrixRegIO.Data.map(_.bits := DontCare)
+    io.ToMatrixRegIO.ByteMask.map(_.valid := false.B)
+    io.ToMatrixRegIO.ByteMask.map(_.bits := Fill(ABMatrixRegEntryByteSize, true.B))
     io.LocalMMUIO.Request.valid := false.B
     io.LocalMMUIO.Request.bits := DontCare // It will be set if Request is valid
     io.LocalMMUIO.Response.ready := false.B
@@ -53,6 +56,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         for (i <- 0 until ABMatrixRegNBanks) {
           difftestAmuFinish.bankValid(i) := io.ToMatrixRegIO.BankAddr(i).valid
           difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.BankAddr(i).bits
+          difftestAmuFinish.bankMask(i) := io.ToMatrixRegIO.ByteMask(i).bits
           difftestAmuFinish.data(i * 4 + 0) := io.ToMatrixRegIO.Data(i).bits(63,0)
           difftestAmuFinish.data(i * 4 + 1) := io.ToMatrixRegIO.Data(i).bits(127,64)
           difftestAmuFinish.data(i * 4 + 2) := io.ToMatrixRegIO.Data(i).bits(191,128)
@@ -65,6 +69,9 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Tensor_Block_BaseAddr = Reg(UInt(MMUAddrWidth.W))
     val ApplicationTensor_A_Stride_M = RegInit(0.U(MMUAddrWidth.W))
     val dataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
+    val HasTail = RegInit(false.B)
+    val TailByteMask = RegInit(0.U(log2Ceil(outsideDataWidthByte + 1).W))
+    val K_Beat_Count = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Conherent = RegInit(true.B)
@@ -89,6 +96,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val MReg_Fill_Table = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
     val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(ABMatrixRegBankNEntrys).W)))))
     val MReg_Fill_Table_Time = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/ABMatrixRegEntryByteSize)+1).W)))))
+    val MReg_Fill_Table_IsTail = RegInit(VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(false.B)))
     val MReg_Fill_Table_Free = MReg_Fill_Table_Time.map(_ === 0.U)
     val MReg_Fill_Table_Insert_Index = PriorityEncoder(MReg_Fill_Table_Free)
     val MReg_Fill_Table_Not_Full = MReg_Fill_Table_Free.reduce(_ || _)
@@ -121,6 +129,9 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             Tensor_Block_BaseAddr := ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr
             ApplicationTensor_A_Stride_M := ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M
             dataType := ConfigInfo.ApplicationTensor_A.dataType
+            HasTail := ConfigInfo.ApplicationTensor_A.HasTail
+            TailByteMask := ConfigInfo.ApplicationTensor_A.TailByteMask
+            K_Beat_Count := ConfigInfo.ApplicationTensor_A.K_Beat_Count
             Is_ZeroLoad := ConfigInfo.LoadTaskInfo.Is_ZeroLoad
             Is_FullLoad := ConfigInfo.LoadTaskInfo.Is_FullLoad
             Conherent := ConfigInfo.Conherent
@@ -141,13 +152,14 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             CurrentLoaded_BlockTensor_M_Iter := 0.U
             CurrentLoaded_BlockTensor_K_Iter := 0.U
             Request_M_Iter_Time := 0.U
-            MaxRequestIter := MatrixRegTensor_M * MatrixRegTensor_K * ReduceWidthByte.U / outsideDataWidthByte.U
+            MaxRequestIter := MatrixRegTensor_M * K_Beat_Count
             Bank_Fill_Search_FIFO := 0.U.asTypeOf(Bank_Fill_Search_FIFO)
             Bank_Fill_Search_FIFO_Head := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Head)
             Bank_Fill_Search_FIFO_Tail := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Tail)
             MReg_Fill_Table := 0.U.asTypeOf(MReg_Fill_Table)
             MReg_Fill_Table_MReg_Addr := 0.U.asTypeOf(MReg_Fill_Table_MReg_Addr)
             MReg_Fill_Table_Time := 0.U.asTypeOf(MReg_Fill_Table_Time)
+            MReg_Fill_Table_IsTail := VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(false.B))
         }
         is(s_load_working) {
             io.ToMatrixRegIO.active := true.B
@@ -161,6 +173,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                     io.ToMatrixRegIO.BankAddr(i).valid := true.B
                     io.ToMatrixRegIO.Data(i).bits := 0.U
                     io.ToMatrixRegIO.Data(i).valid := true.B
+                    io.ToMatrixRegIO.ByteMask(i).bits := Fill(ABMatrixRegEntryByteSize, true.B)
+                    io.ToMatrixRegIO.ByteMask(i).valid := true.B
                 }
                 TotalLoadSize := TotalLoadSize + 1.U
                 if (YJPAMLDebugEnable) printf("[AML<%d>]ZeroLoad, TotalLoadSize: %d\n", io.DebugInfo.DebugTimeStampe, TotalLoadSize)
@@ -171,11 +185,16 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             }
 
             when(Is_FullLoad){
-                // 矩阵访存顺序：按 M 分 bank 交织，再扫 K。地址 = BaseAddr + M*Stride_M + K*ReduceWidthByte
+                //先转换成独热码然后进行减一即可计算出掩码
+                val tailTaskMask = UIntToOH(TailByteMask, outsideDataWidthByte + 1).asUInt - 1.U(outsideDataWidthByte.W)
+                val fullTaskMask = Fill(outsideDataWidthByte, true.B)
+                val RequestBeatIsTail = HasTail && (CurrentLoaded_BlockTensor_K_Iter === (K_Beat_Count - 1.U))
+                // 矩阵访存顺序：按 M 分 bank 交织，再扫 K。地址 = BaseAddr + M*Stride_M + K*64B
                 val RequestMatrixRegBankId = (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) % ABMatrixRegNBanks.U
-                val RequestMatrixRegAddr = (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) / ABMatrixRegNBanks.U * ReduceGroupSize.U + CurrentLoaded_BlockTensor_K_Iter
+                val RequestMatrixRegBaseAddr = (((CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) / ABMatrixRegNBanks.U) * ReduceGroupSize.U)
+                val RequestMatrixRegAddr = RequestMatrixRegBaseAddr + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(MAX_Fill_Times))
 
-                Request.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_A_Stride_M + CurrentLoaded_BlockTensor_K_Iter * ReduceWidthByte.U
+                Request.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_A_Stride_M + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))
                 val sourceId = Mux(Conherent, io.LocalMMUIO.ConherentRequsetSourceID, io.LocalMMUIO.nonConherentRequsetSourceID)
                 Request.bits.RequestConherent := Conherent
                 Request.bits.RequestSourceID := sourceId.bits
@@ -186,13 +205,20 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                     val TableItem = Wire(new ASourceIdSearch)
                     TableItem.MatrixRegBankId := RequestMatrixRegBankId
                     TableItem.MatrixRegAddr := RequestMatrixRegAddr
+                    TableItem.MatrixRegisTail := RequestBeatIsTail
                     SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
+
+                    if (YJPAMLDebugEnable) {
+                        printf("[AML_RequestHandshake<%d>] M_Iter:%d, K_Iter:%d, ReqTime:%d, Addr:%x, BankId:%d, RegAddr:%d, SourceId:%d, Tail:%d\n",
+                          io.DebugInfo.DebugTimeStampe, CurrentLoaded_BlockTensor_M_Iter, CurrentLoaded_BlockTensor_K_Iter,
+                          Request_M_Iter_Time, Request.bits.RequestVirtualAddr, RequestMatrixRegBankId, RequestMatrixRegAddr, sourceId.bits, RequestBeatIsTail)
+                    }
 
                     Request_M_Iter_Time := Request_M_Iter_Time + 1.U
                     when(Request_M_Iter_Time === (Matrix_MN - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === MatrixRegTensor_M - 1.U){
                         Request_M_Iter_Time := 0.U
-                        CurrentLoaded_BlockTensor_K_Iter := CurrentLoaded_BlockTensor_K_Iter + (outsideDataWidthByte.U / ReduceWidthByte.U)
-                        when(CurrentLoaded_BlockTensor_K_Iter + (outsideDataWidthByte.U / ReduceWidthByte.U) === MatrixRegTensor_K){
+                        CurrentLoaded_BlockTensor_K_Iter := CurrentLoaded_BlockTensor_K_Iter + 1.U
+                        when(CurrentLoaded_BlockTensor_K_Iter + 1.U === K_Beat_Count){
                             CurrentLoaded_BlockTensor_K_Iter := 0.U
                             CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_MN.U
                         }
@@ -217,14 +243,20 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
 
                 when(io.LocalMMUIO.Response.fire){
                     val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
-                    val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new ASourceIdSearch).MatrixRegBankId
-                    val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new ASourceIdSearch).MatrixRegAddr
+                    val MatrixRegSearch = SoureceIdSearchTable(sourceId).asTypeOf(new ASourceIdSearch)
+                    val MatrixRegBankId = MatrixRegSearch.MatrixRegBankId
+                    val MatrixRegAddr = MatrixRegSearch.MatrixRegAddr
                     val ResponseData = io.LocalMMUIO.Response.bits.ReseponseData
                     val FIFOIndex = Bank_Fill_Search_FIFO_Head(MatrixRegBankId)
+
+                    if (YJPAMLDebugEnable) {
+                        printf("[AML_ResponseHandshake<%d>] Data:%x, BankId:%d, RegAddr:%d, SourceId:%d, FIFOIndex:%d, Tail:%d\n", io.DebugInfo.DebugTimeStampe, ResponseData, MatrixRegBankId, MatrixRegAddr, sourceId, FIFOIndex, MatrixRegSearch.MatrixRegisTail)
+                    }
 
                     MReg_Fill_Table(MReg_Fill_Table_Insert_Index) := ResponseData
                     MReg_Fill_Table_MReg_Addr(MReg_Fill_Table_Insert_Index) := MatrixRegAddr
                     MReg_Fill_Table_Time(MReg_Fill_Table_Insert_Index) := MAX_Fill_Times.U
+                    MReg_Fill_Table_IsTail(MReg_Fill_Table_Insert_Index) := MatrixRegSearch.MatrixRegisTail
                     Bank_Fill_Search_FIFO(MatrixRegBankId)(FIFOIndex) := MReg_Fill_Table_Insert_Index
                     Bank_Fill_Search_FIFO_Head(MatrixRegBankId) := WrapInc(Bank_Fill_Search_FIFO_Head(MatrixRegBankId), AMemoryLoaderReadFromMemoryFIFODepth)
                     if (YJPAMLDebugEnable){
@@ -236,13 +268,22 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 for (i <- 0 until ABMatrixRegNBanks){
                     when(Bank_Fill_Search_FIFO_Empty(i) === false.B){
                         val CurrentFIFOIndex = Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Tail(i))
+                        val fillSlot = MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex)
+                        val fillSlotOH = UIntToOH(fillSlot, MAX_Fill_Times)
+                        val fillLowHalf = fillSlot(0) === 0.U
+                        val currentIsTail = MReg_Fill_Table_IsTail(CurrentFIFOIndex)
                         Current_Fill_MReg_Time(i) := 1.U
                         val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*ABMatrixRegEntryByteSize).W)))))
                         FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
-                        io.ToMatrixRegIO.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + (MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
+                        io.ToMatrixRegIO.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + fillSlot
                         io.ToMatrixRegIO.BankAddr(i).valid := true.B
-                        io.ToMatrixRegIO.Data(i).bits := FIFOData(MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
+                        io.ToMatrixRegIO.Data(i).bits := Mux(fillLowHalf, FIFOData(0), FIFOData(1))
                         io.ToMatrixRegIO.Data(i).valid := true.B
+                        io.ToMatrixRegIO.ByteMask(i).bits := Mux(currentIsTail && fillSlotOH(1), tailTaskMask(63, 32), Mux(currentIsTail && fillSlotOH(0), tailTaskMask(31, 0), Fill(ABMatrixRegEntryByteSize, true.B)))
+                        io.ToMatrixRegIO.ByteMask(i).valid := true.B
+                        if (YJPAMLDebugEnable) {
+                            printf("[AML_MRegWriteHandshake<%d>] bank:%d, RegAddr:%x, WriteAddr:%x, Data:%x, ByteMask:%x, Time:%d\n", io.DebugInfo.DebugTimeStampe, i.U, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), io.ToMatrixRegIO.BankAddr(i).bits, io.ToMatrixRegIO.Data(i).bits, io.ToMatrixRegIO.ByteMask(i).bits, MReg_Fill_Table_Time(CurrentFIFOIndex))
+                        }
                         MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - 1.U
                         when(MReg_Fill_Table_Time(CurrentFIFOIndex) === 1.U){
                             Bank_Fill_Search_FIFO_Tail(i) := WrapInc(Bank_Fill_Search_FIFO_Tail(i), AMemoryLoaderReadFromMemoryFIFODepth)

@@ -36,6 +36,8 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     io.FromMatrixRegIO.WriteBankAddr.map(_.bits := DontCare)
     io.FromMatrixRegIO.WriteRequestData.map(_.valid := false.B)
     io.FromMatrixRegIO.WriteRequestData.map(_.bits := DontCare)
+    io.FromMatrixRegIO.WriteRequestByteMask.map(_.valid := false.B)
+    io.FromMatrixRegIO.WriteRequestByteMask.map(_.bits := Fill(CMatrixRegEntryByteSize, true.B))
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
     io.ConfigInfo.MicroTask_TEComputeEndValid := false.B
@@ -65,6 +67,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         for (i <- 0 until CMatrixRegNBanks) {
           difftestAmuFinish.bankValid(i) := io.FromMatrixRegIO.WriteBankAddr(i).valid
           difftestAmuFinish.bankAddr(i) := io.FromMatrixRegIO.WriteBankAddr(i).bits
+          difftestAmuFinish.bankMask(i) := Fill(32, true.B)
           difftestAmuFinish.data(i * 4 + 0) := io.FromMatrixRegIO.WriteRequestData(i).bits(63,0)
           difftestAmuFinish.data(i * 4 + 1) := io.FromMatrixRegIO.WriteRequestData(i).bits(127,64)
           difftestAmuFinish.data(i * 4 + 2) := io.FromMatrixRegIO.WriteRequestData(i).bits(191,128)

@@ -33,7 +33,8 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
     // MemoryLoader端的信号
     val MemoryLoaderBankAddr = io.MatrixRegIO.FromMemoryLoader.BankAddr
     val MemoryLoaderData = io.MatrixRegIO.FromMemoryLoader.Data
-    
+    // 【修改 ：提取掩码信号】
+    val MemoryLoaderByteMask = io.MatrixRegIO.FromMemoryLoader.ByteMask
     // 写优先的MatrixReg控制逻辑
     // write_go: 只要有写入请求（正常写或零填充）就为true
     val write_go = MemoryLoaderBankAddr.zip(MemoryLoaderData).map{case (a, b) => a.valid && b.valid}.reduce(_||_)
@@ -49,17 +50,23 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
     // SRAM下一拍返回结果，所以使用上一拍的ready作为valid
     io.MatrixRegIO.FromDataController.Data.valid := RegNext(read_go)
     val debug_s1_bank_addr = RegNext(DataControllerBankAddr)
+
+    when(io.MatrixRegIO.FromDataController.BankAddr.fire) {
+        if (YJPAMLDebugEnable || YJPBMLDebugEnable) {
+            printf("[ABMatrixReg_ReadReq(%d)] addr0=%d\n", scp_id.U, io.MatrixRegIO.FromDataController.BankAddr.bits(0))
+        }
+    }
     
     // 实例化多个SRAM作为多个bank
     val sram_banks = (0 until ABMatrixRegNBanks) map { i =>
 
-        // 使用SRAMTemplate替代SyncReadMem
-        // singlePort=true: 单端口SRAM，支持读写冲突处理
-        // latency=1: 读延迟为1拍
+        // 【修改 ：重构 SRAMTemplate 物理映射语义】
+        // 将原本宽字长、单 way 的 SRAM，转变为 1 Byte 为颗粒度、多 way 的 SRAM。
+        // 综合工具（DC/Genus）会将其自动识别为：带有 Byte Write Enable (BWEB) 引脚的单个宏单元，或由标准单元组成的寄存器堆，绝不会产生碎片化拥塞。
         val bank = Module(new SRAMTemplate(
-            gen = UInt((ABMatrixRegEntryByteSize*8).W),
-            set = ABMatrixRegBankNEntrys,
-            way = 1,
+            gen = UInt(8.W),                                // 核心修改：基础数据单元改为 1 Byte
+            set = ABMatrixRegBankNEntrys,                   // 深度保持不变
+            way = ABMatrixRegEntryByteSize,                 // 核心修改：相联度(way)数量等于掩码(Byte)数量
             singlePort = true,
             latency = 1,
             hasMbist = false,
@@ -75,10 +82,8 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
         
         when(RegNext(read_go))
         {
-            // 输出读的信息
-            if (YJPDebugEnable)
-            {
-                printf("[ABMatrixReg_Read(%d)]Bank(%d): debug_s1_bank_addr = %d, s1_bank_read_data = %x\n",
+            if (YJPAMLDebugEnable) {
+                printf("[ABMatrixReg_ReadResp(%d)]Bank(%d): debug_s1_bank_addr = %d, s1_bank_read_data = %x\n",
                        scp_id.U, i.U, debug_s1_bank_addr(0), s1_bank_read_data)
             }
         }
@@ -89,18 +94,22 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
         // 写数据逻辑
         val s0_bank_write_addr = MemoryLoaderBankAddr(i).bits
         val s0_bank_write_data = MemoryLoaderData(i).bits
-        val s0_bank_write_valid = MemoryLoaderBankAddr(i).valid && MemoryLoaderData(i).valid
+
+        // 【修改 ：提取单 Bank 掩码】
+        val s0_bank_write_mask = MemoryLoaderByteMask(i).bits
+        // 写握手必须同时满足 addr, data, mask 皆有效 
+        val s0_bank_write_valid = MemoryLoaderBankAddr(i).valid && MemoryLoaderData(i).valid && MemoryLoaderByteMask(i).valid
         
         // 最终的写入控制
         val s0_final_write_valid = write_go && s0_bank_write_valid
         val s0_final_write_addr = MemoryLoaderBankAddr(i).bits
         val s0_final_write_data = MemoryLoaderData(i).bits
 
-        when(write_go && s0_bank_write_valid){
-            if (YJPDebugEnable)
-            {
-                printf("[ABMatrixReg_Write(%d)]Bank(%d): s0_bank_write_addr = %d, s0_bank_write_data = %x\n",
-                       scp_id.U, i.U, s0_bank_write_addr, s0_bank_write_data)
+
+        when(s0_final_write_valid) {
+            if (YJPAMLDebugEnable) {
+                printf("[ABMatrixReg_Write(%d)]Bank(%d): s0_bank_write_addr = %d, s0_bank_write_data = %x, mask = %b\n",
+                       scp_id.U, i.U, s0_bank_write_addr, s0_final_write_data, s0_bank_write_mask)
             }
         }
 
@@ -110,13 +119,19 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
         bank.io.r.req.valid := bank_read_valid
         bank.io.r.req.bits.setIdx := s0_bank_read_addr
         // 读响应在下一拍返回（latency=1）
-        s1_bank_read_data := bank.io.r.resp.data(0)
+        // 【修改 ：零开销数据拼装】
+        // bank.io.r.resp.data 此时是一个 Vec(way, UInt(8.W))
+        // 使用 .asUInt 将 Vec 无缝强制转换为大位宽 UInt，不仅代码整洁，而且在综合时完全是一根线（Wire），没有任何面积和时序延迟开销。
+        s1_bank_read_data := bank.io.r.resp.data.asUInt
         
         // 连接SRAMTemplate的写接口
-        // 使用apply方法设置写请求，way=1时waymask为None
         bank.io.w.req.valid := s0_final_write_valid
         bank.io.w.req.bits.setIdx := s0_final_write_addr
-        bank.io.w.req.bits.data(0) := s0_final_write_data
+        bank.io.w.req.bits.waymask.get := s0_bank_write_mask
+
+        // 使用 .asTypeOf(Vec) 将大宽度的 s0_final_write_data (如 256.W) 直接解包为等宽的 Vec(32, UInt(8.W))。
+        // 这取代了臃肿的 for 循环位截取，对后端极度友好，综合后就是干净的连线（Assign）。
+        bank.io.w.req.bits.data := s0_final_write_data.asTypeOf(Vec(ABMatrixRegEntryByteSize, UInt(8.W)))
 
         bank
     }

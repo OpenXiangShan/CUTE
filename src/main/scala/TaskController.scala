@@ -293,6 +293,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   // Completion handshakes and scoreboard updates
   io.AML_MicroTask_Config.MicroTaskEndReady := pendingLoadA
   when(pendingLoadA && io.AML_MicroTask_Config.MicroTaskEndValid) {
+    if (YJPTASKDebugEnable) {
+      printf("[TaskController_LoadAFinish<%d>] reg=%d fifo=%d endValid=%d endReady=%d\n", io.DebugTimeStampe, pendingLoadAReg, pendingLoadAFifoIdx, io.AML_MicroTask_Config.MicroTaskEndValid, io.AML_MicroTask_Config.MicroTaskEndReady)
+    }
     scoreboard.io.update.load_finish_a := true.B
     scoreboard.io.update.load_finish_a_reg := pendingLoadAReg
     pendingLoadA := false.B
@@ -309,6 +312,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   io.BML_MicroTask_Config.MicroTaskEndReady := pendingLoadB
   when(pendingLoadB && io.BML_MicroTask_Config.MicroTaskEndValid) {
+    if (YJPTASKDebugEnable) {
+      printf("[TaskController_LoadBFinish<%d>] reg=%d fifo=%d endValid=%d endReady=%d\n", io.DebugTimeStampe, pendingLoadBReg, pendingLoadBFifoIdx, io.BML_MicroTask_Config.MicroTaskEndValid, io.BML_MicroTask_Config.MicroTaskEndReady)
+    }
     scoreboard.io.update.load_finish_b := true.B
     scoreboard.io.update.load_finish_b_reg := pendingLoadBReg
     pendingLoadB := false.B
@@ -326,6 +332,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.CML_MicroTask_Config.MicroTaskEndReady := pendingLoadC || pendingStore
   when(io.CML_MicroTask_Config.MicroTaskEndValid) {
     when(pendingLoadC) {
+      if (YJPTASKDebugEnable) {
+        printf("[TaskController_LoadCFinish<%d>] reg=%d fifo=%d endValid=%d endReady=%d\n", io.DebugTimeStampe, pendingLoadCReg, pendingLoadCFifoIdx, io.CML_MicroTask_Config.MicroTaskEndValid, io.CML_MicroTask_Config.MicroTaskEndReady)
+      }
       scoreboard.io.update.load_finish_c := true.B
       scoreboard.io.update.load_finish_c_reg := pendingLoadCReg
       pendingLoadC := false.B
@@ -339,6 +348,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       loadCFinishEvent.isAcc := true.B
       loadCFinishEventEn := true.B
     }.elsewhen(pendingStore) {
+      if (YJPTASKDebugEnable) {
+        printf("[TaskController_StoreCFinish<%d>] reg=%d fifo=%d endValid=%d endReady=%d\n", io.DebugTimeStampe, pendingStoreReg, pendingStoreFifoIdx, io.CML_MicroTask_Config.MicroTaskEndValid, io.CML_MicroTask_Config.MicroTaskEndReady)
+      }
       scoreboard.io.update.store_finish := true.B
       scoreboard.io.update.store_finish_c_reg := pendingStoreReg
       pendingStore := false.B
@@ -355,6 +367,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   io.ADC_MicroTask_Config.MicroTaskEndReady := pendingComputeA
   when(pendingComputeA && io.ADC_MicroTask_Config.MicroTaskEndValid) {
+    if (YJPTASKDebugEnable) {
+      printf("[TaskController_ComputeAFinish<%d>] aReg=%d fifo=%d endValid=%d endReady=%d\n", io.DebugTimeStampe, pendingComputeAReg, pendingComputeAFifoIdx, io.ADC_MicroTask_Config.MicroTaskEndValid, io.ADC_MicroTask_Config.MicroTaskEndReady)
+    }
     scoreboard.io.update.compute_read_finish_a := true.B
     scoreboard.io.update.compute_read_finish_a_reg := pendingComputeAReg
     pendingComputeA := false.B
@@ -373,6 +388,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   io.BDC_MicroTask_Config.MicroTaskEndReady := pendingComputeB
   when(pendingComputeB && io.BDC_MicroTask_Config.MicroTaskEndValid) {
+    if (YJPTASKDebugEnable) {
+      printf("[TaskController_ComputeBFinish<%d>] bReg=%d fifo=%d endValid=%d endReady=%d\n", io.DebugTimeStampe, pendingComputeBReg, pendingComputeBFifoIdx, io.BDC_MicroTask_Config.MicroTaskEndValid, io.BDC_MicroTask_Config.MicroTaskEndReady)
+    }
     scoreboard.io.update.compute_read_finish_b := true.B
     scoreboard.io.update.compute_read_finish_b_reg := pendingComputeBReg
     pendingComputeB := false.B
@@ -391,6 +409,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   io.CDC_MicroTask_Config.MicroTaskEndReady := pendingComputeC
   when(pendingComputeC && io.CDC_MicroTask_Config.MicroTaskEndValid) {
+    if (YJPTASKDebugEnable) {
+      printf("[TaskController_ComputeCFinish<%d>] cReg=%d fifo=%d endValid=%d endReady=%d\n", io.DebugTimeStampe, pendingComputeCReg, pendingComputeCFifoIdx, io.CDC_MicroTask_Config.MicroTaskEndValid, io.CDC_MicroTask_Config.MicroTaskEndReady)
+    }
     scoreboard.io.update.compute_write_finish_c := true.B
     scoreboard.io.update.compute_write_finish_c_reg := pendingComputeCReg
     pendingComputeC := false.B
@@ -572,28 +593,80 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val issueZeroTr = issueFire && isMzeroTr
   val issueRelease = issueFire && isRelease
 
+  val loadDataType = MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
+    Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
+    Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
+    Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
+    Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
+  ))
+  val loadKBytes = MuxLookup(lsuInfo.widths, lsuInfo.column)(Seq(
+    Bundles.MSew.e8 -> lsuInfo.column,
+    Bundles.MSew.e16 -> (lsuInfo.column << 1),
+    Bundles.MSew.e32 -> (lsuInfo.column << 2),
+    Bundles.MSew.e4 -> (lsuInfo.column >> 1)
+  ))
+  val loadKBytes_for_B = MuxLookup(lsuInfo.widths, lsuInfo.row)(Seq(
+    Bundles.MSew.e8 -> lsuInfo.row,
+    Bundles.MSew.e16 -> (lsuInfo.row << 1),
+    Bundles.MSew.e32 -> (lsuInfo.row << 2),
+    Bundles.MSew.e4 -> (lsuInfo.row >> 1)
+  ))
+  val loadKBeatCount_for_B = (loadKBytes_for_B + (outsideDataWidthByte - 1).U) >> log2Ceil(outsideDataWidthByte)
+  val loadKBeatCount = (loadKBytes + (outsideDataWidthByte - 1).U) >> log2Ceil(outsideDataWidthByte)
+  val loadHasTail = MuxLookup(loadDataType, false.B)(Seq(
+    ElementDataType.DataTypeWidth8 -> lsuInfo.column(5, 0).orR,
+    ElementDataType.DataTypeWidth16 -> lsuInfo.column(4, 0).orR,
+    ElementDataType.DataTypeWidth32 -> lsuInfo.column(3, 0).orR
+  ))
+  val loadTailByteMask = MuxLookup(loadDataType, 0.U(log2Ceil(outsideDataWidthByte + 1).W))(Seq(
+    ElementDataType.DataTypeWidth8 -> lsuInfo.column(5, 0),
+    ElementDataType.DataTypeWidth16 -> Cat(lsuInfo.column(4, 0), 0.U(1.W)),
+    ElementDataType.DataTypeWidth32 -> Cat(lsuInfo.column(3, 0), 0.U(2.W))
+  ))
+  val loadHasTail_for_B = MuxLookup(loadDataType, false.B)(Seq(
+    ElementDataType.DataTypeWidth8 -> lsuInfo.row(5, 0).orR,
+    ElementDataType.DataTypeWidth16 -> lsuInfo.row(4, 0).orR,
+    ElementDataType.DataTypeWidth32 -> lsuInfo.row(3, 0).orR
+  ))
+  val loadTailByteMask_for_B = MuxLookup(loadDataType, 0.U(log2Ceil(outsideDataWidthByte + 1).W))(Seq(
+    ElementDataType.DataTypeWidth8 -> lsuInfo.row(5, 0),
+    ElementDataType.DataTypeWidth16 -> Cat(lsuInfo.row(4, 0), 0.U(1.W)),
+    ElementDataType.DataTypeWidth32 -> Cat(lsuInfo.row(3, 0), 0.U(2.W))
+  ))
+  val loadNBytes = MuxLookup(loadDataType, lsuInfo.column << 2)(Seq(
+    ElementDataType.DataTypeWidth8 -> lsuInfo.column,
+    ElementDataType.DataTypeWidth16 -> (lsuInfo.column << 1),
+    ElementDataType.DataTypeWidth32 -> (lsuInfo.column << 2)
+  ))
+  val loadNBeatCount = (loadNBytes + (outsideDataWidthByte - 1).U) >> log2Ceil(outsideDataWidthByte)
+  val loadNHasTail = MuxLookup(loadDataType, false.B)(Seq(
+    ElementDataType.DataTypeWidth8 -> lsuInfo.column(5, 0).orR,
+    ElementDataType.DataTypeWidth16 -> lsuInfo.column(4, 0).orR,
+    ElementDataType.DataTypeWidth32 -> lsuInfo.column(3, 0).orR
+  ))
+  val loadNTailByteMask = MuxLookup(loadDataType, 0.U(log2Ceil(outsideDataWidthByte + 1).W))(Seq(
+    ElementDataType.DataTypeWidth8 -> lsuInfo.column(5, 0),
+    ElementDataType.DataTypeWidth16 -> Cat(lsuInfo.column(4, 0), 0.U(1.W)),
+    ElementDataType.DataTypeWidth32 -> Cat(lsuInfo.column(3, 0), 0.U(2.W))
+  ))
+
   when(issueLoad) {
     val regIdx = lsuInfo.ms(1, 0)
     val loadIdx = loadAllocIdx
+    assert(lsuInfo.stride(5, 0) === 0.U, "TaskController load stride must be 64B aligned")
+
     when(needA) {
       io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := lsuInfo.baseAddr
       io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := lsuInfo.stride
-      io.AML_MicroTask_Config.ApplicationTensor_A.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
-        Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
-        Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
-        Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
-        Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
-      ))
+      io.AML_MicroTask_Config.ApplicationTensor_A.dataType := loadDataType
+      io.AML_MicroTask_Config.ApplicationTensor_A.HasTail := loadHasTail
+      io.AML_MicroTask_Config.ApplicationTensor_A.TailByteMask := loadTailByteMask
+      io.AML_MicroTask_Config.ApplicationTensor_A.K_Beat_Count := loadKBeatCount
       io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
       io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
       io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
       io.AML_MicroTask_Config.MatrixRegTensor_M := lsuInfo.row
-      io.AML_MicroTask_Config.MatrixRegTensor_K := MuxLookup(lsuInfo.widths, lsuInfo.column)(Seq(
-        Bundles.MSew.e8 -> lsuInfo.column,
-        Bundles.MSew.e16 -> lsuInfo.column * 2.U,
-        Bundles.MSew.e32 -> lsuInfo.column * 4.U,
-        Bundles.MSew.e4 -> lsuInfo.column / 2.U 
-      )) / ReduceWidthByte.U
+      io.AML_MicroTask_Config.MatrixRegTensor_K := loadKBeatCount
       io.AML_MicroTask_Config.MatrixRegId := regIdx
       if (EnableDifftest) {
         io.AML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
@@ -603,6 +676,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.AML_MicroTask_Config.Conherent := true.B
 
       io.AML_MicroTask_Config.MicroTaskValid := true.B
+      if (YJPTASKDebugEnable) {
+        printf("[TaskController_IssueAML<%d>] reg=%d fifo=%d row=%d col=%d stride=%x coher=%d kBeat=%d tail=%d tailMask=%d base=%x\n",
+          io.DebugTimeStampe, regIdx, loadIdx, lsuInfo.row, lsuInfo.column, lsuInfo.stride, io.AML_MicroTask_Config.Conherent,
+          loadKBeatCount, loadHasTail, loadTailByteMask, lsuInfo.baseAddr)
+      }
       
       pendingLoadA := true.B
       pendingLoadAReg := regIdx
@@ -612,19 +690,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr := lsuInfo.baseAddr
       io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_Stride_N := lsuInfo.stride
       io.BML_MicroTask_Config.ApplicationTensor_B.BlockTensor_B_BaseVaddr := lsuInfo.baseAddr
-      io.BML_MicroTask_Config.ApplicationTensor_B.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
-        Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
-        Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
-        Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
-        Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
-      ))
+      io.BML_MicroTask_Config.ApplicationTensor_B.dataType := loadDataType
+      io.BML_MicroTask_Config.ApplicationTensor_B.HasTail := loadHasTail_for_B
+      io.BML_MicroTask_Config.ApplicationTensor_B.TailByteMask := loadTailByteMask_for_B
+      io.BML_MicroTask_Config.ApplicationTensor_B.K_Beat_Count := loadKBeatCount_for_B
       io.BML_MicroTask_Config.MatrixRegTensor_N := lsuInfo.column
-      io.BML_MicroTask_Config.MatrixRegTensor_K := MuxLookup(lsuInfo.widths, lsuInfo.row)(Seq(
-        Bundles.MSew.e8 -> lsuInfo.row,
-        Bundles.MSew.e16 -> lsuInfo.row * 2.U,
-        Bundles.MSew.e32 -> lsuInfo.row * 4.U,
-        Bundles.MSew.e4 -> lsuInfo.row / 2.U 
-      )) / ReduceWidthByte.U
+      io.BML_MicroTask_Config.MatrixRegTensor_K := loadKBeatCount_for_B
       io.BML_MicroTask_Config.MatrixRegId := regIdx
       if (EnableDifftest) {
         io.BML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
@@ -632,6 +703,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       }
       io.BML_MicroTask_Config.Conherent := true.B
       io.BML_MicroTask_Config.MicroTaskValid := true.B
+      if (YJPTASKDebugEnable) {
+        printf("[TaskController_IssueBML<%d>] reg=%d fifo=%d row=%d col=%d stride=%x coher=%d kBeat=%d tail=%d tailMask=%d base=%x\n",
+          io.DebugTimeStampe, regIdx, loadIdx, lsuInfo.row, lsuInfo.column, lsuInfo.stride, io.BML_MicroTask_Config.Conherent,
+          loadKBeatCount_for_B, loadHasTail_for_B, loadTailByteMask_for_B, lsuInfo.baseAddr)
+      }
       pendingLoadB := true.B
       pendingLoadBReg := regIdx
       pendingLoadBFifoIdx := loadIdx
@@ -640,12 +716,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := lsuInfo.baseAddr
       io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_Stride_M := lsuInfo.stride
       io.CML_MicroTask_Config.ApplicationTensor_C.BlockTensor_C_BaseVaddr := lsuInfo.baseAddr
-      io.CML_MicroTask_Config.ApplicationTensor_C.dataType := MuxLookup(lsuInfo.widths, ElementDataType.DataTypeWidth32)(Seq(
-        Bundles.MSew.e8 -> ElementDataType.DataTypeWidth8,
-        Bundles.MSew.e16 -> ElementDataType.DataTypeWidth16,
-        Bundles.MSew.e32 -> ElementDataType.DataTypeWidth32,
-        Bundles.MSew.e4 -> ElementDataType.DataTypeWidth4
-      ))
+      io.CML_MicroTask_Config.ApplicationTensor_C.dataType := loadDataType
+      io.CML_MicroTask_Config.ApplicationTensor_C.HasTail := loadNHasTail
+      io.CML_MicroTask_Config.ApplicationTensor_C.TailByteMask := loadNTailByteMask
+      io.CML_MicroTask_Config.ApplicationTensor_C.N_Beat_Count := loadNBeatCount
       io.CML_MicroTask_Config.Conherent := true.B
       io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
       io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
@@ -660,6 +734,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       io.CML_MicroTask_Config.IsLoadMicroTask := true.B
       io.CML_MicroTask_Config.IsStoreMicroTask := false.B
       io.CML_MicroTask_Config.MicroTaskValid := true.B
+      if (YJPTASKDebugEnable) {
+        printf("[TaskController_IssueCMLLoad<%d>] reg=%d fifo=%d row=%d col=%d stride=%x coher=%d transpose=%d nBeat=%d tail=%d tailMask=%d base=%x\n",
+          io.DebugTimeStampe, regIdx, loadIdx, lsuInfo.row, lsuInfo.column, lsuInfo.stride, io.CML_MicroTask_Config.Conherent,
+          lsuInfo.transpose, loadNBeatCount, loadNHasTail, loadNTailByteMask, lsuInfo.baseAddr)
+      }
       io.CML_MicroTask_Config.Is_Transpose := lsuInfo.transpose
       
       pendingLoadC := true.B
@@ -714,6 +793,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CML_MicroTask_Config.IsLoadMicroTask := true.B
     io.CML_MicroTask_Config.IsStoreMicroTask := false.B
     io.CML_MicroTask_Config.MicroTaskValid := true.B
+    if (YJPTASKDebugEnable) {
+      printf("[TaskController_IssueZeroAcc<%d>] reg=%d fifo=%d M=%d N=%d\n",
+        io.DebugTimeStampe, regIdx, loadIdx, io.CML_MicroTask_Config.MatrixRegTensor_M, io.CML_MicroTask_Config.MatrixRegTensor_N)
+    }
     io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
     io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
     io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
@@ -771,6 +854,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.AML_MicroTask_Config.MatrixRegTensor_K := cuteParams.Tensor_K.U / ReduceWidthByte.U
     io.AML_MicroTask_Config.MatrixRegId := regIdx
     io.AML_MicroTask_Config.MicroTaskValid := true.B
+    if (YJPTASKDebugEnable) {
+      printf("[TaskController_IssueZeroTr<%d>] reg=%d fifo=%d M=%d K=%d\n",
+        io.DebugTimeStampe, regIdx, loadIdx, io.AML_MicroTask_Config.MatrixRegTensor_M, io.AML_MicroTask_Config.MatrixRegTensor_K)
+    }
     io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
     io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
     io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
@@ -827,10 +914,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val cReg = Mux(isMma, mmaInfo.md(1, 0), arithInfo.md(1, 0))
     val computeIdx = computeIssueIdx
 
-    io.ADC_MicroTask_Config.MicroTaskValid := true.B
-    io.BDC_MicroTask_Config.MicroTaskValid := true.B
-    io.CDC_MicroTask_Config.MicroTaskValid := true.B
-
     val mVal = mmaInfo.mtilem
     val nVal = mmaInfo.mtilen
     // val kVal = mmaInfo.mtilek
@@ -840,6 +923,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       Bundles.MSew.e32 -> mmaInfo.mtilek * 4.U,
       Bundles.MSew.e4 -> mmaInfo.mtilek / 2.U,
     ))
+
+    io.ADC_MicroTask_Config.MicroTaskValid := true.B
+    io.BDC_MicroTask_Config.MicroTaskValid := true.B
+    io.CDC_MicroTask_Config.MicroTaskValid := true.B
+    if (YJPTASKDebugEnable) {
+      printf("[TaskController_IssueMMA<%d>] aReg=%d bReg=%d cReg=%d fifo=%d m=%d n=%d k=%d isMma=%d isFp=%d\n",
+        io.DebugTimeStampe, aReg, bReg, cReg, computeIdx, mVal, nVal, kVal, isMma, Mux(isMma, mmaInfo.isfp, false.B))
+    }
 
     io.ADC_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
     io.ADC_MicroTask_Config.MatrixRegTensor_M := mVal
@@ -929,6 +1020,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   when(issueStore) {
     val regIdx = lsuInfo.ms(1, 0)
     val storeIdx = storeIssueIdx
+    assert(lsuInfo.stride(5, 0) === 0.U, "TaskController store stride must be 64B aligned")
     
     io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_BaseVaddr := lsuInfo.baseAddr
     io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_Stride_M := lsuInfo.stride
@@ -951,6 +1043,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CML_MicroTask_Config.IsStoreMicroTask := true.B
 
     io.CML_MicroTask_Config.MicroTaskValid := true.B
+    if (YJPTASKDebugEnable) {
+      printf("[TaskController_IssueCMLStore<%d>] reg=%d fifo=%d row=%d col=%d stride=%x coher=%d transpose=%d base=%x dataType=%d\n",
+        io.DebugTimeStampe, regIdx, storeIdx, lsuInfo.row, lsuInfo.column, lsuInfo.stride, io.CML_MicroTask_Config.Conherent,
+        lsuInfo.transpose, lsuInfo.baseAddr, io.CML_MicroTask_Config.ApplicationTensor_D.dataType)
+    }
     if (EnableDifftest) {
       io.CML_MicroTask_Config.pc.get := headEntry.ctrl.pc.get
       io.CML_MicroTask_Config.coreid.get := headEntry.ctrl.coreid.get
@@ -981,6 +1078,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   when(issueRelease) {
     io.ygjkctrl.mrelease.valid := true.B
+    if (YJPTASKDebugEnable) {
+      printf("[TaskController_IssueRelease<%d>] token=%d\n", io.DebugTimeStampe, releaseInfo.tokenRd)
+    }
     io.ygjkctrl.mrelease.bits.tokenRd(releaseInfo.tokenRd) := true.B
     releaseIssueEvent.eventType := 0.U
     releaseIssueEvent.token := releaseInfo.tokenRd
@@ -995,6 +1095,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     difftestAmuFinish.pc := headEntry.ctrl.pc.get
     difftestAmuFinish.bankValid.foreach(_ := false.B)
     difftestAmuFinish.bankAddr.foreach(_ := 0.U)
+    difftestAmuFinish.bankMask.foreach(_ := 0.U)
     difftestAmuFinish.data.foreach(_ := 0.U)
     difftestAmuFinish.finish := io.ygjkctrl.mrelease.valid
   }
@@ -1016,4 +1117,3 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   releaseEventTable.log(releaseIssueEvent, releaseIssueEventEn, "ReleaseIssue", clock, reset)
 }
-
