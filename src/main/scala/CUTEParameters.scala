@@ -436,7 +436,7 @@ case class CuteMMUParams(
 object Cutev3extParams {
     // NoV3ExtParams:
     def NoextParams = Cutev3extParams(
-    TaskCtrl_AutoClear = false, //任务控制器是否自动清除已完成指令  
+    TaskCtrl_AutoClear = false, //whether the task controller auto-clears completed instructions  
     )
 
     // V3 Base Ext
@@ -445,7 +445,7 @@ object Cutev3extParams {
 }
 
 case class Cutev3extParams(
-    val TaskCtrl_AutoClear :Boolean = true, //任务控制器是否自动清除已完成指令
+    val TaskCtrl_AutoClear :Boolean = true, //whether the task controller auto-clears completed instructions
 )
 
 
@@ -456,7 +456,7 @@ object CuteFPEParams {
 }
 
 case class CuteFPEParams(
-    // 目前是固定的
+    // currently fixed
     val MinGroupSize :Int = 16,
     val MinDataTypeWidth : Int = 4,
     val ScaleElementWidth : Int = 8,
@@ -464,65 +464,68 @@ case class CuteFPEParams(
 
     val cmptreelayers :Int = 4,
     val fp8cmptreelayers :Int = 4,
-    // 目前固定，与FP4刚好公用，不要动
+    // currently fixed and shared with FP4; leave it unchanged
     val FP4P0AddNum :Int = 2,
 )
 
 case class CuteParams(
-    val outsideDataWidth :Int = 512, //cute对外访存的带宽
-    val MemoryDataWidth :Int = 64,   //TODO:DRAM的访存通道的数据位宽
+    val outsideDataWidth :Int = 512, //CUTE external memory bandwidth
+    val MemoryDataWidth :Int = 64,   //TODO: data width of the DRAM memory channel
 
-    val VectorWidth :Int = 256,      //向量流水线的宽度
+    val VectorWidth :Int = 256,      //vector pipeline width
 
     val L2NBanks :Int = 4,
 
-    val ConvolutionApplicationConfigDataWidth :Int = 32, //卷积相关的配置信息的宽度
-    val ConvolutionDIM_Max :Int = 65536, //卷积相关的配置信息的宽度
+    val ConvolutionApplicationConfigDataWidth :Int = 32, //width of convolution-related configuration information
+    val ConvolutionDIM_Max :Int = 65536, //width of convolution-related configuration information
     val Convolution_Input_Height_Weight_Dim_Max :Int = 16384,
-    val KernelSizeMax :Int = 16, //卷积核的最大尺寸
-    val StrideSizeMax :Int = 4,  //步长的最大尺寸
+    val KernelSizeMax :Int = 16, //maximum kernel size
+    val StrideSizeMax :Int = 4,  //maximum stride size
 
-    val ApplicationMaxTensorSize :Int = 65536, //最大可处理的程序的张量形状，
+    val ApplicationMaxTensorSize :Int = 65536, //maximum tensor shape a program can handle,
 
-    val MMUAddrWidth :Int = 64 , //CUTE MMU的地址宽度
+    val MMUAddrWidth :Int = 64 , //CUTE MMU address width
 
-    val LLCSourceMaxNum :Int = 64, //LLC总线上的source最大数量 --> 这个参数和LLC的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必须大于LLC的访存延迟
-    val MemorysourceMaxNum :Int = 64, //Memory总线上的source最大数量 --> 这个参数和Memory的访存延迟强相关，若要满流水，这个sourceMAXnum的数量必顶大于Memory的访存延迟
+    val LLCSourceMaxNum :Int = 64, //maximum number of sources on the LLC bus -> this parameter is tightly coupled to LLC latency; to sustain full throughput, sourceMAXnum must exceed LLC latency
+    val MemorysourceMaxNum :Int = 64, //maximum number of sources on the memory bus -> this parameter is tightly coupled to memory latency; to sustain full throughput, sourceMAXnum must exceed memory latency
 
 
-    //MatrixReg中保存的张量形状
-    val Tensor_MN :Int = 128,   //这里指要存的张量的M与N的大小
-    val Tensor_K :Int = 64,    //这里指要存的张量的K(8bit/elment)的大小
+    //tensor shape stored in MatrixReg
+    val Tensor_MN :Int = 128,   //M and N dimensions of the tensor to be stored here
+    val Tensor_K :Int = 64,    //K size of the tensor to be stored here (8-bit/element)
 
-    //矩阵乘计算单元MTE的形状
-    val Matrix_MN :Int = 4,     //Matrix_MN，代表TE执行的矩阵乘法的M与N的大小
-    val ReduceWidthByte :Int = 64,   //ReduceWidthByte 代表ReducePE进行内积时的数据宽度，单位是字节
-    val ResultWidthByte :Int = 4,    //ResultWidthByte 代表ReducePE的结果宽度，单位是字节
+    //MTE matrix-multiply unit shape
+    val Matrix_MN :Int = 4,     //Matrix_MN: M and N dimensions of the matrix multiply executed by TE
+    val ReduceWidthByte :Int = 64,   //ReduceWidthByte: data width used by ReducePE for inner products, in bytes
+    val ResultWidthByte :Int = 4,    //ResultWidthByte: result width of ReducePE, in bytes
 
-    val ResultFIFODepth :Int = 8,    //乘累加FIFO的深度
+    val ResultFIFODepth :Int = 8,    //MAC FIFO depth
 
-    val AMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //用于暂存AML的数据到CCSP的FIFO
-    val BMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //用于暂存BML的数据到CCSP的FIFO
-    val CMemoryLoaderReadFromMatrixRegFIFODepth :Int = 4, //用于暂存CCSP的数据到CML的FIFO
-    val CMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //用于暂存CML的数据到CMReg的FIFO
+    val AMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering AML data to CCSP
+    val BMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering BML data to CCSP
+    val CMemoryLoaderReadFromMatrixRegFIFODepth :Int = 4, //FIFO for buffering CCSP data to CML
+    val CMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering CML data to CMReg
 
-    val VecTaskInstBufferDepth :Int = 32, //VecTask的指令缓冲深度
-    val VecTaskInstBufferSize :Int = 8, //VecTask的指令缓冲的数量
-    val VecTaskDataBufferDepth :Int = 4, //VecTask的指令缓冲深度掩盖从VecInterface到VPU的数据传输延迟即可
+    val VecTaskInstBufferDepth :Int = 32, //VecTask instruction buffer depth
+    val VecTaskInstBufferSize :Int = 8, //number of VecTask instruction buffers
+    val VecTaskDataBufferDepth :Int = 4, //VecTask buffer depth only needs to cover transfer latency from VecInterface to VPU
 
-    val EnableDifftest: Boolean = false, //是否启用DiffTest
+    // TaskController issue window depth (compile-time only)
+    val TaskCtrlIssueWindowDepth :Int = 8,
 
-    val Debug : CuteDebugParams = CuteDebugParams.NoDebug, //调试参数
-    val MMUParams: CuteMMUParams = CuteMMUParams.baseParams, //MMU的参数
+    val EnableDifftest: Boolean = false, //whether DiffTest is enabled
+
+    val Debug : CuteDebugParams = CuteDebugParams.NoDebug, //debug parameters
+    val MMUParams: CuteMMUParams = CuteMMUParams.baseParams, //MMU parameters
     
-    val v3config: Cutev3extParams = Cutev3extParams.NoextParams, //v3的扩展参数
+    val v3config: Cutev3extParams = Cutev3extParams.NoextParams, //v3 extension parameters
 
-    val FPEparams: CuteFPEParams = CuteFPEParams.baseparams, //FPE的参数
+    val FPEparams: CuteFPEParams = CuteFPEParams.baseparams, //FPE parameters
 
     val MatrixExtension: MatrixIsaParams = MatrixIsaParams()
 ) {
 
-    //所有参数都必须是2的n次方
+    //all parameters must be powers of 2
     // require(ReduceWidthByte == 64, "FP8/4 now only support 512 bit reduce width")
     require(outsideDataWidth == 512 || outsideDataWidth == 256, "currently only support 512/256 bit outsideDataWidth")
     require(ReduceWidthByte == 64 || ReduceWidthByte == 32, "currently only support 512/256 bit ReduceWidth")
@@ -552,18 +555,19 @@ case class CuteParams(
     require((VecTaskInstBufferDepth & (VecTaskInstBufferDepth - 1)) == 0, "VecTaskInstBufferDepth must be power of 2")
     require((VecTaskInstBufferSize & (VecTaskInstBufferSize - 1)) == 0, "VecTaskInstBufferSize must be power of 2")
     require((VecTaskDataBufferDepth & (VecTaskDataBufferDepth - 1)) == 0, "VecTaskDataBufferDepth must be power of 2")
+    require(Seq(4, 8, 16).contains(TaskCtrlIssueWindowDepth), "TaskCtrlIssueWindowDepth only supports 4/8/16")
     require((FPEparams.MinGroupSize == 16), "FPEparams.MinGroupSize must be 16")
     require((FPEparams.MinDataTypeWidth == 4), "FPEparams.MinDataTypeWidth must be 4")
     require((FPEparams.ScaleElementWidth == 8), "FPEparams.ScaleElementWidth must be 8")
 
     def outsideDataWidthByte = outsideDataWidth / 8
     def ReduceWidth = ReduceWidthByte * 8
-    def ABMLNeedMRegFillTable = ReduceWidthByte < outsideDataWidthByte //内存返回的数据一周期写不完时ABML需要写回缓冲
+    def ABMLNeedMRegFillTable = ReduceWidthByte < outsideDataWidthByte //when returned memory data cannot be written in one cycle, ABML needs a writeback buffer
     def ResultWidth = ResultWidthByte * 8
     def ApplicationMaxTensorSizeBitSize = log2Ceil(ApplicationMaxTensorSize) + 1
-    def MMUDataWidth = outsideDataWidth //MMU的数据线宽度
-    def MMUMaskWidth = MMUDataWidth / 8 //MMU的掩码线宽度
-    def MMUDataWidthBitSize = log2Ceil(MMUDataWidth) + 1 //MMU的数据线有效数据位数
+    def MMUDataWidth = outsideDataWidth //MMU data bus width
+    def MMUMaskWidth = MMUDataWidth / 8 //MMU mask width
+    def MMUDataWidthBitSize = log2Ceil(MMUDataWidth) + 1 //effective data-bit count of the MMU data bus
     def LLCSourceMaxNumBitSize = log2Ceil(LLCSourceMaxNum) + 1
     def MemorysourceMaxNumBitSize = log2Ceil(MemorysourceMaxNum) + 1
     def SoureceMaxNum = math.max(LLCSourceMaxNum, MemorysourceMaxNum)
@@ -572,31 +576,31 @@ case class CuteParams(
     def P3AddNum = ReduceWidth / 4 / FPEparams.MinGroupSize
     def P2AddNum = ReduceWidth / (P3AddNum * 16)
 
-    def ReduceGroupSize  = Tensor_K/ReduceWidthByte    //这里指要存的张量的K的ReduceVector的数量！不是张量的K的大小
+    def ReduceGroupSize  = Tensor_K/ReduceWidthByte    //number of ReduceVectors for K to be stored, not the K size
     def MatrixRegMaxTensorDim = Math.max(Tensor_MN, Math.max(Tensor_MN, ReduceGroupSize))
     def MatrixRegMaxTensorDimBitSize = log2Ceil(MatrixRegMaxTensorDim) + 1
-    //A MatrixReg中保存的张量形状为M*K
-    //A MatrixReg的大小为Tenser_M * ReduceGroupSize * ReduceWidthByte
-    //128*(4*256/8)，单次读的张量为128*128的张量
-    //单次计算需要的时间为(128/4)*(128/4)*4 = 4096拍，单次读需要128×4=512拍。
-    //需要考虑MatrixReg的顺序读，需要考虑为MatrixReg分bank
+    //A tensor shape stored in MatrixReg is M*K
+    //A MatrixReg size is Tenser_M * ReduceGroupSize * ReduceWidthByte
+    //128*(4*256/8); one read covers a 128*128 tensor
+    //one compute takes (128/4)*(128/4)*4 = 4096 cycles; one read takes 128*4 = 512 cycles.
+    //sequential reads must be considered; MatrixReg should be banked
     def ABMatrixRegSize = Tensor_MN * ReduceGroupSize * ReduceWidthByte //reduce
     def CMatrixRegSize = Tensor_MN * Tensor_MN * ResultWidthByte //result
 
-    //目前的MatrixReg设计，分Tensor_T个bank，每次取Tensor_T个数据，根据取数逻辑，在不同的bank里取不同的数据，然后拼接
-    def ABMatrixRegEntryByteSize = ReduceWidthByte //适合向TE供数的带宽
-    def CMatrixRegEntryByteSize = Matrix_MN*ResultWidthByte //这个取数和存数的带宽
-    def ABMatrixRegEntryBitSize = ReduceWidthByte * 8 //适合向TE供数的带宽
-    def CMatrixRegEntryBitSize = Matrix_MN*ResultWidthByte * 8//这个取数和存数的带宽
+    //the current MatrixReg design is split into Tensor_T banks; each access fetches Tensor_T items from different banks and concatenates them
+    def ABMatrixRegEntryByteSize = ReduceWidthByte //bandwidth suitable for feeding TE
+    def CMatrixRegEntryByteSize = Matrix_MN*ResultWidthByte //bandwidth for reads and writes
+    def ABMatrixRegEntryBitSize = ReduceWidthByte * 8 //bandwidth suitable for feeding TE
+    def CMatrixRegEntryBitSize = Matrix_MN*ResultWidthByte * 8//bandwidth for reads and writes
     // DiffAmuFinishEvent flattens per-bank payload into UInt(64) lanes.
     // Use the maximum bank payload width so one event layout works for AB/C paths.
     def DiffAmuFinishWordsPerBank = Math.max(ABMatrixRegEntryBitSize, CMatrixRegEntryBitSize) / 64
-    def ABMatrixRegNBanks = Matrix_MN //注意这里与Matrix_MN有强相关性，一般是Matrix_MN的整数倍
-    def CMatrixRegNBanks = Matrix_MN //方便进行reorder
-    def ABMatrixReg_Total_Bandwidth = ABMatrixRegNBanks * ABMatrixRegEntryByteSize  //ABMatrixReg的总带宽
-    def CMatrixReg_Total_Bandwidth = CMatrixRegNBanks * CMatrixRegEntryByteSize  //CMatrixReg的总带宽
-    def ABMatrixReg_Total_Bandwidth_Bit = ABMatrixRegNBanks * ABMatrixRegEntryByteSize * 8  //ABMatrixReg的总带宽
-    def CMatrixReg_Total_Bandwidth_Bit = CMatrixRegNBanks * CMatrixRegEntryByteSize * 8  //CMatrixReg的总带宽
+    def ABMatrixRegNBanks = Matrix_MN //note that this is strongly tied to Matrix_MN and is generally an integer multiple of Matrix_MN
+    def CMatrixRegNBanks = Matrix_MN //convenient for reorder
+    def ABMatrixReg_Total_Bandwidth = ABMatrixRegNBanks * ABMatrixRegEntryByteSize  //total bandwidth of ABMatrixReg
+    def CMatrixReg_Total_Bandwidth = CMatrixRegNBanks * CMatrixRegEntryByteSize  //total bandwidth of CMatrixReg
+    def ABMatrixReg_Total_Bandwidth_Bit = ABMatrixRegNBanks * ABMatrixRegEntryByteSize * 8  //total bandwidth of ABMatrixReg
+    def CMatrixReg_Total_Bandwidth_Bit = CMatrixRegNBanks * CMatrixRegEntryByteSize * 8  //total bandwidth of CMatrixReg
     def ABMatrixRegBankSize = ABMatrixRegSize / ABMatrixRegNBanks
     def CMatrixRegBankSize = CMatrixRegSize / CMatrixRegNBanks
     def ABMatrixRegBankNEntries = ABMatrixRegBankSize / ABMatrixRegEntryByteSize
@@ -605,9 +609,9 @@ case class CuteParams(
     /**
      * Scale Factor Parameters
      */
-    def ScaleWidth = ReduceWidthByte * 8 * FPEparams.ScaleElementWidth / FPEparams.MinDataTypeWidth / FPEparams.MinGroupSize   // 1个group的scale所需的最大位宽
+    def ScaleWidth = ReduceWidthByte * 8 * FPEparams.ScaleElementWidth / FPEparams.MinDataTypeWidth / FPEparams.MinGroupSize   // maximum bit width needed for one group scale
     def ABScaleSize = Tensor_MN * ReduceGroupSize * ScaleWidth
-    def ABScaleNSlices = outsideDataWidth / ScaleWidth / ReduceGroupSize  // 1个slice对应1个Tensor_K的scale的最大长度
+    def ABScaleNSlices = outsideDataWidth / ScaleWidth / ReduceGroupSize  // maximum scale length for one Tensor_K per slice
     def ABScaleBankNEntries = ABScaleSize / (ABScaleNSlices * ScaleWidth * ReduceGroupSize)
 
     // require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
@@ -634,8 +638,11 @@ trait CUTEImplParameters{
     def v3config: Cutev3extParams = cuteParams.v3config
     def FPEparams: CuteFPEParams = cuteParams.FPEparams
 
-    def DecodedAmuCtrlFIFODepth = 8  //解码后的AMU指令FIFO的深度
-    def DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) //解码后的AMU指令FIFO的深度
+    def TaskCtrlIssueWindowDepth = cuteParams.TaskCtrlIssueWindowDepth
+    def TaskCtrlIssueWindowDepthBitSize = log2Ceil(TaskCtrlIssueWindowDepth)
+
+    def DecodedAmuCtrlFIFODepth = TaskCtrlIssueWindowDepth  // Decoded AMU instruction FIFO depth, tied to the issue window
+    def DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) // Bit width of the decoded AMU instruction FIFO depth
 
     def ABMatrixRegCount = 4
     def CMatrixRegCount = 4
@@ -675,9 +682,9 @@ trait CUTEImplParameters{
     def MemoryDataWidth = cuteParams.MemoryDataWidth
     def ReduceWidthByte = cuteParams.ReduceWidthByte
     def ReduceWidth = cuteParams.ReduceWidth
-    def mxfp8ScaleWidth = ReduceWidth * 8 / 8 / 32 //一个PE每周期接受的总scale的宽度，[单个scale宽度(8bit)，单个element的宽度(4bit)，groupsize(32)]
-    def nvfp4ScaleWidth = ReduceWidth * 8 / 4 / 16 //一个PE每周期接受的总scale的宽度，[单个scale宽度(8bit)，单个element的宽度(4bit)，groupsize(16)]
-    def mxfp4ScaleWidth = ReduceWidth * 8 / 4 / 32 //一个PE每周期接受的总scale的宽度，[单个scale宽度(8bit)，单个element的宽度(4bit)，groupsize(32)]
+    def mxfp8ScaleWidth = ReduceWidth * 8 / 8 / 32 //total scale width accepted by one PE per cycle [single scale width 8-bit, single element width 4-bit, groupsize 32]
+    def nvfp4ScaleWidth = ReduceWidth * 8 / 4 / 16 //total scale width accepted by one PE per cycle [single scale width 8-bit, single element width 4-bit, groupsize 16]
+    def mxfp4ScaleWidth = ReduceWidth * 8 / 4 / 32 //total scale width accepted by one PE per cycle [single scale width 8-bit, single element width 4-bit, groupsize 32]
     def ABMLNeedMRegFillTable = cuteParams.ABMLNeedMRegFillTable
     def ResultWidthByte = cuteParams.ResultWidthByte
     def ResultWidth = cuteParams.ResultWidth
@@ -731,14 +738,14 @@ trait CUTEImplParameters{
     def EnableDifftest = cuteParams.EnableDifftest
     def L2NBanks = cuteParams.L2NBanks
 
-    def MinGroupSize = FPEparams.MinGroupSize //FPE的最小计算组大小
-    def MinDataTypeWidth = FPEparams.MinDataTypeWidth //FPE的最小数据类型宽度
-    def ScaleElementWidth = FPEparams.ScaleElementWidth //FPE的scale元素宽
+    def MinGroupSize = FPEparams.MinGroupSize //minimum compute group size of FPE
+    def MinDataTypeWidth = FPEparams.MinDataTypeWidth //minimum data type width of FPE
+    def ScaleElementWidth = FPEparams.ScaleElementWidth //FPE scale element width
 
-    def cmptreelayers = FPEparams.cmptreelayers //FPE的计算树层数
+    def cmptreelayers = FPEparams.cmptreelayers //FPE compute tree depth
     def fp8cmptreelayers = FPEparams.fp8cmptreelayers 
 
-    def P3AddNum :Int = cuteParams.P3AddNum //FPE的P3加法器的数量
+    def P3AddNum :Int = cuteParams.P3AddNum //number of P3 adders in FPE
     def P2AddNum :Int = cuteParams.P2AddNum
 
     def FP4P0AddNum :Int = FPEparams.FP4P0AddNum
@@ -765,7 +772,7 @@ class CuteBundle(implicit val p: Parameters) extends Bundle with CUTEImplParamet
 
 class AfterOpsInterface()(implicit p: Parameters) extends CuteBundle{
 
-    //每拍可接受一个来自CDC的与MReg和TE等宽的数据，并在自己模块内完成数据的拆分、重排、缩放、转置以及其他复杂向量任务
+    //can accept per-cycle data from CDC matching MReg and TE width, and perform splitting, reordering, scaling, transposition, and other complex vector tasks inside this module
     val CDCDataToInterface     = DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W))
     val InterfaceToCDCData     = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
     // val CDCStoreAddr                        = Input(UInt(log2Ceil(CMatrixRegBankNEntries).W))
@@ -777,15 +784,15 @@ class VPUInterface_Input()(implicit p: Parameters) extends CuteBundle{
     val inst_uop = Output(UInt(32.W))
     val inst_src0 = Output(UInt(VectorWidth.W))
     val inst_src1 = Output(UInt(VectorWidth.W))
-    val inst_src0_type = Output(UInt(2.W))//从寄存器还是来自输入
-    val inst_src1_type = Output(UInt(2.W))//从寄存器还是来自输入
-    val inst_dest_type = Output(UInt(2.W))//写回寄存器还是写回输出
-    val stream_id = Output(UInt(log2Ceil(Matrix_MN*Matrix_MN+10).W))//stream data的id
+    val inst_src0_type = Output(UInt(2.W))//from register or input
+    val inst_src1_type = Output(UInt(2.W))//from register or input
+    val inst_dest_type = Output(UInt(2.W))//write back to register or output
+    val stream_id = Output(UInt(log2Ceil(Matrix_MN*Matrix_MN+10).W))//stream data ID
 }
 
 class VPUInterface_Output()(implicit p: Parameters) extends CuteBundle{
-    val stream_id = Output(UInt(log2Ceil(Matrix_MN*Matrix_MN+10).W))//stream data的id
-    val stream_data = Output(UInt(VectorWidth.W))//stream data还能存一些额外的信息，这些信息也会返回，后续可以用于配置VPU的部分隐式寄存器，或者留存在VPU的的隐式寄存器中，这些寄存器是uop可见的，如下一次的scale，下一次的bias等。
+    val stream_id = Output(UInt(log2Ceil(Matrix_MN*Matrix_MN+10).W))//stream data ID
+    val stream_data = Output(UInt(VectorWidth.W))//stream data can carry extra information that is also returned; later it can be used to configure some VPU implicit registers or kept in VPU implicit registers visible to uops, such as the next scale or bias
 }
 
 class VPUInterfaceIO()(implicit p: Parameters) extends CuteBundle{
@@ -796,7 +803,7 @@ class VPUInterfaceIO()(implicit p: Parameters) extends CuteBundle{
 
 class VectorInterfaceIO()(implicit p: Parameters) extends CuteBundle{
 
-    //每拍可接受一个来自AfterOpsInterface的与VectorWidth等宽的数据
+    //can accept per-cycle data from AfterOpsInterface matching VectorWidth
     val VecTask = DecoupledIO(UInt(log2Ceil(VecTaskInstBufferSize).W))
     val VectorDataIn     = DecoupledIO(UInt((VectorWidth).W))
     val VectorDataOut     = Flipped(DecoupledIO(UInt((VectorWidth).W)))
@@ -810,7 +817,7 @@ case object StreamStateType extends Field[UInt]{
     val Reorder_DIM_M_First = 2.U(StreamStateTypeBitWidth.W)
 }
 
-//描述计算时，数据流的访问顺序，transpose的时候就是N_M，不transpose的时候就是M_N
+//describes the data-flow access order during computation: N_M for transpose, M_N otherwise
 case object CaculateStreamStateType extends Field[UInt]{
     val CaculateStreamStateTypeBitWidth = 4
 
@@ -840,16 +847,16 @@ class AfterOpsMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
 
-    //接受后操作的任务，有可能是重排序，有可能是缩放，有可能是转置，有可能是其他复杂后操作任务
-    val Is_Transpose                        = (Bool())      //是否需要转置
-    val Is_Reorder_Only_Ops                 = (Bool())      //是否只是重排，不需要计算
-    val Is_EasyScale_Only_Ops               = (Bool())      //是否只是简单的缩放，不需要额外的后操作计算
-    val Is_VecFIFO_Ops                      = (Bool())      //是否真的需要通用VecFIFO的参与
+    //tasks that accept post-ops may be reorder, scaling, transpose, or other complex post-processing tasks
+    val Is_Transpose                        = (Bool())      //whether transpose is needed
+    val Is_Reorder_Only_Ops                 = (Bool())      //whether this is reorder-only, with no computation needed
+    val Is_EasyScale_Only_Ops               = (Bool())      //whether this is simple scaling only, without extra post-op computation
+    val Is_VecFIFO_Ops                      = (Bool())      //whether the generic VecFIFO is actually needed
 
-    val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
-    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
-    val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
-    val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
+    val MicroTaskEndValid                   = Flipped(Bool())//current task completed
+    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
 
     val CUTEuop                         = (new CUTE_uop)
 }
@@ -860,12 +867,12 @@ class ADCMicroTaskConfigBaseIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
-    val Is_Transpose                        = (Bool())      //是否需要转置
+    val Is_Transpose                        = (Bool())      //whether transpose is needed
 
-    val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
-    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
-    val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
-    val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
+    val MicroTaskEndValid                   = Flipped(Bool())//current task completed
+    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
 }
 
 class ADCMicroTaskConfigIO()(implicit p: Parameters) extends ADCMicroTaskConfigBaseIO {
@@ -882,12 +889,12 @@ class BDCMicroTaskConfigBaseIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
-    val Is_Transpose                        = (Bool())      //是否需要转置
+    val Is_Transpose                        = (Bool())      //whether transpose is needed
 
-    val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
-    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
-    val MicroTaskEndValid                        = Flipped(Bool())//已完成当前任务
-    val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
+    val MicroTaskEndValid                        = Flipped(Bool())//current task completed
+    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
 }
 
 class BDCMicroTaskConfigIO()(implicit p: Parameters) extends BDCMicroTaskConfigBaseIO {
@@ -916,19 +923,19 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
 
-    val Is_Transpose                        = (Bool())      //是否需要转置
-    val Is_AfterOps_Tile                    = (Bool())      //是否是需要执行后操作的Tile，包括转置等
+    val Is_Transpose                        = (Bool())      //whether transpose is needed
+    val Is_AfterOps_Tile                    = (Bool())      //whether this is a tile that requires post-ops, including transpose
 
-    val Is_Reorder_Only_Ops                 = (Bool())      //是否只是重排，不需要计算
-    val Is_EasyScale_Only_Ops               = (Bool())      //是否只是简单的缩放，不需要额外的后操作计算
-    val Is_VecFIFO_Ops                      = (Bool())      //是否真的需要通用VecFIFO的参与
+    val Is_Reorder_Only_Ops                 = (Bool())      //whether this is reorder-only, with no computation needed
+    val Is_EasyScale_Only_Ops               = (Bool())      //whether this is simple scaling only, without extra post-op computation
+    val Is_VecFIFO_Ops                      = (Bool())      //whether the generic VecFIFO is actually needed
 
-    val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
-    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
-    val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
-    val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
-    val MicroTask_TEComputeEndValid         = Flipped(Bool())//已完成当前的TE的计算任务(但是还没有完成后操作)，但是可以提前释放TE的占用
-    val MicroTask_TEComputeEndReady         = (Bool())       //已知晓当前的TE的计算任务完成
+    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
+    val MicroTaskEndValid                   = Flipped(Bool())//current task completed
+    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
+    val MicroTask_TEComputeEndValid         = Flipped(Bool())//current TE compute task completed (post-ops still pending), but TE occupancy can be released early
+    val MicroTask_TEComputeEndReady         = (Bool())       //current TE compute task completion acknowledged
 
     val pc                                = Option.when(EnableDifftest) (UInt(64.W))
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
@@ -936,8 +943,8 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
 class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
-    // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))//可能没有了
-    val ApplicationTensor_A_Stride_M    = (UInt(MMUAddrWidth.W))//下一个M需要增加多少的地址偏移量
+    // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))//may be gone already
+    val ApplicationTensor_A_Stride_M    = (UInt(MMUAddrWidth.W))//address offset increment for the next M
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
     //细粒度控制参数增加
     val HasTail                         = Bool()
@@ -947,7 +954,7 @@ class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
 
 class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationScale_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
-    val BlockScale_A_BaseVaddr         = (UInt(MMUAddrWidth.W))  // 主要起作用的
+    val BlockScale_A_BaseVaddr         = (UInt(MMUAddrWidth.W))  // main active field
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
@@ -961,12 +968,12 @@ class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
-    val Conherent                           = (Bool())      //是否需要coherent
+    val Conherent                           = (Bool())      //whether coherence is needed
 
-    val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
-    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
-    val MicroTaskEndValid                        = Flipped(Bool())//已完成当前任务
-    val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
+    val MicroTaskEndValid                        = Flipped(Bool())//current task completed
+    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
 
     val pc                                = Option.when(EnableDifftest) (UInt(64.W))
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
@@ -981,6 +988,19 @@ class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
     val HasTail                         = Bool()
     val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
     val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
+class ASLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
+
+    val ApplicationScale_A = (new ApplicationScale_A_Info)
+
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+
+    val Conherent                           = (Bool())      //whether coherence is needed
+
+    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
+    val MicroTaskEndValid                   = Flipped(Bool())//current task completed
+    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
 }
 
 class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -991,12 +1011,12 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
-    val Conherent                           = (Bool())      //是否需要coherent
+    val Conherent                           = (Bool())      //whether coherence is needed
 
-    val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
-    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
-    val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
-    val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
+    val MicroTaskEndValid                   = Flipped(Bool())//current task completed
+    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
 
     val pc                                = Option.when(EnableDifftest) (UInt(64.W))
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
@@ -1009,31 +1029,31 @@ class BSLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
 
-    val Conherent                           = (Bool())      //是否需要coherent
+    val Conherent                           = (Bool())      //whether coherence is needed
 
-    val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
-    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
-    val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
-    val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
+    val MicroTaskEndValid                   = Flipped(Bool())//current task completed
+    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
 }
 
 class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockTensor_B_BaseVaddr         = (UInt(MMUAddrWidth.W))
-    val ApplicationTensor_B_Stride_N    = (UInt(MMUAddrWidth.W))//下一个N需要增加多少的地址偏移量
+    val ApplicationTensor_B_Stride_N    = (UInt(MMUAddrWidth.W))//address offset increment for the next N
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
 }
 
 class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationScale_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
-    val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // 主要起作用的
+    val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // main active field
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
 class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_C_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockTensor_C_BaseVaddr         = (UInt(MMUAddrWidth.W))
-    val ApplicationTensor_C_Stride_M    = (UInt(MMUAddrWidth.W))//下一个M需要增加多少的地址偏移量
+    val ApplicationTensor_C_Stride_M    = (UInt(MMUAddrWidth.W))//address offset increment for the next M
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
     val HasTail                         = Bool()
     val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
@@ -1043,7 +1063,7 @@ class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
 class ApplicationTensor_D_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_D_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockTensor_D_BaseVaddr         = (UInt(MMUAddrWidth.W))
-    val ApplicationTensor_D_Stride_M    = (UInt(MMUAddrWidth.W))//下一个M需要增加多少的地址偏移量
+    val ApplicationTensor_D_Stride_M    = (UInt(MMUAddrWidth.W))//address offset increment for the next M
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
 }
 
@@ -1053,7 +1073,7 @@ class LoadTask_Info()(implicit p: Parameters) extends CuteBundle{
     val Is_FullLoad = (Bool())
 }
 class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    //就是一个TensorC，是累加寄存器视角的不动的部分
+    //this is Tensor C, the invariant part from the accumulator-register perspective
 
     val ApplicationTensor_C = (new ApplicationTensor_C_Info)
 
@@ -1061,28 +1081,28 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val LoadTaskInfo = (new LoadTask_Info)
 
-    val Conherent                           = (Bool())      //是否需要coherent
-    val Is_Transpose                        = (Bool())      //是否需要转置
+    val Conherent                           = (Bool())      //whether coherence is needed
+    val Is_Transpose                        = (Bool())      //whether transpose is needed
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
 
-    val LoadMicroTaskReady                  = Flipped(Bool())//可配置下一个Load任务
-    val LoadMicroTaskValid                  = (Bool())       //当前Load任务的配置信息有效
-    val LoadMicroTaskEndValid               = Flipped(Bool())//已完成当前Load任务
-    val LoadMicroTaskEndReady               = (Bool())       //已知晓当前Load任务完成
+    val LoadMicroTaskReady                  = Flipped(Bool())//can configure the next load task
+    val LoadMicroTaskValid                  = (Bool())       //current load-task configuration is valid
+    val LoadMicroTaskEndValid               = Flipped(Bool())//current load task completed
+    val LoadMicroTaskEndReady               = (Bool())       //current load task completion acknowledged
 
-    val StoreMicroTaskReady                 = Flipped(Bool())//可配置下一个Store任务
-    val StoreMicroTaskValid                 = (Bool())       //当前Store任务的配置信息有效
-    val StoreMicroTaskEndValid              = Flipped(Bool())//已完成当前Store任务
-    val StoreMicroTaskEndReady              = (Bool())       //已知晓当前Store任务完成
+    val StoreMicroTaskReady                 = Flipped(Bool())//can configure the next store task
+    val StoreMicroTaskValid                 = (Bool())       //current store-task configuration is valid
+    val StoreMicroTaskEndValid              = Flipped(Bool())//current store task completed
+    val StoreMicroTaskEndReady              = (Bool())       //current store task completion acknowledged
 
     val pc                                = Option.when(EnableDifftest) (UInt(64.W))
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
 class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
     val computeType                         = Output(UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
@@ -1095,58 +1115,58 @@ class MRegControlInfo()(implicit p: Parameters) extends CuteBundle{
     val CML_MReg_ID = UInt(CMatrixRegIdWidth.W)
 }
 
-//从MatrixReg中取数，要明确是从哪个bank里，取第几行的数据，然后完成数据拼接返回
-//从哪个bank里取数据，取第几行的数据，是由datacontrol模块算出来的
-//怎么在bank里编排数据，是由MemoryLoader模块填进去的
-//MemoryLoader模块和datacontrol模块都有窗口期，可以完成数据额外的一些编排如量化、反稀疏、反量化、量化重排等等
-//将MemoryLoader模块和datacontrol模块分开，是为了使用窗口期，让单读写口的MatrixReg可以独立运行
-//有没有能同时读写的SRAM啊？我能保证不写同一块数据,还是先doublebuffer吧....
-//我们考虑到回数的延迟，所以DataControl与MatrixReg之间也是有fifo的。考虑到后续的SRAM是一个简单模块，fifo要加在DataControl里，让MatrixReg尽可能简单。
+//when reading from MatrixReg, it must be clear which bank and which row are accessed, then the data is concatenated and returned
+//which bank and which row to read are computed by the data-control module
+//how data is arranged within banks is filled by the MemoryLoader module
+//MemoryLoader and data-control modules both have a window period, which can perform extra data arrangement such as quantization, sparsification reversal, dequantization, and quantization reorder
+//MemoryLoader and data-control are separated to exploit the window period so the single-read/single-write MatrixReg can run independently
+//is there an SRAM that can read and write simultaneously? I can guarantee no writes hit the same location, but let us use double buffering first....
+//we account for response latency, so there is also a FIFO between DataControl and MatrixReg. Since the future SRAM is expected to be a simple module, keep the FIFO in DataControl so MatrixReg stays as simple as possible.
 class ABDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(ABMatrixRegBankNLines)，是输入的需要握手的数据
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(ABMatrixRegBankNLines), and it is input data that requires handshaking
     val BankAddr = Flipped(DecoupledIO(Vec(ABMatrixRegNBanks, (UInt(log2Ceil(ABMatrixRegBankNEntries).W)))))
-    //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
+    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
     val Data = Valid(Vec(ABMatrixRegNBanks, UInt(ABMatrixRegEntryBitSize.W)))
-    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
+    //chosen selects the MatrixReg; it is a Bool. We use double buffering, selecting one for output and one for loading
     // val Chosen = Input(Bool())
 }
 
 class ABScaleControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(ABMatrixRegBankNLines)，是输入的需要握手的数据
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(ABMatrixRegBankNLines), and it is input data that requires handshaking
     val BankAddr = Flipped(DecoupledIO(UInt(log2Ceil(ABScaleBankNEntries).W)))
-    //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
+    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
     val Data = Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W)))
-    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
+    //chosen selects the MatrixReg; it is a Bool. We use double buffering, selecting one for output and one for loading
     // val Chosen = Input(Bool())
 }
 
-// 统一的AB MemoryLoader接口，支持ZeroFill功能
+// unified AB MemoryLoader interface, with ZeroFill support
 class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // When MemLoader is working, active will be true.
     // Otherwise, active will be false.
     val active = Input(Bool())
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(ABMatrixRegBankNLines)，是输入的需要握手的数据
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(ABMatrixRegBankNLines), and it is input data that requires handshaking
     val BankAddr = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntries).W))))
-    //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
+    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
     val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))
     // 每个bit控制对应1个byte是否写入
     val ByteMask = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryByteSize.W))))
 }
 
 class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AScratchpadBankNLines)，是输入的需要握手的数据
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(AScratchpadBankNLines), and it is input data that requires handshaking
     val BankAddr = Flipped(Valid(UInt(log2Ceil(ABScaleBankNEntries).W)))
-    //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
+    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
     val Data = Flipped(Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W))))
-    //chosen是选择该ScarchPad的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
+    //chosen selects the ScratchPad; it is a Bool. We use double buffering, selecting one for output and one for loading
     // val Chosen = Input(Bool())
 }
 
 class CDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(CMatrixRegBankNLines)，是输入的需要握手的数据
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(CMatrixRegBankNLines), and it is input data that requires handshaking
     val ReadBankAddr = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W)))))
     val WriteBankAddr = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W)))))
-    //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt
+    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt
     val ReadResponseData = (Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W))))
     val WriteRequestData = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W)))))
     val WriteRequestByteMask = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryByteSize.W)))))
@@ -1173,10 +1193,10 @@ class CMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // val Chosen = Input(Bool())
 }
 
-//LocalMMU的接口
+//LocalMMU interface
 class LocalMMUIO(implicit p: Parameters) extends CuteBundle{
 
-    //发出的访存请求
+    //issued memory request
     val Request = Flipped(DecoupledIO(new Bundle{
         val RequestVirtualAddr = UInt(MMUAddrWidth.W)
         val RequestConherent = Bool()
@@ -1184,11 +1204,11 @@ class LocalMMUIO(implicit p: Parameters) extends CuteBundle{
         val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
         val RequestType_isWrite = Bool()
     }))
-    //读请求分发到的TL Link的事务编号
+    //transaction ID of the TL link to which the read request is dispatched
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))
     val nonConherentRequsetSourceID = Valid(UInt(MemorysourceMaxNumBitSize.W))
 
-    //Memoryloader一定能保证收回！
+    //the MemoryLoader is guaranteed to receive the response back!
     val Response = DecoupledIO(new Bundle{
         val ReseponseData = UInt(MMUDataWidth.W)
         val ReseponseConherent = Bool()
@@ -1198,21 +1218,21 @@ class LocalMMUIO(implicit p: Parameters) extends CuteBundle{
 
 class MMU2TLIO(implicit p: Parameters) extends CuteBundle{
 
-    //发出的访存请求
+    //issued memory request
     val Request = Flipped(DecoupledIO(new Bundle{
         val RequestPhysicalAddr = UInt(MMUAddrWidth.W)
         val RequestConherent = Bool()
         val RequestData = UInt(MMUDataWidth.W)
         val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
         val RequestType_isWrite = Bool()
-        val RequestMask = UInt(MMUMaskWidth.W) //MMU的Mask
+        val RequestMask = UInt(MMUMaskWidth.W) //MMU mask
         val MatrixIsAcc = Bool() // false for A/B matrix (tile matrix register), true for C matrix (accumulation matrix register)
     }))
-    //读请求分发到的TL Link的事务编号
+    //transaction ID of the TL link to which the read request is dispatched
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))
     val nonConherentRequsetSourceID = Valid(UInt(MemorysourceMaxNumBitSize.W))
 
-    //Memoryloader一定能保证收回！
+    //the MemoryLoader is guaranteed to receive the response back!
     val Response = DecoupledIO(new Bundle{
         val ReseponseData = UInt(MMUDataWidth.W)
         val ReseponseConherent = Bool()
@@ -1346,7 +1366,7 @@ class FReducePEDataType {
 
 }
 
-//数据类型的样板类
+//data type template class
 case object  ElementDataType extends Field[UInt]{
     val DataTypeBitWidth = 4
     val DataTypeUndef   = 0.U(DataTypeBitWidth.W)
@@ -1356,7 +1376,7 @@ case object  ElementDataType extends Field[UInt]{
     val DataTypeWidth4  = 7.U(DataTypeBitWidth.W)
 }
 
-//工作任务的样板类
+//work-task template class
 case object  CUTETaskType extends Field[UInt]{
     val CUTETaskBitWidth = 8
     val TaskTypeUndef = 0.U(CUTETaskBitWidth.W)
@@ -1367,19 +1387,19 @@ case object  CUTETaskType extends Field[UInt]{
 case object  CMemoryLoaderTaskType extends Field[UInt]{
     val TypeBitWidth = 4
     val TaskTypeUndef = 0.U(TypeBitWidth.W)
-    val TaskTypeTensorZeroLoad = 1.U(TypeBitWidth.W) //直接将数据填充为0，实际上是什么也没做，默认可以写入SRAM，无视以前SRAM里面的数据即可
-    val TaskTypeTensorRepeatRowLoad = 2.U(TypeBitWidth.W) //重复加载一行数据，实际上是什么也没做，默认可以写入SRAM，无视以前SRAM里面的数据即可
-    val TaskTypeTensorLoad = 3.U(TypeBitWidth.W) //完整的加载所有数据
+    val TaskTypeTensorZeroLoad = 1.U(TypeBitWidth.W) //fill the data with 0 directly; in practice this does nothing, and it can write to SRAM by default, ignoring previous SRAM contents
+    val TaskTypeTensorRepeatRowLoad = 2.U(TypeBitWidth.W) //load one row repeatedly; in practice this does nothing, and it can write to SRAM by default, ignoring previous SRAM contents
+    val TaskTypeTensorLoad = 3.U(TypeBitWidth.W) //load all data completely
 }
 case object  MemoryOrderType extends Field[UInt]{
     val MemoryOrderTypeBitWidth = 8
     val OrderTypeUndef      = 0.U(MemoryOrderTypeBitWidth.W)
-    val OrderType_Mb_Kb     = 1.U(MemoryOrderTypeBitWidth.W) //在地址空间中顺序摆放的顺序, Mb在前，Kb在后
-    val OrderType_Mb_Nb     = 1.U(MemoryOrderTypeBitWidth.W) //在地址空间中顺序摆放的顺序, Mb在前，Nb在后
-    val OrderType_Nb_Kb     = 1.U(MemoryOrderTypeBitWidth.W) //在地址空间中顺序摆放的顺序, Nb在前，Kb在后
-    val OrderType_Nb_Mb     = 2.U(MemoryOrderTypeBitWidth.W) //在地址空间中顺序摆放的顺序, Nb在前，Mb在后
-    val OrderType_Kb_Mb     = 2.U(MemoryOrderTypeBitWidth.W) //在地址空间中顺序摆放的顺序, Kb在前，Mb在后
-    val OrderType_Kb_Nb     = 2.U(MemoryOrderTypeBitWidth.W) //在地址空间中顺序摆放的顺序, Kb在前，Nb在后
+    val OrderType_Mb_Kb     = 1.U(MemoryOrderTypeBitWidth.W) //ordering in address space, with Mb first and Kb after
+    val OrderType_Mb_Nb     = 1.U(MemoryOrderTypeBitWidth.W) //ordering in address space, with Mb first and Nb after
+    val OrderType_Nb_Kb     = 1.U(MemoryOrderTypeBitWidth.W) //ordering in address space, with Nb first and Kb after
+    val OrderType_Nb_Mb     = 2.U(MemoryOrderTypeBitWidth.W) //ordering in address space, with Nb first and Mb after
+    val OrderType_Kb_Mb     = 2.U(MemoryOrderTypeBitWidth.W) //ordering in address space, with Kb first and Mb after
+    val OrderType_Kb_Nb     = 2.U(MemoryOrderTypeBitWidth.W) //ordering in address space, with Kb first and Nb after
 
 }
 
@@ -1399,11 +1419,11 @@ class MatrixRegTaskDecode(MatrixRegTask: UInt) extends Field[UInt]{
 
 case object MatrixRegTaskType extends Field[UInt]{
     val TaskTypeBitWidth = 4
-    // 对于单个MatrixReg，其并发的数据来源一共用3个，所以用3bit来表示。
-    // 1. DataController对PE的输入数据的对MatrixReg读请求
-    // 2. DataController将PE的输出结果送入MatrixReg写请求
-    // 3. MemoryLoader对MatrixReg的写请求
-    // 我们不知道MatrixReg的读写端口数量，所以用使能信号表示接受的数据来源
+    // for a single MatrixReg, there are three concurrent data sources, so they are encoded with 3 bits
+    // 1. DataController read requests to MatrixReg for PE input data
+    // 2. DataController write requests that send PE outputs into MatrixReg
+    // 3. MemoryLoader write requests to MatrixReg
+    // we do not know the number of MatrixReg read/write ports, so we use enable signals to indicate accepted data sources
     val EnableReadFromDataController = 1.U(TaskTypeBitWidth.W)
     val EnableWriteFromDataController = 2.U(TaskTypeBitWidth.W)
     val EnableWriteFromMemoryLoader = 4.U(TaskTypeBitWidth.W)
