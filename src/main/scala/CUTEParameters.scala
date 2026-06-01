@@ -41,6 +41,25 @@ class DebugInfoIO()(implicit p: Parameters) extends CuteBundle{
 
 case object CuteParamsKey extends Field[CuteParams]
 
+case object MteComputeType extends Field[UInt] {
+    val ComputeTypeBitWidth = 4
+    val ComputeTypeUndef = 15.U(ComputeTypeBitWidth.W)
+
+    val I8I8I32 = 0.U(ComputeTypeBitWidth.W)
+    val F16F16F32 = 1.U(ComputeTypeBitWidth.W)
+    val BF16BF16F32 = 2.U(ComputeTypeBitWidth.W)
+    val TF32TF32F32 = 3.U(ComputeTypeBitWidth.W)
+    val I8U8I32 = 4.U(ComputeTypeBitWidth.W)
+    val U8I8I32 = 5.U(ComputeTypeBitWidth.W)
+    val U8U8I32 = 6.U(ComputeTypeBitWidth.W)
+    val Mxfp8e4m3F32 = 7.U(ComputeTypeBitWidth.W)
+    val Mxfp8e5m2F32 = 8.U(ComputeTypeBitWidth.W)
+    val Nvfp4F32 = 9.U(ComputeTypeBitWidth.W)
+    val Mxfp4F32 = 10.U(ComputeTypeBitWidth.W)
+    val Fp8e4m3F32 = 11.U(ComputeTypeBitWidth.W)
+    val Fp8e5m2F32 = 12.U(ComputeTypeBitWidth.W)
+}
+
 case class MatrixIsaParams(
     enableInt4Int32: Boolean = false,
     enableInt8Int32: Boolean = false,
@@ -53,6 +72,9 @@ case class MatrixIsaParams(
     enableFp16Fp32: Boolean = false,
     enableTf32Fp32: Boolean = false,
     enableFp32Fp32: Boolean = false,
+    enableMxfp4Fp32: Boolean = false,
+    enableMxfp8Fp32: Boolean = false,
+    enableNvfp4Fp32: Boolean = false,
 ) {
     assert(enableInt84Int32 == false, "enableInt84Int32 is not supported now")
     assert(enableFp32Fp32 == false, "enableFp32Fp32 is not supported now")
@@ -61,14 +83,16 @@ case class MatrixIsaParams(
         enableInt4Int32 || enableInt8Int32 || enableInt84Int32 ||
         enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16 ||
         enableFp16Fp16 || enableBf16Fp32 || enableFp16Fp32 ||
-        enableFp32Fp32 || enableTf32Fp32
+        enableFp32Fp32 || enableTf32Fp32 ||
+        enableMxfp4Fp32 || enableMxfp8Fp32 || enableNvfp4Fp32
     
     def enable4BitSrc: Boolean =
-        enableInt4Int32
+        enableInt4Int32 || enableMxfp4Fp32 || enableNvfp4Fp32
 
     def enable8BitSrc: Boolean =
         enableInt8Int32 || enableInt84Int32 ||
-        enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16
+        enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16 ||
+        enableMxfp8Fp32
     
     def enable16BitSrc: Boolean =
         enableFp16Fp16 || enableBf16Fp32 || enableFp16Fp32
@@ -93,6 +117,11 @@ case class MatrixIsaParams(
         enableTf32Fp32
     
     def enable64BitDst: Boolean = false
+
+    def enableScalingFactor: Boolean =
+        enableNvfp4Fp32 || enableMxfp4Fp32 || enableMxfp8Fp32
+    def enableFp4withsf: Boolean =
+        enableNvfp4Fp32 || enableMxfp4Fp32
 }
 
 trait CuteParamsKey{
@@ -127,10 +156,29 @@ object CuteParams {
         Tensor_K = 64,
         Matrix_MN = 8,
         ReduceWidthByte = 32,
-        // Debug = CuteDebugParams.AMLDebugEnable
     )
 
-    def CUTE_8Tops_128SCP = baseParams.copy(
+    def CUTE_32Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_MN = 256,
+        Tensor_K = 64,
+        Matrix_MN = 16,
+        ReduceWidthByte = 32,
+    )
+
+    def CUTE_16Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_MN = 128,
+        Tensor_K = 64,
+        Matrix_MN = 8,
+        ReduceWidthByte = 64,
+    )
+
+    def CUTE_8Tops = baseParams.copy(
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
@@ -149,14 +197,14 @@ object CuteParams {
         // Debug = CuteDebugParams.AMLDebugEnable
     )
 
-    def CUTE_32Tops_128SCP = baseParams.copy(
+    def CUTE_4Tops = baseParams.copy(
         outsideDataWidth = 512,
         LLCSourceMaxNum = 64,
         MemorysourceMaxNum = 64,
         Tensor_MN = 256,
         Tensor_K = 64,
-        Matrix_MN = 16,
-        ReduceWidthByte = 32,
+        Matrix_MN = 4,
+        ReduceWidthByte = 64,
         MatrixExtension = MatrixIsaParams(
             enableInt8Int32 = true,
             enableFp8Fp32 = true,
@@ -184,6 +232,71 @@ object CuteParams {
             enableFp16Fp16 = true,
             enableBf16Fp32 = true,
         ),
+        // Debug = CuteDebugParams.AMLDebugEnable
+    )
+
+    def CUTE_1Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_MN = 64,
+        Tensor_K = 64,
+        Matrix_MN = 4,
+        ReduceWidthByte = 64,
+        // Debug = CuteDebugParams.AMLDebugEnable
+    )
+
+    def CUTE_05Tops = baseParams.copy(
+        outsideDataWidth = 512,
+        LLCSourceMaxNum = 64,
+        MemorysourceMaxNum = 64,
+        Tensor_MN = 64,
+        Tensor_K = 64,
+        Matrix_MN = 4,
+        ReduceWidthByte = 32,
+        // Debug = CuteDebugParams.AMLDebugEnable
+    )
+
+    def CUTE_512SCP(params: CuteParams) = params.copy(
+        Tensor_MN = 512,
+        Tensor_K = 64,
+    )
+
+    def CUTE_256SCP(params: CuteParams) = params.copy(
+        Tensor_MN = 256,
+        Tensor_K = 64,
+    )
+
+    def CUTE_128SCP(params: CuteParams) = params.copy(
+        Tensor_MN = 128,
+        Tensor_K = 64,
+    )
+
+    def CUTE_64SCP(params: CuteParams) = params.copy(
+        Tensor_MN = 64,
+        Tensor_K = 64,
+    )
+
+    def CUTE_32Tops_512SCP  = CUTE_512SCP(CUTE_32Tops)
+    def CUTE_16Tops_512SCP  = CUTE_512SCP(CUTE_16Tops)
+    def CUTE_8Tops_512SCP   = CUTE_512SCP(CUTE_8Tops)
+    def CUTE_4Tops_512SCP   = CUTE_512SCP(CUTE_4Tops)
+    def CUTE_16Tops_256SCP  = CUTE_256SCP(CUTE_16Tops)
+    def CUTE_8Tops_256SCP   = CUTE_256SCP(CUTE_8Tops)
+    def CUTE_4Tops_256SCP   = CUTE_256SCP(CUTE_4Tops)
+    def CUTE_2Tops_256SCP   = CUTE_256SCP(CUTE_2Tops)
+    def CUTE_8Tops_128SCP   = CUTE_128SCP(CUTE_8Tops)
+    def CUTE_4Tops_128SCP   = CUTE_128SCP(CUTE_4Tops)
+    def CUTE_2Tops_128SCP   = CUTE_128SCP(CUTE_2Tops)
+    def CUTE_1Tops_128SCP   = CUTE_128SCP(CUTE_1Tops)
+    def CUTE_4Tops_64SCP    =  CUTE_64SCP(CUTE_4Tops)
+    def CUTE_2Tops_64SCP    =  CUTE_64SCP(CUTE_2Tops)
+    def CUTE_1Tops_64SCP    =  CUTE_64SCP(CUTE_1Tops)
+    def CUTE_05Tops_64SCP   =  CUTE_64SCP(CUTE_05Tops)
+
+
+    def CUTE_4Tops_128SCP_debug   = CUTE_4Tops_128SCP.copy(
+        Debug = CuteDebugParams.AllDebugOn
     )
 
     def CUTE_2Tops_debug = baseParams.copy(
@@ -343,8 +456,16 @@ object CuteFPEParams {
 }
 
 case class CuteFPEParams(
+    // 目前是固定的
+    val MinGroupSize :Int = 16,
+    val MinDataTypeWidth : Int = 4,
+    val ScaleElementWidth : Int = 8,
+    //
+
     val cmptreelayers :Int = 4,
-    val P3AddNum :Int = 4,
+    val fp8cmptreelayers :Int = 4,
+    // 目前固定，与FP4刚好公用，不要动
+    val FP4P0AddNum :Int = 2,
 )
 
 case class CuteParams(
@@ -375,7 +496,7 @@ case class CuteParams(
 
     //矩阵乘计算单元MTE的形状
     val Matrix_MN :Int = 4,     //Matrix_MN，代表TE执行的矩阵乘法的M与N的大小
-    val ReduceWidthByte :Int = 32,   //ReduceWidthByte 代表ReducePE进行内积时的数据宽度，单位是字节
+    val ReduceWidthByte :Int = 64,   //ReduceWidthByte 代表ReducePE进行内积时的数据宽度，单位是字节
     val ResultWidthByte :Int = 4,    //ResultWidthByte 代表ReducePE的结果宽度，单位是字节
 
     val ResultFIFODepth :Int = 8,    //乘累加FIFO的深度
@@ -402,6 +523,10 @@ case class CuteParams(
 ) {
 
     //所有参数都必须是2的n次方
+    // require(ReduceWidthByte == 64, "FP8/4 now only support 512 bit reduce width")
+    require(outsideDataWidth == 512 || outsideDataWidth == 256, "currently only support 512/256 bit outsideDataWidth")
+    require(ReduceWidthByte == 64 || ReduceWidthByte == 32, "currently only support 512/256 bit ReduceWidth")
+    require(outsideDataWidth >= ReduceWidthByte * 8, "outsideDataWidth must be larger than or equal to ReduceWidthByte")
     require((outsideDataWidth & (outsideDataWidth - 1)) == 0, "outsideDataWidth must be power of 2")
     require((MemoryDataWidth & (MemoryDataWidth - 1)) == 0, "MemoryDataWidth must be power of 2")
     require((VectorWidth & (VectorWidth - 1)) == 0, "VectorWidth must be power of 2")
@@ -411,7 +536,7 @@ case class CuteParams(
     require((KernelSizeMax & (KernelSizeMax - 1)) == 0, "KernelSizeMax must be power of 2")
     require((StrideSizeMax & (StrideSizeMax - 1)) == 0, "StrideSizeMax must be power of 2")
     require((ApplicationMaxTensorSize & (ApplicationMaxTensorSize - 1)) == 0, "ApplicationMaxTensorSize must be power of 2")
-    require((MMUAddrWidth & (MMUAddrWidth - 1)) == 0, "MMUAddrWidth must be power of 2" )
+    // require((MMUAddrWidth & (MMUAddrWidth - 1)) == 0, "MMUAddrWidth must be power of 2" )
     require((LLCSourceMaxNum & (LLCSourceMaxNum - 1)) == 0, "LLCSourceMaxNum must be power of 2")
     require((MemorysourceMaxNum & (MemorysourceMaxNum - 1)) == 0, "MemorysourceMaxNum must be power of 2")
     require((Tensor_MN & (Tensor_MN - 1)) == 0, "Tensor_MN must be power of 2")
@@ -427,6 +552,9 @@ case class CuteParams(
     require((VecTaskInstBufferDepth & (VecTaskInstBufferDepth - 1)) == 0, "VecTaskInstBufferDepth must be power of 2")
     require((VecTaskInstBufferSize & (VecTaskInstBufferSize - 1)) == 0, "VecTaskInstBufferSize must be power of 2")
     require((VecTaskDataBufferDepth & (VecTaskDataBufferDepth - 1)) == 0, "VecTaskDataBufferDepth must be power of 2")
+    require((FPEparams.MinGroupSize == 16), "FPEparams.MinGroupSize must be 16")
+    require((FPEparams.MinDataTypeWidth == 4), "FPEparams.MinDataTypeWidth must be 4")
+    require((FPEparams.ScaleElementWidth == 8), "FPEparams.ScaleElementWidth must be 8")
 
     def outsideDataWidthByte = outsideDataWidth / 8
     def ReduceWidth = ReduceWidthByte * 8
@@ -440,6 +568,9 @@ case class CuteParams(
     def MemorysourceMaxNumBitSize = log2Ceil(MemorysourceMaxNum) + 1
     def SoureceMaxNum = math.max(LLCSourceMaxNum, MemorysourceMaxNum)
     def SoureceMaxNumBitSize = log2Ceil(SoureceMaxNum) + 1
+
+    def P3AddNum = ReduceWidth / 4 / FPEparams.MinGroupSize
+    def P2AddNum = ReduceWidth / (P3AddNum * 16)
 
     def ReduceGroupSize  = Tensor_K/ReduceWidthByte    //这里指要存的张量的K的ReduceVector的数量！不是张量的K的大小
     def MatrixRegMaxTensorDim = Math.max(Tensor_MN, Math.max(Tensor_MN, ReduceGroupSize))
@@ -457,6 +588,9 @@ case class CuteParams(
     def CMatrixRegEntryByteSize = Matrix_MN*ResultWidthByte //这个取数和存数的带宽
     def ABMatrixRegEntryBitSize = ReduceWidthByte * 8 //适合向TE供数的带宽
     def CMatrixRegEntryBitSize = Matrix_MN*ResultWidthByte * 8//这个取数和存数的带宽
+    // DiffAmuFinishEvent flattens per-bank payload into UInt(64) lanes.
+    // Use the maximum bank payload width so one event layout works for AB/C paths.
+    def DiffAmuFinishWordsPerBank = Math.max(ABMatrixRegEntryBitSize, CMatrixRegEntryBitSize) / 64
     def ABMatrixRegNBanks = Matrix_MN //注意这里与Matrix_MN有强相关性，一般是Matrix_MN的整数倍
     def CMatrixRegNBanks = Matrix_MN //方便进行reorder
     def ABMatrixReg_Total_Bandwidth = ABMatrixRegNBanks * ABMatrixRegEntryByteSize  //ABMatrixReg的总带宽
@@ -465,10 +599,18 @@ case class CuteParams(
     def CMatrixReg_Total_Bandwidth_Bit = CMatrixRegNBanks * CMatrixRegEntryByteSize * 8  //CMatrixReg的总带宽
     def ABMatrixRegBankSize = ABMatrixRegSize / ABMatrixRegNBanks
     def CMatrixRegBankSize = CMatrixRegSize / CMatrixRegNBanks
-    def ABMatrixRegBankNEntrys = ABMatrixRegBankSize / ABMatrixRegEntryByteSize
-    def CMatrixRegBankNEntrys = CMatrixRegBankSize / CMatrixRegEntryByteSize
+    def ABMatrixRegBankNEntries = ABMatrixRegBankSize / ABMatrixRegEntryByteSize
+    def CMatrixRegBankNEntries = CMatrixRegBankSize / CMatrixRegEntryByteSize
 
-    require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
+    /**
+     * Scale Factor Parameters
+     */
+    def ScaleWidth = ReduceWidthByte * 8 * FPEparams.ScaleElementWidth / FPEparams.MinDataTypeWidth / FPEparams.MinGroupSize   // 1个group的scale所需的最大位宽
+    def ABScaleSize = Tensor_MN * ReduceGroupSize * ScaleWidth
+    def ABScaleNSlices = outsideDataWidth / ScaleWidth / ReduceGroupSize  // 1个slice对应1个Tensor_K的scale的最大长度
+    def ABScaleBankNEntries = ABScaleSize / (ABScaleNSlices * ScaleWidth * ReduceGroupSize)
+
+    // require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
     require(outsideDataWidthByte <= Tensor_K, "outsideDataWidthByte must be less than or equal to Tensor_K, or a load will exceed the subtensor in micro load")
 
 }
@@ -476,103 +618,146 @@ case class CuteParams(
 trait CUTEImplParameters{
     implicit val p: Parameters
     def cuteParams: CuteParams = p(CuteParamsKey)
+    def cuteMatrixExtension: MatrixIsaParams = cuteParams.MatrixExtension
+
+    def enableMteInt8: Boolean = cuteMatrixExtension.enableInt8Int32
+    def enableMteFp8: Boolean = cuteMatrixExtension.enableFp8Fp32
+    def enableMteFp16: Boolean = cuteMatrixExtension.enableFp16Fp32 || cuteMatrixExtension.enableFp16Fp16
+    def enableMteBf16: Boolean = cuteMatrixExtension.enableBf16Fp32
+    def enableMteTf32: Boolean = cuteMatrixExtension.enableTf32Fp32
+    def enableMteNvfp4: Boolean = false
+    def enableMteMxfp8: Boolean = false
+    def enableMteMxfp4: Boolean = false
+
     def MMUParams: CuteMMUParams = cuteParams.MMUParams
     def DebugParams: CuteDebugParams = cuteParams.Debug
     def v3config: Cutev3extParams = cuteParams.v3config
     def FPEparams: CuteFPEParams = cuteParams.FPEparams
 
-    val DecodedAmuCtrlFIFODepth = 8  //解码后的AMU指令FIFO的深度
-    val DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) //解码后的AMU指令FIFO的深度
+    def DecodedAmuCtrlFIFODepth = 8  //解码后的AMU指令FIFO的深度
+    def DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) //解码后的AMU指令FIFO的深度
 
-    val ABMatrixRegCount = 4
-    val CMatrixRegCount = 4
-    val ABMatrixRegIdWidth = log2Ceil(ABMatrixRegCount)
-    val CMatrixRegIdWidth = log2Ceil(CMatrixRegCount)
+    def ABMatrixRegCount = 4
+    def CMatrixRegCount = 4
+    def ABMatrixRegIdWidth = log2Ceil(ABMatrixRegCount)
+    def CMatrixRegIdWidth = log2Ceil(CMatrixRegCount)
+    def MatrixRegIdWidth = ABMatrixRegIdWidth max CMatrixRegIdWidth
 
-    val vpnBits = MMUParams.vpnBits
-    val ppnBits = MMUParams.ppnBits
-    val pgIdxBits = MMUParams.pgIdxBits
-    val vaddrBits = MMUParams.vaddrBits
-    val paddrBits = MMUParams.paddrBits
-    val corePAddrBits = MMUParams.corePAddrBits
+    def vpnBits = MMUParams.vpnBits
+    def ppnBits = MMUParams.ppnBits
+    def pgIdxBits = MMUParams.pgIdxBits
+    def vaddrBits = MMUParams.vaddrBits
+    def paddrBits = MMUParams.paddrBits
+    def corePAddrBits = MMUParams.corePAddrBits
 
-    val TaskCtrl_AutoClear = v3config.TaskCtrl_AutoClear
+    def TaskCtrl_AutoClear = v3config.TaskCtrl_AutoClear
 
-    val YJPDebugEnable      = DebugParams.YJPDebugEnable
-    val YJPADCDebugEnable   = DebugParams.YJPADCDebugEnable
-    val YJPBDCDebugEnable   = DebugParams.YJPBDCDebugEnable
-    val YJPCDCDebugEnable   = DebugParams.YJPCDCDebugEnable
-    val YJPAMLDebugEnable   = DebugParams.YJPAMLDebugEnable
-    val YJPBMLDebugEnable   = DebugParams.YJPBMLDebugEnable
-    val YJPCMLDebugEnable   = DebugParams.YJPCMLDebugEnable
-    val YJPTASKDebugEnable        = DebugParams.YJPTASKDebugEnable
-    val YJPVECDebugEnable         = DebugParams.YJPVECDebugEnable
-    val YJPMACDebugEnable         = DebugParams.YJPMACDebugEnable
-    val YJPPEDebugEnable          = DebugParams.YJPPEDebugEnable
-    val YJPAfterOpsDebugEnable    = DebugParams.YJPAfterOpsDebugEnable
+    def YJPDebugEnable      = DebugParams.YJPDebugEnable
+    def YJPADCDebugEnable   = DebugParams.YJPADCDebugEnable
+    def YJPBDCDebugEnable   = DebugParams.YJPBDCDebugEnable
+    def YJPCDCDebugEnable   = DebugParams.YJPCDCDebugEnable
+    def YJPAMLDebugEnable   = DebugParams.YJPAMLDebugEnable
+    def YJPBMLDebugEnable   = DebugParams.YJPBMLDebugEnable
+    def YJPCMLDebugEnable   = DebugParams.YJPCMLDebugEnable
+    def YJPTASKDebugEnable        = DebugParams.YJPTASKDebugEnable
+    def YJPVECDebugEnable         = DebugParams.YJPVECDebugEnable
+    def YJPMACDebugEnable         = DebugParams.YJPMACDebugEnable
+    def YJPPEDebugEnable          = DebugParams.YJPPEDebugEnable
+    def YJPAfterOpsDebugEnable    = DebugParams.YJPAfterOpsDebugEnable
 
-    val ConvolutionApplicationConfigDataWidth = cuteParams.ConvolutionApplicationConfigDataWidth
-    val ConvolutionDIM_Max = cuteParams.ConvolutionDIM_Max
-    val Convolution_Input_Height_Weight_Dim_Max = cuteParams.Convolution_Input_Height_Weight_Dim_Max
-    val KernelSizeMax = cuteParams.KernelSizeMax
-    val StrideSizeMax = cuteParams.StrideSizeMax
-    val outsideDataWidth = cuteParams.outsideDataWidth
-    val outsideDataWidthByte = cuteParams.outsideDataWidthByte
-    val MemoryDataWidth = cuteParams.MemoryDataWidth
-    val ReduceWidthByte = cuteParams.ReduceWidthByte
-    val ReduceWidth = cuteParams.ReduceWidth
-    val ABMLNeedMRegFillTable = cuteParams.ABMLNeedMRegFillTable
-    val ResultWidthByte = cuteParams.ResultWidthByte
-    val ResultWidth = cuteParams.ResultWidth
-    val VectorWidth = cuteParams.VectorWidth
-    val ApplicationMaxTensorSize = cuteParams.ApplicationMaxTensorSize
-    val ApplicationMaxTensorSizeBitSize = cuteParams.ApplicationMaxTensorSizeBitSize
-    val MMUAddrWidth = cuteParams.MMUAddrWidth
-    val MMUDataWidth = cuteParams.MMUDataWidth
-    val MMUMaskWidth = cuteParams.MMUMaskWidth
-    val MMUDataWidthBitSize = cuteParams.MMUDataWidthBitSize
-    val LLCSourceMaxNum = cuteParams.LLCSourceMaxNum
-    val LLCSourceMaxNumBitSize = cuteParams.LLCSourceMaxNumBitSize
-    val MemorysourceMaxNum = cuteParams.MemorysourceMaxNum
-    val MemorysourceMaxNumBitSize = cuteParams.MemorysourceMaxNumBitSize
-    val SoureceMaxNum = cuteParams.SoureceMaxNum
-    val SoureceMaxNumBitSize = cuteParams.SoureceMaxNumBitSize
-    val Tensor_MN = cuteParams.Tensor_MN
-    val Tensor_K = cuteParams.Tensor_K
-    val MatrixRegMaxTensorDim = cuteParams.MatrixRegMaxTensorDim
-    val MatrixRegMaxTensorDimBitSize = cuteParams.MatrixRegMaxTensorDimBitSize
-    val ABMatrixRegSize = cuteParams.ABMatrixRegSize
-    val CMatrixRegSize = cuteParams.CMatrixRegSize
-    val Matrix_MN = cuteParams.Matrix_MN
-    val ABMatrixRegEntryByteSize = cuteParams.ABMatrixRegEntryByteSize
-    val CMatrixRegEntryByteSize = cuteParams.CMatrixRegEntryByteSize
-    val ABMatrixRegEntryBitSize = cuteParams.ABMatrixRegEntryBitSize
-    val CMatrixRegEntryBitSize = cuteParams.CMatrixRegEntryBitSize
-    val ABMatrixRegNBanks = cuteParams.ABMatrixRegNBanks
-    val CMatrixRegNBanks = cuteParams.CMatrixRegNBanks
-    val ABMatrixReg_Total_Bandwidth = cuteParams.ABMatrixReg_Total_Bandwidth
-    val CMatrixReg_Total_Bandwidth = cuteParams.CMatrixReg_Total_Bandwidth
-    val ABMatrixReg_Total_Bandwidth_Bit = cuteParams.ABMatrixReg_Total_Bandwidth_Bit
-    val CMatrixReg_Total_Bandwidth_Bit = cuteParams.CMatrixReg_Total_Bandwidth_Bit
-    val ABMatrixRegBankSize = cuteParams.ABMatrixRegBankSize
-    val CMatrixRegBankSize = cuteParams.CMatrixRegBankSize
-    val ABMatrixRegBankNEntrys = cuteParams.ABMatrixRegBankNEntrys
-    val CMatrixRegBankNEntrys = cuteParams.CMatrixRegBankNEntrys
-    val ResultFIFODepth = cuteParams.ResultFIFODepth
-    val AMemoryLoaderReadFromMemoryFIFODepth = cuteParams.AMemoryLoaderReadFromMemoryFIFODepth
-    val BMemoryLoaderReadFromMemoryFIFODepth = cuteParams.BMemoryLoaderReadFromMemoryFIFODepth
-    val CMemoryLoaderReadFromMatrixRegFIFODepth = cuteParams.CMemoryLoaderReadFromMatrixRegFIFODepth
-    val CMemoryLoaderReadFromMemoryFIFODepth = cuteParams.CMemoryLoaderReadFromMemoryFIFODepth
-    val VecTaskInstBufferDepth = cuteParams.VecTaskInstBufferDepth
-    val VecTaskInstBufferSize = cuteParams.VecTaskInstBufferSize
-    val VecTaskDataBufferDepth = cuteParams.VecTaskDataBufferDepth
-    val ReduceGroupSize = cuteParams.ReduceGroupSize
-    val EnableDifftest = cuteParams.EnableDifftest
-    val L2NBanks = cuteParams.L2NBanks
+    def ConvolutionApplicationConfigDataWidth = cuteParams.ConvolutionApplicationConfigDataWidth
+    def ConvolutionDIM_Max = cuteParams.ConvolutionDIM_Max
+    def Convolution_Input_Height_Weight_Dim_Max = cuteParams.Convolution_Input_Height_Weight_Dim_Max
+    def KernelSizeMax = cuteParams.KernelSizeMax
+    def StrideSizeMax = cuteParams.StrideSizeMax
+    def outsideDataWidth = cuteParams.outsideDataWidth
+    def outsideDataWidthByte = cuteParams.outsideDataWidthByte
+    def MemoryDataWidth = cuteParams.MemoryDataWidth
+    def ReduceWidthByte = cuteParams.ReduceWidthByte
+    def ReduceWidth = cuteParams.ReduceWidth
+    def mxfp8ScaleWidth = ReduceWidth * 8 / 8 / 32 //一个PE每周期接受的总scale的宽度，[单个scale宽度(8bit)，单个element的宽度(4bit)，groupsize(32)]
+    def nvfp4ScaleWidth = ReduceWidth * 8 / 4 / 16 //一个PE每周期接受的总scale的宽度，[单个scale宽度(8bit)，单个element的宽度(4bit)，groupsize(16)]
+    def mxfp4ScaleWidth = ReduceWidth * 8 / 4 / 32 //一个PE每周期接受的总scale的宽度，[单个scale宽度(8bit)，单个element的宽度(4bit)，groupsize(32)]
+    def ABMLNeedMRegFillTable = cuteParams.ABMLNeedMRegFillTable
+    def ResultWidthByte = cuteParams.ResultWidthByte
+    def ResultWidth = cuteParams.ResultWidth
+    def VectorWidth = cuteParams.VectorWidth
+    def ApplicationMaxTensorSize = cuteParams.ApplicationMaxTensorSize
+    def ApplicationMaxTensorSizeBitSize = cuteParams.ApplicationMaxTensorSizeBitSize
+    def MMUAddrWidth = cuteParams.MMUAddrWidth
+    def MMUDataWidth = cuteParams.MMUDataWidth
+    def MMUMaskWidth = cuteParams.MMUMaskWidth
+    def MMUDataWidthBitSize = cuteParams.MMUDataWidthBitSize
+    def LLCSourceMaxNum = cuteParams.LLCSourceMaxNum
+    def LLCSourceMaxNumBitSize = cuteParams.LLCSourceMaxNumBitSize
+    def MemorysourceMaxNum = cuteParams.MemorysourceMaxNum
+    def MemorysourceMaxNumBitSize = cuteParams.MemorysourceMaxNumBitSize
+    def SoureceMaxNum = cuteParams.SoureceMaxNum
+    def SoureceMaxNumBitSize = cuteParams.SoureceMaxNumBitSize
+    def Tensor_MN = cuteParams.Tensor_MN
+    def Tensor_K = cuteParams.Tensor_K
+    def MatrixRegMaxTensorDim = cuteParams.MatrixRegMaxTensorDim
+    def MatrixRegMaxTensorDimBitSize = cuteParams.MatrixRegMaxTensorDimBitSize
+    def ABMatrixRegSize = cuteParams.ABMatrixRegSize
+    def CMatrixRegSize = cuteParams.CMatrixRegSize
+    def Matrix_MN = cuteParams.Matrix_MN
+    def ABMatrixRegEntryByteSize = cuteParams.ABMatrixRegEntryByteSize
+    def CMatrixRegEntryByteSize = cuteParams.CMatrixRegEntryByteSize
+    def ABMatrixRegEntryBitSize = cuteParams.ABMatrixRegEntryBitSize
+    def CMatrixRegEntryBitSize = cuteParams.CMatrixRegEntryBitSize
+    def DiffAmuFinishWordsPerBank = cuteParams.DiffAmuFinishWordsPerBank
+    def ABMatrixRegNBanks = cuteParams.ABMatrixRegNBanks
+    def CMatrixRegNBanks = cuteParams.CMatrixRegNBanks
+    def ABMatrixReg_Total_Bandwidth = cuteParams.ABMatrixReg_Total_Bandwidth
+    def CMatrixReg_Total_Bandwidth = cuteParams.CMatrixReg_Total_Bandwidth
+    def ABMatrixReg_Total_Bandwidth_Bit = cuteParams.ABMatrixReg_Total_Bandwidth_Bit
+    def CMatrixReg_Total_Bandwidth_Bit = cuteParams.CMatrixReg_Total_Bandwidth_Bit
+    def ABMatrixRegBankSize = cuteParams.ABMatrixRegBankSize
+    def CMatrixRegBankSize = cuteParams.CMatrixRegBankSize
+    def ABMatrixRegBankNEntries = cuteParams.ABMatrixRegBankNEntries
+    def CMatrixRegBankNEntries = cuteParams.CMatrixRegBankNEntries
+    def ScaleWidth = cuteParams.ScaleWidth
+    def ABScaleBankNEntries = cuteParams.ABScaleBankNEntries
+    def ABScaleNSlices = cuteParams.ABScaleNSlices
+    def ResultFIFODepth = cuteParams.ResultFIFODepth
+    def AMemoryLoaderReadFromMemoryFIFODepth = cuteParams.AMemoryLoaderReadFromMemoryFIFODepth
+    def BMemoryLoaderReadFromMemoryFIFODepth = cuteParams.BMemoryLoaderReadFromMemoryFIFODepth
+    def CMemoryLoaderReadFromMatrixRegFIFODepth = cuteParams.CMemoryLoaderReadFromMatrixRegFIFODepth
+    def CMemoryLoaderReadFromMemoryFIFODepth = cuteParams.CMemoryLoaderReadFromMemoryFIFODepth
+    def VecTaskInstBufferDepth = cuteParams.VecTaskInstBufferDepth
+    def VecTaskInstBufferSize = cuteParams.VecTaskInstBufferSize
+    def VecTaskDataBufferDepth = cuteParams.VecTaskDataBufferDepth
+    def ReduceGroupSize = cuteParams.ReduceGroupSize
+    def EnableDifftest = cuteParams.EnableDifftest
+    def L2NBanks = cuteParams.L2NBanks
 
-    val cmptreelayers = FPEparams.cmptreelayers //FPE的计算树层数
-    val P3AddNum :Int = FPEparams.P3AddNum //FPE的P3加法器的数量
-    val P2AddNum :Int = ReduceWidth / (P3AddNum * 16)
+    def MinGroupSize = FPEparams.MinGroupSize //FPE的最小计算组大小
+    def MinDataTypeWidth = FPEparams.MinDataTypeWidth //FPE的最小数据类型宽度
+    def ScaleElementWidth = FPEparams.ScaleElementWidth //FPE的scale元素宽
+
+    def cmptreelayers = FPEparams.cmptreelayers //FPE的计算树层数
+    def fp8cmptreelayers = FPEparams.fp8cmptreelayers 
+
+    def P3AddNum :Int = cuteParams.P3AddNum //FPE的P3加法器的数量
+    def P2AddNum :Int = cuteParams.P2AddNum
+
+    def FP4P0AddNum :Int = FPEparams.FP4P0AddNum
+    def FP4P1AddNum :Int = 16 / FP4P0AddNum
+
+    def ScaleVecWidth(computeType : UInt) : UInt = {
+        val scaleVecWidth = Wire(UInt(4.W))
+        scaleVecWidth := 0.U
+        switch(computeType){
+        is (MteComputeType.Mxfp8e4m3F32) { scaleVecWidth := (ReduceWidthByte * 8 / 8 / 32).U }
+        is (MteComputeType.Mxfp8e5m2F32) { scaleVecWidth := (ReduceWidthByte * 8 / 8 / 32).U }
+        is (MteComputeType.Nvfp4F32) { scaleVecWidth := (ReduceWidthByte * 8 / 4 / 16).U }
+        is (MteComputeType.Mxfp4F32) { scaleVecWidth := (ReduceWidthByte * 8 / 4 / 32).U }
+        }
+        scaleVecWidth
+    }
+
+    def DEBUG_FP8 = false
+    def DEBUG_FP4 = false
 }
 
 class CuteModule(implicit val p: Parameters) extends Module with CUTEImplParameters
@@ -583,7 +768,7 @@ class AfterOpsInterface()(implicit p: Parameters) extends CuteBundle{
     //每拍可接受一个来自CDC的与MReg和TE等宽的数据，并在自己模块内完成数据的拆分、重排、缩放、转置以及其他复杂向量任务
     val CDCDataToInterface     = DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W))
     val InterfaceToCDCData     = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
-    // val CDCStoreAddr                        = Input(UInt(log2Ceil(CMatrixRegBankNEntrys).W))
+    // val CDCStoreAddr                        = Input(UInt(log2Ceil(CMatrixRegBankNEntries).W))
 
     val VecInstQueueID = UInt(1.W)
 }
@@ -669,13 +854,7 @@ class AfterOpsMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val CUTEuop                         = (new CUTE_uop)
 }
 
-class ADCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationTensor_A = (new Bundle{
-        // val ApplicationTensor_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
-        // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))
-        val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
-    })
-
+class ADCMicroTaskConfigBaseIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
@@ -689,13 +868,15 @@ class ADCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
 }
 
-class BDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationTensor_B = (new Bundle{
-        // val ApplicationTensor_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
-        // val BlockTensor_B_BaseVaddr         = (UInt(MMUAddrWidth.W))
-        val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
-    })
+class ADCMicroTaskConfigIO()(implicit p: Parameters) extends ADCMicroTaskConfigBaseIO {
+    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+}
 
+class ASCMicroTaskConfigIO()(implicit p: Parameters) extends ADCMicroTaskConfigBaseIO {
+    val computeType                       = UInt(MteComputeType.ComputeTypeBitWidth.W)
+}
+
+class BDCMicroTaskConfigBaseIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
@@ -707,6 +888,14 @@ class BDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
     val MicroTaskEndValid                        = Flipped(Bool())//已完成当前任务
     val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+}
+
+class BDCMicroTaskConfigIO()(implicit p: Parameters) extends BDCMicroTaskConfigBaseIO {
+    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+}
+
+class BSCMicroTaskConfigIO()(implicit p: Parameters) extends BDCMicroTaskConfigBaseIO {
+    val computeType                       = UInt(MteComputeType.ComputeTypeBitWidth.W)
 }
 
 class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -754,6 +943,12 @@ class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
     val HasTail                         = Bool()
     val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
     val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
+}
+
+class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
+    val ApplicationScale_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
+    val BlockScale_A_BaseVaddr         = (UInt(MMUAddrWidth.W))  // 主要起作用的
+    val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
 class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -807,6 +1002,34 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
+class BSLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
+
+    val ApplicationScale_B = (new ApplicationScale_B_Info)
+
+    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+
+    val Conherent                           = (Bool())      //是否需要coherent
+
+    val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
+    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
+    val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
+    val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+}
+
+class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
+    val ApplicationTensor_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
+    val BlockTensor_B_BaseVaddr         = (UInt(MMUAddrWidth.W))
+    val ApplicationTensor_B_Stride_N    = (UInt(MMUAddrWidth.W))//下一个N需要增加多少的地址偏移量
+    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+}
+
+class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
+    val ApplicationScale_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
+    val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // 主要起作用的
+    val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
+}
+
 class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_C_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockTensor_C_BaseVaddr         = (UInt(MMUAddrWidth.W))
@@ -838,30 +1061,29 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val LoadTaskInfo = (new LoadTask_Info)
 
-    val StoreTaskInfo = (new Bundle{
-        val Is_ZeroStore = (Bool())//暂时没有传递的参数
-    })
-
     val Conherent                           = (Bool())      //是否需要coherent
     val Is_Transpose                        = (Bool())      //是否需要转置
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
 
-    val IsLoadMicroTask                     = (Bool())      //是否是Load任务
-    val IsStoreMicroTask                    = (Bool())      //是否是Store任务
+    val LoadMicroTaskReady                  = Flipped(Bool())//可配置下一个Load任务
+    val LoadMicroTaskValid                  = (Bool())       //当前Load任务的配置信息有效
+    val LoadMicroTaskEndValid               = Flipped(Bool())//已完成当前Load任务
+    val LoadMicroTaskEndReady               = (Bool())       //已知晓当前Load任务完成
 
-    val MicroTaskReady                      = Flipped(Bool())//可配置下一个任务
-    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
-    val MicroTaskEndValid                   = Flipped(Bool())//已完成当前任务
-    val MicroTaskEndReady                   = (Bool())       //已知晓当前任务完成
+    val StoreMicroTaskReady                 = Flipped(Bool())//可配置下一个Store任务
+    val StoreMicroTaskValid                 = (Bool())       //当前Store任务的配置信息有效
+    val StoreMicroTaskEndValid              = Flipped(Bool())//已完成当前Store任务
+    val StoreMicroTaskEndReady              = (Bool())       //已知晓当前Store任务完成
 
     val pc                                = Option.when(EnableDifftest) (UInt(64.W))
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
 class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    val dataType                            = Output(UInt(ElementDataType.DataTypeBitWidth.W))
+    val MicroTaskValid                      = (Bool())       //当前任务的配置信息有效
+    val computeType                         = Output(UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
 class MRegControlInfo()(implicit p: Parameters) extends CuteBundle{
@@ -881,10 +1103,19 @@ class MRegControlInfo()(implicit p: Parameters) extends CuteBundle{
 //有没有能同时读写的SRAM啊？我能保证不写同一块数据,还是先doublebuffer吧....
 //我们考虑到回数的延迟，所以DataControl与MatrixReg之间也是有fifo的。考虑到后续的SRAM是一个简单模块，fifo要加在DataControl里，让MatrixReg尽可能简单。
 class ABDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AMatrixRegBankNLines)，是输入的需要握手的数据
-    val BankAddr = Flipped(DecoupledIO(Vec(ABMatrixRegNBanks, (UInt(log2Ceil(ABMatrixRegBankNEntrys).W)))))
+    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(ABMatrixRegBankNLines)，是输入的需要握手的数据
+    val BankAddr = Flipped(DecoupledIO(Vec(ABMatrixRegNBanks, (UInt(log2Ceil(ABMatrixRegBankNEntries).W)))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
     val Data = Valid(Vec(ABMatrixRegNBanks, UInt(ABMatrixRegEntryBitSize.W)))
+    //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
+    // val Chosen = Input(Bool())
+}
+
+class ABScaleControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(ABMatrixRegBankNLines)，是输入的需要握手的数据
+    val BankAddr = Flipped(DecoupledIO(UInt(log2Ceil(ABScaleBankNEntries).W)))
+    //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
+    val Data = Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W)))
     //chosen是选择该MatrixReg的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
     // val Chosen = Input(Bool())
 }
@@ -895,17 +1126,26 @@ class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // Otherwise, active will be false.
     val active = Input(Bool())
     //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(ABMatrixRegBankNLines)，是输入的需要握手的数据
-    val BankAddr = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntrys).W))))
+    val BankAddr = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntries).W))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
     val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))
     // 每个bit控制对应1个byte是否写入
     val ByteMask = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryByteSize.W))))
 }
 
+class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(AScratchpadBankNLines)，是输入的需要握手的数据
+    val BankAddr = Flipped(Valid(UInt(log2Ceil(ABScaleBankNEntries).W)))
+    //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是ReduceWidthByte*8
+    val Data = Flipped(Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W))))
+    //chosen是选择该ScarchPad的信号，是一个bool，我们做doublebuffer，选择其一供数，选择其一加载数据
+    // val Chosen = Input(Bool())
+}
+
 class CDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     //bankaddr是对nbanks个bank，各自bank的行选信号,是一个vec，有nbanks个元素，每个元素是一个UInt，UInt的宽度是log2Ceil(CMatrixRegBankNLines)，是输入的需要握手的数据
-    val ReadBankAddr = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntrys).W)))))
-    val WriteBankAddr = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntrys).W)))))
+    val ReadBankAddr = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W)))))
+    val WriteBankAddr = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W)))))
     //bankdata是对nbanks个bank，各自bank的行数据，是一个vec，有nbanks个元素，每个元素是一个UInt
     val ReadResponseData = (Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W))))
     val WriteRequestData = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W)))))
@@ -918,17 +1158,18 @@ class CDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
 
 class CMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val ReadRequestToMatrixReg = (new Bundle{
-        val BankAddr = Flipped(Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntrys).W))))
+        val BankAddr = Flipped(Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W))))
         val ReadResponseData = ((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W)))))
     })
     val WriteRequestToMatrixReg = (new Bundle{
-        val BankAddr = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(log2Ceil(CMatrixRegBankNEntrys).W)))))
+        val BankAddr = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W)))))
         val Data = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(CMatrixRegEntryBitSize.W)))))
         val ByteMask = Flipped(Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryByteSize.W))))
     })
-
-    val ReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
-    val ReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val LoadReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val StoreReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val LoadReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val StoreReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     // val Chosen = Input(Bool())
 }
 
@@ -979,70 +1220,140 @@ class MMU2TLIO(implicit p: Parameters) extends CuteBundle{
     })
 }
 
-class FReducePEDataType(dataType: UInt){
+class FReducePEDataType {
 //0:Int8, 1:FP16, 2:BF16, 3:TF32, 4:I8 * UI8, 5:UI8 * I8, 6:UI8 * UI8
-    def AdataByteWidth: Int = dataType match {
-        case ElementDataType.DataTypeI8I8I32 => 1
-        case ElementDataType.DataTypeF16F16F32 => 2
-        case ElementDataType.DataTypeBF16BF16F32 => 2
-        case ElementDataType.DataTypeTF32TF32F32 => 4
-        case ElementDataType.DataTypeI8U8I32 => 1
-        case ElementDataType.DataTypeU8I8I32 => 1
-        case ElementDataType.DataTypeU8U8I32 => 1
-        case _ => 0 //未定义的类型，返回0字节宽度
+    def AdataByteWidth(computeType : UInt) : UInt = {
+        val dataByteWidth = Wire(UInt(3.W))
+        dataByteWidth := 0.U
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.F16F16F32)  { dataByteWidth := 2.U }
+        is (MteComputeType.BF16BF16F32) { dataByteWidth := 2.U }
+        is (MteComputeType.TF32TF32F32) { dataByteWidth := 4.U }
+        is (MteComputeType.I8U8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.U8I8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.U8U8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Fp8e4m3F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Fp8e5m2F32) { dataByteWidth := 1.U }
+        }
+        dataByteWidth
     }
 
-    def BdataByteWidth: Int = dataType match {
-        case ElementDataType.DataTypeI8I8I32 => 1
-        case ElementDataType.DataTypeF16F16F32 => 2
-        case ElementDataType.DataTypeBF16BF16F32 => 2
-        case ElementDataType.DataTypeTF32TF32F32 => 4
-        case ElementDataType.DataTypeI8U8I32 => 1
-        case ElementDataType.DataTypeU8I8I32 => 1
-        case ElementDataType.DataTypeU8U8I32 => 1
-        case _ => 0 //未定义的类型，返回0字节宽度
+    def BdataByteWidth(computeType : UInt) : UInt = {
+        val dataByteWidth = Wire(UInt(3.W))
+        dataByteWidth := 0.U
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.F16F16F32)  { dataByteWidth := 2.U }
+        is (MteComputeType.BF16BF16F32) { dataByteWidth := 2.U }
+        is (MteComputeType.TF32TF32F32) { dataByteWidth := 4.U }
+        is (MteComputeType.I8U8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.U8I8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.U8U8I32) { dataByteWidth := 1.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Fp8e4m3F32) { dataByteWidth := 1.U }
+        is (MteComputeType.Fp8e5m2F32) { dataByteWidth := 1.U }
+        }
+        dataByteWidth
     }
 
-    def CdataByteWidth: Int = dataType match {
-        case ElementDataType.DataTypeI8I8I32 => 4
-        case ElementDataType.DataTypeF16F16F32 => 4
-        case ElementDataType.DataTypeBF16BF16F32 => 4
-        case ElementDataType.DataTypeTF32TF32F32 => 4
-        case ElementDataType.DataTypeI8U8I32 => 4
-        case ElementDataType.DataTypeU8I8I32 => 4
-        case ElementDataType.DataTypeU8U8I32 => 4
-        case _ => 0 //未定义的类型，返回0字节宽度
+    def AdataBitWidth(computeType : UInt) : UInt = {
+        val dataBitWidth = Wire(UInt(6.W))
+        dataBitWidth := 0.U
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.F16F16F32)  { dataBitWidth := 16.U }
+        is (MteComputeType.BF16BF16F32) { dataBitWidth := 16.U }
+        is (MteComputeType.TF32TF32F32) { dataBitWidth := 32.U }
+        is (MteComputeType.I8U8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.U8I8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.U8U8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Nvfp4F32) { dataBitWidth := 4.U }
+        is (MteComputeType.Mxfp4F32) { dataBitWidth := 4.U }
+        is (MteComputeType.Fp8e4m3F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Fp8e5m2F32) { dataBitWidth := 8.U }
+        }
+        dataBitWidth
     }
 
-    def DdataByteWidth: Int = dataType match {
-        case ElementDataType.DataTypeI8I8I32 => 4
-        case ElementDataType.DataTypeF16F16F32 => 4
-        case ElementDataType.DataTypeBF16BF16F32 => 4
-        case ElementDataType.DataTypeTF32TF32F32 => 4
-        case ElementDataType.DataTypeI8U8I32 => 4
-        case ElementDataType.DataTypeU8I8I32 => 4
-        case ElementDataType.DataTypeU8U8I32 => 4
-        case _ => 0 //未定义的类型，返回0字节宽度
+    def BdataBitWidth(computeType : UInt) : UInt = {
+        val dataBitWidth = Wire(UInt(6.W))
+        dataBitWidth := 0.U
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.F16F16F32) { dataBitWidth := 16.U }
+        is (MteComputeType.BF16BF16F32) { dataBitWidth := 16.U }
+        is (MteComputeType.TF32TF32F32) { dataBitWidth := 32.U }
+        is (MteComputeType.I8U8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.U8I8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.U8U8I32) { dataBitWidth := 8.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Nvfp4F32) { dataBitWidth := 4.U }
+        is (MteComputeType.Mxfp4F32) { dataBitWidth := 4.U }
+        is (MteComputeType.Fp8e4m3F32) { dataBitWidth := 8.U }
+        is (MteComputeType.Fp8e5m2F32) { dataBitWidth := 8.U }
+        }
+        dataBitWidth
     }
+
+    def CdataByteWidth(computeType : UInt) : UInt = {
+        val dataByteWidth = Wire(UInt(3.W))
+        dataByteWidth := 0.U
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.F16F16F32) { dataByteWidth := 4.U }
+        is (MteComputeType.BF16BF16F32) { dataByteWidth := 4.U }
+        is (MteComputeType.TF32TF32F32) { dataByteWidth := 4.U }
+        is (MteComputeType.I8U8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.U8I8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.U8U8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Nvfp4F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp4F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Fp8e4m3F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Fp8e5m2F32) { dataByteWidth := 4.U }
+        }
+        dataByteWidth
+    }
+
+    def DdataByteWidth(computeType : UInt) : UInt = {
+        val dataByteWidth = Wire(UInt(3.W))
+        dataByteWidth := 0.U
+        switch(computeType){
+        is (MteComputeType.I8I8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.F16F16F32) { dataByteWidth := 4.U }
+        is (MteComputeType.BF16BF16F32) { dataByteWidth := 4.U }
+        is (MteComputeType.TF32TF32F32) { dataByteWidth := 4.U }
+        is (MteComputeType.I8U8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.U8I8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.U8U8I32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp8e4m3F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp8e5m2F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Nvfp4F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Mxfp4F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Fp8e4m3F32) { dataByteWidth := 4.U }
+        is (MteComputeType.Fp8e5m2F32) { dataByteWidth := 4.U }
+        }
+        dataByteWidth
+    }
+
 }
 
 //数据类型的样板类
 case object  ElementDataType extends Field[UInt]{
-    val DataTypeBitWidth = 3
+    val DataTypeBitWidth = 4
     val DataTypeUndef   = 0.U(DataTypeBitWidth.W)
     val DataTypeWidth32 = 4.U(DataTypeBitWidth.W)
     val DataTypeWidth16 = 2.U(DataTypeBitWidth.W)
     val DataTypeWidth8  = 1.U(DataTypeBitWidth.W)
     val DataTypeWidth4  = 7.U(DataTypeBitWidth.W)
-
-    val DataTypeI8I8I32     = 0.U(DataTypeBitWidth.W)     //I8 * I8 * I32
-    val DataTypeF16F16F32   = 1.U(DataTypeBitWidth.W)     //FP16 * FP16 * FP32
-    val DataTypeBF16BF16F32 = 2.U(DataTypeBitWidth.W)     //BF16 * BF16 * FP32
-    val DataTypeTF32TF32F32 = 3.U(DataTypeBitWidth.W)     //TF32 * TF32 * FP32
-    val DataTypeI8U8I32     = 4.U(DataTypeBitWidth.W)     //I8 * UI8 * I32
-    val DataTypeU8I8I32     = 5.U(DataTypeBitWidth.W)     //U8 * I8 * I32
-    val DataTypeU8U8I32     = 6.U(DataTypeBitWidth.W)     //U8 * U8 * I32
-
 }
 
 //工作任务的样板类
@@ -1111,10 +1422,13 @@ class MatrixRegTask(implicit p: Parameters) extends CuteBundle{
 }
 
 case object LocalMMUTaskType extends Field[UInt]{
-    val TaskTypeBitWidth = 2
-    val TaskTypeMax = 3
+    val TaskTypeBitWidth = 3
+    val TaskTypeMax = 6
     val AFirst = 0.U(TaskTypeBitWidth.W)
     val BFirst = 1.U(TaskTypeBitWidth.W)
-    val CFirst = 2.U(TaskTypeBitWidth.W)
+    val CLoadFirst = 2.U(TaskTypeBitWidth.W)
+    val CStoreFirst = 3.U(TaskTypeBitWidth.W)
+    val BScaleFirst = 4.U(TaskTypeBitWidth.W)
+    val AScaleFirst = 5.U(TaskTypeBitWidth.W)
     // val DFirst = 3.U(TaskTypeBitWidth.W)
 }
