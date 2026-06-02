@@ -30,6 +30,7 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val CML_MicroTask_Config = new CMLMicroTaskConfigIO
   val MTE_MicroTask_Config = new MTEMicroTaskConfigIO
   val DebugTimeStampe = Input(UInt(32.W))
+  val perfProbe = Output(new TaskControllerPerfProbe)
 }
 
 abstract class BaseTaskController(implicit p: Parameters) extends CuteModule {
@@ -194,6 +195,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   io.MTE_MicroTask_Config.MicroTaskValid := false.B
   io.MTE_MicroTask_Config.computeType := MteComputeType.ComputeTypeUndef
+  io.perfProbe := 0.U.asTypeOf(new TaskControllerPerfProbe)
 
   // ===================== ChiselDB event definitions =====================
   private val TileDimWidth = Bundles.Mtilex.width
@@ -574,6 +576,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val enqueueFire = decodedFifo.io.deq.fire
 
   val enqueueSlotIdx = Mux(windowFull, winHead, winTail)
+  val ownedWork = deqValid || (winCount =/= 0.U)
 
   // ===================== Issue dispatch bridge =====================
   val issueCtrl = issueSlot.entry.ctrl
@@ -1411,4 +1414,24 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   storeEventTable.log(storeFinishEvent, storeFinishEventEn, "StoreFinish", clock, reset)
 
   releaseEventTable.log(releaseIssueEvent, releaseIssueEventEn, "ReleaseIssue", clock, reset)
+
+  val mmaDoneType = decodeMmaComputeType(decodeMma(slots(fuCompute.ownerSlot).entry.ctrl))
+  val releaseDone = issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
+  io.perfProbe.ownedWork := ownedWork
+  io.perfProbe.retire := retireFire
+  io.perfProbe.loadADone := loadAFinishEventEn
+  io.perfProbe.loadBDone := loadBFinishEventEn
+  io.perfProbe.loadCDone := loadCFinishEventEn
+  io.perfProbe.storeDone := storeFinishEventEn
+  io.perfProbe.compDone := computeWriteCFinishEventEn
+  io.perfProbe.releaseDone := releaseDone
+  io.perfProbe.mmaNonfpDone := computeWriteCFinishEventEn && !decodeMma(slots(fuCompute.ownerSlot).entry.ctrl).isfp
+  io.perfProbe.mmaFp16Done := computeWriteCFinishEventEn && (mmaDoneType === MteComputeType.F16F16F32)
+  io.perfProbe.mmaBf16Done := computeWriteCFinishEventEn && (mmaDoneType === MteComputeType.BF16BF16F32)
+  io.perfProbe.mmaTf32Done := computeWriteCFinishEventEn && (mmaDoneType === MteComputeType.TF32TF32F32)
+  io.perfProbe.amlActive := fuAML.busy
+  io.perfProbe.bmlActive := fuBML.busy
+  io.perfProbe.cmlLoadActive := fuCMLLoad.busy
+  io.perfProbe.mteActive := fuCompute.busy
+  io.perfProbe.cmlStoreActive := fuCMLStore.busy
 }

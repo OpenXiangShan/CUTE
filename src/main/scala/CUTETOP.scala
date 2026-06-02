@@ -10,6 +10,7 @@ import org.chipsalliance.cde.config._
 class CUTETopIO()(implicit p: Parameters) extends CuteBundle{
     val mmu2llc = Flipped(new MMU2TLIO)
     val ctrl2top = Flipped(new YGJKControl)
+    val perf = Output(new CutePerfToCoreIO)
 }
 class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val io = IO(new CUTETopIO)
@@ -150,6 +151,29 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     MMU.io.LastLevelCacheTLIO <> io.mmu2llc
 
     io.ctrl2top <> TaskCtrl.io.ygjkctrl
+    val perf = WireInit(0.U.asTypeOf(new CutePerfToCoreIO))
+    perf.backendEvents(0) := TaskCtrl.io.perfProbe.ownedWork
+    perf.backendEvents(1) := TaskCtrl.io.perfProbe.retire
+    perf.backendEvents(2) := TaskCtrl.io.perfProbe.compDone
+    perf.backendEvents(3) := TaskCtrl.io.perfProbe.releaseDone
+    perf.backendEvents(4) := TaskCtrl.io.perfProbe.mteActive
+    perf.backendEvents(5) := TaskCtrl.io.perfProbe.mmaNonfpDone
+    perf.backendEvents(6) := TaskCtrl.io.perfProbe.mmaFp16Done
+    perf.backendEvents(7) := TaskCtrl.io.perfProbe.mmaBf16Done
+    perf.backendEvents(8) := TaskCtrl.io.perfProbe.mmaTf32Done
+    perf.memEvents(0) := TaskCtrl.io.perfProbe.loadADone
+    perf.memEvents(1) := TaskCtrl.io.perfProbe.loadBDone
+    perf.memEvents(2) := TaskCtrl.io.perfProbe.loadCDone
+    perf.memEvents(3) := TaskCtrl.io.perfProbe.storeDone
+    perf.memEvents(4) := TaskCtrl.io.perfProbe.amlActive
+    perf.memEvents(5) := TaskCtrl.io.perfProbe.bmlActive
+    perf.memEvents(6) := TaskCtrl.io.perfProbe.cmlLoadActive
+    perf.memEvents(7) := TaskCtrl.io.perfProbe.cmlStoreActive
+    perf.memEvents(8) := MMU.io.perfProbe.rdReq
+    perf.memEvents(9) := MMU.io.perfProbe.wrReq
+    perf.memEvents(10) := MMU.io.perfProbe.rd32BReq
+    perf.memEvents(11) := MMU.io.perfProbe.wr32BReq
+    io.perf := RegNext(perf, 0.U.asTypeOf(new CutePerfToCoreIO))
 
     //给每个 MatrixReg 的输入进行默认赋值
     

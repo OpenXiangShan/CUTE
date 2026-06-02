@@ -206,3 +206,40 @@ object Bundles {
     def arithOp()   : UInt = "b11".U
   }
 }
+
+object CutePerfEventCounts {
+  val Backend = 9
+  val Mem = 12
+}
+
+class TaskControllerPerfProbe(implicit p: Parameters) extends CuteBundle {
+  val ownedWork = Bool()
+  val retire = Bool()
+  val loadADone = Bool()
+  val loadBDone = Bool()
+  val loadCDone = Bool()
+  val storeDone = Bool()
+  val compDone = Bool()
+  val releaseDone = Bool()
+  val mmaNonfpDone = Bool()
+  val mmaFp16Done = Bool()
+  val mmaBf16Done = Bool()
+  val mmaTf32Done = Bool()
+  val amlActive = Bool()
+  val bmlActive = Bool()
+  val cmlLoadActive = Bool()
+  val mteActive = Bool()
+  val cmlStoreActive = Bool()
+}
+
+class LocalMMUPerfProbe extends Bundle {
+  val rdReq = Bool()
+  val wrReq = Bool()
+  val rd32BReq = UInt(6.W)
+  val wr32BReq = UInt(6.W)
+}
+
+class CutePerfToCoreIO(implicit p: Parameters) extends CuteBundle {
+  val backendEvents = Vec(CutePerfEventCounts.Backend, UInt(6.W))
+  val memEvents = Vec(CutePerfEventCounts.Mem, UInt(6.W))
+}
