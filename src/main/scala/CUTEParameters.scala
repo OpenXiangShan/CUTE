@@ -34,6 +34,60 @@ object WrapDec
   }
 }
 
+object ResponseChannelHelper {
+  def requireLoaderRespMode(name: String, enableTwo: Boolean, enableFour: Boolean, enableEight: Boolean): Unit = {
+    require(
+      Seq(enableTwo, enableFour, enableEight).count(identity) <= 1,
+      s"$name response channel enables must be one-hot across two/four/eight mode"
+    )
+  }
+
+  def loaderRespChannelCount(enableTwo: Boolean, enableFour: Boolean, enableEight: Boolean): Int = {
+    requireLoaderRespMode("loader", enableTwo, enableFour, enableEight)
+    if (enableEight) {
+      8
+    } else if (enableFour) {
+      4
+    } else if (enableTwo) {
+      2
+    } else {
+      1
+    }
+  }
+
+  def banksPerGroup(respChannelCount: Int, bankCount: Int = 8): Int = {
+    require(respChannelCount >= 1 && isPow2(respChannelCount), s"respChannelCount ($respChannelCount) must be a power of 2 and >= 1")
+    require(bankCount >= respChannelCount, s"bankCount ($bankCount) must be >= respChannelCount ($respChannelCount)")
+    require(bankCount % respChannelCount == 0, s"bankCount ($bankCount) must be divisible by respChannelCount ($respChannelCount)")
+    bankCount / respChannelCount
+  }
+
+  def groupIdOfBank(bankId: Int, respChannelCount: Int, bankCount: Int = 8): Int = {
+    require(bankId >= 0 && bankId < bankCount, s"bankId ($bankId) must be within [0, $bankCount)")
+    bankId / banksPerGroup(respChannelCount, bankCount)
+  }
+
+  def groupIdOfBank(bankId: UInt, respChannelCount: Int, bankCount: Int): UInt = {
+    val perGroup = banksPerGroup(respChannelCount, bankCount)
+    if (respChannelCount == 1) {
+      0.U(1.W)
+    } else {
+      (bankId / perGroup.U)(log2Ceil(respChannelCount) - 1, 0)
+    }
+  }
+
+  def groupBankBase(groupId: Int, respChannelCount: Int, bankCount: Int = 8): Int = {
+    require(groupId >= 0 && groupId < respChannelCount, s"groupId ($groupId) must be within [0, $respChannelCount)")
+    groupId * banksPerGroup(respChannelCount, bankCount)
+  }
+
+  def banksInGroup(groupId: Int, respChannelCount: Int, bankCount: Int = 8): Seq[Int] = {
+    val base = groupBankBase(groupId, respChannelCount, bankCount)
+    val perGroup = banksPerGroup(respChannelCount, bankCount)
+    base until (base + perGroup)
+  }
+}
+
 
 class DebugInfoIO()(implicit p: Parameters) extends CuteBundle{
     val DebugTimeStampe = UInt(64.W)
@@ -521,10 +575,22 @@ case class CuteParams(
 
     val MatrixExtension: MatrixIsaParams = MatrixIsaParams(),
 
+    val EnableTwoChannelAML: Boolean = false,
+    val EnableFourChannelAML: Boolean = true,
     val EnableEightChannelAML: Boolean = false, // true: AML 八通道并行访存; false: AML 单通道轮询访存
-    val EnableEightChannelBML: Boolean = true,  // true: BML 八通道并行访存; false: BML 单通道轮询访存
-    val EnableEightChannelCML: Boolean = true   // true: CML 八通道并行访存; false: CML 单通道轮询访存
+
+    val EnableTwoChannelBML: Boolean = false,
+    val EnableFourChannelBML: Boolean = true,
+    val EnableEightChannelBML: Boolean = false,  // true: BML 八通道并行访存; false: BML 单通道轮询访存
+
+    val EnableTwoChannelCML: Boolean = false,
+    val EnableFourChannelCML: Boolean = true,
+    val EnableEightChannelCML: Boolean = false// true: CML 八通道并行访存; false: CML 单通道轮询访存
 ) {
+
+    ResponseChannelHelper.requireLoaderRespMode("AML", EnableTwoChannelAML, EnableFourChannelAML, EnableEightChannelAML)
+    ResponseChannelHelper.requireLoaderRespMode("BML", EnableTwoChannelBML, EnableFourChannelBML, EnableEightChannelBML)
+    ResponseChannelHelper.requireLoaderRespMode("CML", EnableTwoChannelCML, EnableFourChannelCML, EnableEightChannelCML)
 
     //所有参数都必须是2的n次方
     // require(ReduceWidthByte == 64, "FP8/4 now only support 512 bit reduce width")
@@ -734,9 +800,18 @@ trait CUTEImplParameters{
     def ReduceGroupSize = cuteParams.ReduceGroupSize
     def EnableDifftest = cuteParams.EnableDifftest
     def L2NBanks = cuteParams.L2NBanks
+    def EnableTwoChannelAML = cuteParams.EnableTwoChannelAML
+    def EnableFourChannelAML = cuteParams.EnableFourChannelAML
     def EnableEightChannelAML = cuteParams.EnableEightChannelAML
+    def EnableTwoChannelBML = cuteParams.EnableTwoChannelBML
+    def EnableFourChannelBML = cuteParams.EnableFourChannelBML
     def EnableEightChannelBML = cuteParams.EnableEightChannelBML
+    def EnableTwoChannelCML = cuteParams.EnableTwoChannelCML
+    def EnableFourChannelCML = cuteParams.EnableFourChannelCML
     def EnableEightChannelCML = cuteParams.EnableEightChannelCML
+    def AMLResponseChannelCount = ResponseChannelHelper.loaderRespChannelCount(EnableTwoChannelAML, EnableFourChannelAML, EnableEightChannelAML)
+    def BMLResponseChannelCount = ResponseChannelHelper.loaderRespChannelCount(EnableTwoChannelBML, EnableFourChannelBML, EnableEightChannelBML)
+    def CMLResponseChannelCount = ResponseChannelHelper.loaderRespChannelCount(EnableTwoChannelCML, EnableFourChannelCML, EnableEightChannelCML)
 
     def MinGroupSize = FPEparams.MinGroupSize //FPE的最小计算组大小
     def MinDataTypeWidth = FPEparams.MinDataTypeWidth //FPE的最小数据类型宽度

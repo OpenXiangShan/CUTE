@@ -44,6 +44,60 @@ class SmokeTestSpec extends AnyFlatSpec with ChiselScalatestTester {
 class OmegaRouterSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "OmegaResponseRouter"
 
+  private val unitDataWidth = 32
+  private val unitSourceIdWidth = 16
+  private val unitBankIdWidth = 3
+  private val unitBankIdOffset = 8
+
+  private def encodeSourceId(bankId: Int, regAddr: Int = 0): BigInt = {
+    (BigInt(bankId) << unitBankIdOffset) | BigInt(regAddr)
+  }
+
+  private def initRouterInputs(dut: OmegaResponseRouter, outCount: Int): Unit = {
+    dut.io.timeStamp.poke(0.U)
+    for (i <- 0 until 8) {
+      dut.io.in(i).valid.poke(false.B)
+      dut.io.in(i).bits.data.poke(0.U)
+      dut.io.in(i).bits.sourceId.poke(0.U)
+      dut.io.in(i).bits.coherent.poke(true.B)
+    }
+    for (i <- 0 until outCount) {
+      dut.io.out(i).ready.poke(true.B)
+    }
+  }
+
+  private def runGroupedRoutingTest(outCount: Int): Unit = {
+    test(new OmegaResponseRouter(
+      n = 8,
+      dataWidth = unitDataWidth,
+      sourceIdWidth = unitSourceIdWidth,
+      bankIdWidth = unitBankIdWidth,
+      bankIdOffset = unitBankIdOffset,
+      outCount = outCount,
+      bankCount = 8,
+      debugEnable = false
+    )).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      initRouterInputs(dut, outCount)
+
+      for (bank <- 0 until 8) {
+        dut.io.in(0).valid.poke(true.B)
+        dut.io.in(0).bits.data.poke(bank.U)
+        dut.io.in(0).bits.sourceId.poke(encodeSourceId(bank).U)
+
+        val expectedOut = ResponseChannelHelper.groupIdOfBank(bank, outCount, 8)
+        for (out <- 0 until outCount) {
+          dut.io.out(out).valid.expect((if (out == expectedOut) true.B else false.B), s"bank $bank should target out $expectedOut in $outCount-channel mode")
+        }
+        dut.io.out(expectedOut).bits.data.expect(bank.U)
+        dut.io.out(expectedOut).bits.sourceId.expect(encodeSourceId(bank).U)
+        dut.io.out(expectedOut).bits.coherent.expect(true.B)
+        dut.io.in(0).ready.expect(true.B)
+
+        dut.clock.step()
+      }
+    }
+  }
+
   it should "route all responses correctly without loss or duplication" in {
     test(new OmegaRouterTestTop)
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
@@ -66,6 +120,59 @@ class OmegaRouterSpec extends AnyFlatSpec with ChiselScalatestTester {
 
       dut.io.error.expect(false.B, s"Detected error after $cycles cycles")
       dut.io.done.expect(true.B, s"Test did not finish within $maxCycles cycles (actual=$cycles)")
+    }
+  }
+
+  it should "map banks into 2 grouped outputs with contiguous segmentation" in {
+    runGroupedRoutingTest(outCount = 2)
+  }
+
+  it should "map banks into 4 grouped outputs with contiguous segmentation" in {
+    runGroupedRoutingTest(outCount = 4)
+  }
+
+  it should "keep static priority per grouped output while allowing other groups to progress" in {
+    test(new OmegaResponseRouter(
+      n = 8,
+      dataWidth = unitDataWidth,
+      sourceIdWidth = unitSourceIdWidth,
+      bankIdWidth = unitBankIdWidth,
+      bankIdOffset = unitBankIdOffset,
+      outCount = 2,
+      bankCount = 8,
+      debugEnable = false
+    )).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      initRouterInputs(dut, outCount = 2)
+
+      dut.io.in(0).valid.poke(true.B)
+      dut.io.in(0).bits.data.poke(10.U)
+      dut.io.in(0).bits.sourceId.poke(encodeSourceId(0).U)
+      dut.io.in(1).valid.poke(true.B)
+      dut.io.in(1).bits.data.poke(11.U)
+      dut.io.in(1).bits.sourceId.poke(encodeSourceId(1).U)
+      dut.io.in(2).valid.poke(true.B)
+      dut.io.in(2).bits.data.poke(24.U)
+      dut.io.in(2).bits.sourceId.poke(encodeSourceId(4).U)
+
+      dut.io.out(0).valid.expect(true.B)
+      dut.io.out(0).bits.data.expect(10.U)
+      dut.io.out(1).valid.expect(true.B)
+      dut.io.out(1).bits.data.expect(24.U)
+      dut.io.in(0).ready.expect(true.B)
+      dut.io.in(1).ready.expect(false.B)
+      dut.io.in(2).ready.expect(true.B)
+
+      dut.clock.step()
+
+      dut.io.in(0).valid.poke(false.B)
+      dut.io.in(1).valid.poke(true.B)
+      dut.io.in(1).bits.data.poke(11.U)
+      dut.io.in(1).bits.sourceId.poke(encodeSourceId(1).U)
+      dut.io.in(2).valid.poke(false.B)
+
+      dut.io.out(0).valid.expect(true.B)
+      dut.io.out(0).bits.data.expect(11.U)
+      dut.io.in(1).ready.expect(true.B)
     }
   }
 }
@@ -141,6 +248,7 @@ class OmegaSwitchBlockTop extends Module {
     router.io.in(i).valid := !fired(i)
     router.io.in(i).bits.data := i.U
     router.io.in(i).bits.sourceId := 0.U  // bankId = 0
+    router.io.in(i).bits.coherent := true.B
     when(router.io.in(i).fire) {
       fired(i) := true.B
       printf(cf"[T${timeStamp}][OmegaSwitchBlock] in($i) FIRE\n")

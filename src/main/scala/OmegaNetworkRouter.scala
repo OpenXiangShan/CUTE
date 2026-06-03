@@ -10,6 +10,7 @@ import chisel3.util._
 class RoutedResponse(val dataWidth: Int, val sourceIdWidth: Int) extends Bundle {
   val data = UInt(dataWidth.W)
   val sourceId = UInt(sourceIdWidth.W)
+  val coherent = Bool()
 }
 
 /**
@@ -78,22 +79,31 @@ class OmegaResponseRouter(
   val sourceIdWidth: Int,
   val bankIdWidth: Int,
   val bankIdOffset: Int = 0,
+  val outCount: Int = -1,
+  val bankCount: Int = -1,
   val debugEnable: Boolean = false
 ) extends Module {
-  require(isPow2(n) && n >= 2, "n must be a power of 2 and >= 2")
-  val stages = log2Ceil(n)
-  require(bankIdWidth >= stages,
-    s"bankIdWidth ($bankIdWidth) must be >= log2(n) ($stages) to address all $n channels")
+  private val outputCount = if (outCount == -1) n else outCount
+  private val totalBanks = if (bankCount == -1) n else bankCount
+
+  require(isPow2(n) && n >= 1, s"input channel count ($n) must be a power of 2 and >= 1")
+  require(isPow2(outputCount) && outputCount >= 1, s"output channel count ($outputCount) must be a power of 2 and >= 1")
+  require(isPow2(totalBanks) && totalBanks >= 1, s"bankCount ($totalBanks) must be a power of 2 and >= 1")
+  require(totalBanks >= outputCount, s"bankCount ($totalBanks) must be >= outputCount ($outputCount)")
+  require(totalBanks % outputCount == 0, s"bankCount ($totalBanks) must be divisible by outputCount ($outputCount)")
+  require(bankIdWidth >= log2Ceil(totalBanks),
+    s"bankIdWidth ($bankIdWidth) must be >= log2(bankCount) (${log2Ceil(totalBanks)}) to address all $totalBanks banks")
   require(bankIdOffset >= 0, s"bankIdOffset ($bankIdOffset) must be >= 0")
   require(bankIdOffset + bankIdWidth <= sourceIdWidth,
     s"bankId field [$bankIdOffset + $bankIdWidth - 1 : $bankIdOffset] exceeds sourceIdWidth ($sourceIdWidth)")
 
-  val regAddrWidth = sourceIdWidth - bankIdWidth
+  private val outputIdxWidth = log2Ceil(outputCount max 2)
+  private val bankIdxWidth = log2Ceil(totalBanks max 2)
 
   val io = IO(new Bundle {
     val timeStamp = Input(UInt(64.W))
     val in = Flipped(Vec(n, Decoupled(new RoutedResponse(dataWidth, sourceIdWidth))))
-    val out = Vec(n, Decoupled(new RoutedResponse(dataWidth, sourceIdWidth)))
+    val out = Vec(outputCount, Decoupled(new RoutedResponse(dataWidth, sourceIdWidth)))
   })
 
   /** Local log helper with unified timestamp format. */
@@ -110,91 +120,74 @@ class OmegaResponseRouter(
     }
   }
 
-  /** Get the routing bit for a given stage (MSB first). */
-  def routingBit(bankId: UInt, stage: Int): Bool = {
-    bankId(stages - 1 - stage).asBool
+  /** Normalize bankId width before group mapping. */
+  def normalizedBankId(sourceId: UInt): UInt = {
+    if (bankIdxWidth == 0) {
+      0.U(1.W)
+    } else {
+      extractBankId(sourceId)(bankIdxWidth - 1, 0)
+    }
   }
 
-  // Log inputs at the top level
+  /** Route to per-bank output for 8-channel mode, or to contiguous group output for 2/4-channel mode. */
+  def destinationOf(sourceId: UInt): UInt = {
+    val bankId = normalizedBankId(sourceId)
+    if (outputCount == totalBanks) {
+      bankId(outputIdxWidth - 1, 0)
+    } else {
+      ResponseChannelHelper.groupIdOfBank(bankId, outputCount, totalBanks)
+    }
+  }
+
+  val inDest = Wire(Vec(n, UInt(outputIdxWidth.W)))
   for (i <- 0 until n) {
+    inDest(i) := destinationOf(io.in(i).bits.sourceId)
     when(io.in(i).valid) {
-      val bid = extractBankId(io.in(i).bits.sourceId)
-      log(cf"in[$i] valid bankId=$bid sourceId=0x${io.in(i).bits.sourceId}%x")
+      val bid = normalizedBankId(io.in(i).bits.sourceId)
+      log(cf"in[$i] valid bankId=$bid dest=${inDest(i)} sourceId=0x${io.in(i).bits.sourceId}%x")
     }
   }
 
-  // Instantiate all switches stage-by-stage.
-  // stageSwitches(stage)(switchIdx)
-  val stageSwitches = Seq.fill(stages) {
-    Seq.fill(n / 2)(Module(new OmegaSwitch(new RoutedResponse(dataWidth, sourceIdWidth))))
+  val selectOHs = Seq.fill(outputCount)(Wire(Vec(n, Bool())))
+
+  for (i <- 0 until n) {
+    io.in(i).ready := false.B
   }
 
-  // ---- Stage 0 wiring (inputs come directly from io.in) ----
-  for (sw <- 0 until n / 2) {
-    val switch = stageSwitches(0)(sw)
+  for (outIdx <- 0 until outputCount) {
+    val candidateBits = VecInit((0 until n).map(i => io.in(i).valid && inDest(i) === outIdx.U)).asUInt
+    val selectOH = PriorityEncoderOH(candidateBits)
+    val outValid = candidateBits.orR
 
-    switch.io.in(0) <> io.in(sw * 2)
-    switch.io.in(1) <> io.in(sw * 2 + 1)
+    io.out(outIdx).valid := outValid
+    io.out(outIdx).bits := 0.U.asTypeOf(io.out(outIdx).bits)
+    when(outValid) {
+      io.out(outIdx).bits := Mux1H(selectOH, io.in.map(_.bits))
+    }
 
-    switch.io.sel(0) := routingBit(extractBankId(io.in(sw * 2).bits.sourceId), 0)
-    switch.io.sel(1) := routingBit(extractBankId(io.in(sw * 2 + 1).bits.sourceId), 0)
-  }
+    for (i <- 0 until n) {
+      selectOHs(outIdx)(i) := selectOH(i)
+    }
 
-  // ---- Intermediate stages wiring ----
-  for (stage <- 1 until stages) {
-    for (sw <- 0 until n / 2) {
-      val switch = stageSwitches(stage)(sw)
-      val prevSwitches = stageSwitches(stage - 1)
-
-      // stage k switch j input inIdx comes from stage k-1 switch
-      // (inIdx * (n/4) + j/2) output (j % 2).
-      val srcSw0 = sw / 2
-      val srcSw1 = sw / 2 + n / 4
-      val srcOut = sw % 2
-
-      switch.io.in(0).valid := prevSwitches(srcSw0).io.out(srcOut).valid
-      switch.io.in(0).bits  := prevSwitches(srcSw0).io.out(srcOut).bits
-      switch.io.in(1).valid := prevSwitches(srcSw1).io.out(srcOut).valid
-      switch.io.in(1).bits  := prevSwitches(srcSw1).io.out(srcOut).bits
-
-      prevSwitches(srcSw0).io.out(srcOut).ready := switch.io.in(0).ready
-      prevSwitches(srcSw1).io.out(srcOut).ready := switch.io.in(1).ready
-
-      switch.io.sel(0) := routingBit(extractBankId(switch.io.in(0).bits.sourceId), stage)
-      switch.io.sel(1) := routingBit(extractBankId(switch.io.in(1).bits.sourceId), stage)
-
-      // Log switch-level arbitration events
-      if (debugEnable) {
-        val in0Bid = extractBankId(switch.io.in(0).bits.sourceId)
-        val in1Bid = extractBankId(switch.io.in(1).bits.sourceId)
-        val conflict = switch.io.in(0).valid && switch.io.in(1).valid &&
-                       routingBit(in0Bid, stage) === routingBit(in1Bid, stage)
-        when(conflict) {
-          log(cf"stage=$stage sw=$sw CONFLICT in0Bank=$in0Bid in1Bank=$in1Bid -> in0 wins")
-        }
-      }
+    when(PopCount(candidateBits) > 1.U) {
+      val winner = PriorityEncoder(candidateBits)
+      log(cf"out[$outIdx] conflict candidates=0x${Hexadecimal(candidateBits)} winner=in[$winner]")
     }
   }
 
-  // ---- Final output wiring ----
-  // Because every stage performs an unshuffle (stride-by-n/2), after
-  // log2Ceil(n) stages the output order is identical to the input order.
-  // Thus io.out(j) is simply wired to last stage switch j/2 output j%2.
-  val lastSwitches = stageSwitches(stages - 1)
-  for (j <- 0 until n) {
-    val srcSw  = j / 2
-    val srcOut = j % 2
-
-    io.out(j).valid := lastSwitches(srcSw).io.out(srcOut).valid
-    io.out(j).bits  := lastSwitches(srcSw).io.out(srcOut).bits
-    lastSwitches(srcSw).io.out(srcOut).ready := io.out(j).ready
+  for (i <- 0 until n) {
+    val readyCases = (0 until outputCount).map(outIdx => selectOHs(outIdx)(i) -> io.out(outIdx).ready)
+    io.in(i).ready := MuxCase(false.B, readyCases)
+    assert(
+      PopCount(VecInit((0 until outputCount).map(outIdx => selectOHs(outIdx)(i))).asUInt) <= 1.U,
+      s"OmegaResponseRouter input $i selected by multiple outputs"
+    )
   }
 
-  // Log outputs at the top level
-  for (j <- 0 until n) {
-    when(io.out(j).valid) {
-      val bid = extractBankId(io.out(j).bits.sourceId)
-      log(cf"out[$j] valid bankId=$bid sourceId=0x${io.out(j).bits.sourceId}%x ready=${io.out(j).ready}")
+  for (outIdx <- 0 until outputCount) {
+    when(io.out(outIdx).valid) {
+      val bid = normalizedBankId(io.out(outIdx).bits.sourceId)
+      log(cf"out[$outIdx] valid bankId=$bid sourceId=0x${io.out(outIdx).bits.sourceId}%x ready=${io.out(outIdx).ready}")
     }
   }
 }

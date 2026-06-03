@@ -21,7 +21,7 @@ class AMLWrapper(implicit p: Parameters) extends CuteModule {
         val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
     })
 
-    if (EnableEightChannelAML) {
+    if (AMLResponseChannelCount > 1) {
         val inner = Module(new MultiChannelsABMemLoader("AML"))
         inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
         inner.io.ConfigInfo <> io.ConfigInfo
@@ -47,7 +47,7 @@ class BMLWrapper(implicit p: Parameters) extends CuteModule {
         val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
     })
 
-    if (EnableEightChannelBML) {
+    if (BMLResponseChannelCount > 1) {
         val inner = Module(new MultiChannelsABMemLoader("BML"))
         val bToAConfig = Wire(new AMLMicroTaskConfigIO)
         bToAConfig.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr
@@ -94,7 +94,7 @@ class CMLWrapper(implicit p: Parameters) extends CuteModule {
         val StoreMatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
     })
 
-    if (EnableEightChannelCML) {
+    if (CMLResponseChannelCount > 1) {
         val inner = Module(new MultiChannelsCMemLoader)
         inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
         inner.io.ConfigInfo <> io.ConfigInfo
@@ -121,52 +121,62 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val time_stamp = RegInit(0.U(40.W))
     time_stamp := time_stamp + 1.U
 
-    def connectWithResponseRouter(
+    def connectLoaderRequests(
         loader: LocalMMUIO,
         mmu: LocalMMUIO,
-        bankIdWidth: Int,
-        bankIdOffset: Int
+        channelCount: Int
     ): Unit = {
-        for (i <- 0 until ABMatrixRegNBanks) {
+        for (i <- 0 until channelCount) {
             mmu.Request(i) <> loader.Request(i)
         }
         loader.ConherentRequsetSourceID := mmu.ConherentRequsetSourceID
         loader.nonConherentRequsetSourceID := mmu.nonConherentRequsetSourceID
+    }
 
-        val router = Module(new OmegaResponseRouter(
-            n = ABMatrixRegNBanks,
+    def connectWithResponseBridge(
+        loader: LocalMMUIO,
+        mmu: LocalMMUIO,
+        channelCount: Int,
+        respChannelCount: Int,
+        bankIdWidth: Int,
+        bankIdOffset: Int,
+        baseDepth: Int
+    ): Unit = {
+        connectLoaderRequests(loader, mmu, channelCount)
+
+        val bridge = Module(new ResponseChannelBridge(
+            inputChannelCount = channelCount,
+            respChannelCount = respChannelCount,
+            bankCount = channelCount,
+            baseDepth = baseDepth,
             dataWidth = outsideDataWidth,
             sourceIdWidth = 64,
             bankIdWidth = bankIdWidth,
             bankIdOffset = bankIdOffset,
             debugEnable = YJPDebugEnable
         ))
-        router.io.timeStamp := time_stamp
+        bridge.io.timeStamp := time_stamp
 
-        for (i <- 0 until ABMatrixRegNBanks) {
-            router.io.in(i).valid := mmu.Response(i).valid
-            router.io.in(i).bits.data := mmu.Response(i).bits.ReseponseData
-            router.io.in(i).bits.sourceId := mmu.Response(i).bits.ReseponseSourceID
-            mmu.Response(i).ready := router.io.in(i).ready
+        for (i <- 0 until channelCount) {
+            bridge.io.in(i).valid := mmu.Response(i).valid
+            bridge.io.in(i).bits := mmu.Response(i).bits
+            mmu.Response(i).ready := bridge.io.in(i).ready
 
-            loader.Response(i).valid := router.io.out(i).valid
-            loader.Response(i).bits.ReseponseData := router.io.out(i).bits.data
-            loader.Response(i).bits.ReseponseSourceID := router.io.out(i).bits.sourceId
-            loader.Response(i).bits.ReseponseConherent := true.B
-            router.io.out(i).ready := loader.Response(i).ready
+            loader.Response(i).valid := bridge.io.out(i).valid
+            loader.Response(i).bits := bridge.io.out(i).bits
+            bridge.io.out(i).ready := loader.Response(i).ready
         }
     }
 
     def connectWithResponseArbiter(
         loader: LocalMMUIO,
-        mmu: LocalMMUIO
+        mmu: LocalMMUIO,
+        channelCount: Int
     ): Unit = {
-        for (i <- 0 until ABMatrixRegNBanks) {
-            mmu.Request(i) <> loader.Request(i)
-        }
+        connectLoaderRequests(loader, mmu, channelCount)
 
-        val arb = Module(new Arbiter(new MMUResponseIO, ABMatrixRegNBanks))
-        for (i <- 0 until ABMatrixRegNBanks) {
+        val arb = Module(new Arbiter(new MMUResponseIO, channelCount))
+        for (i <- 0 until channelCount) {
             arb.io.in(i).valid := mmu.Response(i).valid
             arb.io.in(i).bits := mmu.Response(i).bits
             mmu.Response(i).ready := arb.io.in(i).ready
@@ -175,13 +185,10 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         loader.Response(0).valid := arb.io.out.valid
         loader.Response(0).bits := arb.io.out.bits
         arb.io.out.ready := loader.Response(0).ready
-        for (i <- 1 until ABMatrixRegNBanks) {
+        for (i <- 1 until channelCount) {
             loader.Response(i).valid := false.B
             loader.Response(i).bits := DontCare
         }
-
-        loader.ConherentRequsetSourceID := mmu.ConherentRequsetSourceID
-        loader.nonConherentRequsetSourceID := mmu.nonConherentRequsetSourceID
     }
     
     val ABMatrixRegs = Seq.tabulate(ABMatrixRegCount)(i => Module(new ABMatrixReg(i))).toVector
@@ -244,17 +251,17 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     //AML的默认输入
     AML.io.ConfigInfo <> TaskCtrl.io.AML_MicroTask_Config
     AML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-    if (EnableEightChannelAML) {
-        connectWithResponseRouter(AML.io.LocalMMUIO, MMU.io.ALocalMMUIO, log2Ceil(ABMatrixRegNBanks), log2Ceil(ABMatrixRegBankNEntries))
+    if (AMLResponseChannelCount > 1) {
+        connectWithResponseBridge(AML.io.LocalMMUIO, MMU.io.ALocalMMUIO, ABMatrixRegNBanks, AMLResponseChannelCount, log2Ceil(ABMatrixRegNBanks), log2Ceil(ABMatrixRegBankNEntries), AMemoryLoaderReadFromMemoryFIFODepth)
     } else {
-        connectWithResponseArbiter(AML.io.LocalMMUIO, MMU.io.ALocalMMUIO)
+        connectWithResponseArbiter(AML.io.LocalMMUIO, MMU.io.ALocalMMUIO, ABMatrixRegNBanks)
     }
 
     ASL.foreach { asl =>
         //ASL的默认输入
         asl.io.ConfigInfo <> TaskCtrl.io.ASL_MicroTask_Config.get
         asl.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-        connectWithResponseArbiter(asl.io.LocalMMUIO, MMU.io.ASLocalMMUIO)
+        connectWithResponseArbiter(asl.io.LocalMMUIO, MMU.io.ASLocalMMUIO, ABMatrixRegNBanks)
     }
 
     //BDC的默认输入
@@ -275,17 +282,17 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     //BML的默认输入
     BML.io.ConfigInfo <> TaskCtrl.io.BML_MicroTask_Config
     BML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-    if (EnableEightChannelBML) {
-        connectWithResponseRouter(BML.io.LocalMMUIO, MMU.io.BLocalMMUIO, log2Ceil(ABMatrixRegNBanks), log2Ceil(ABMatrixRegBankNEntries))
+    if (BMLResponseChannelCount > 1) {
+        connectWithResponseBridge(BML.io.LocalMMUIO, MMU.io.BLocalMMUIO, ABMatrixRegNBanks, BMLResponseChannelCount, log2Ceil(ABMatrixRegNBanks), log2Ceil(ABMatrixRegBankNEntries), BMemoryLoaderReadFromMemoryFIFODepth)
     } else {
-        connectWithResponseArbiter(BML.io.LocalMMUIO, MMU.io.BLocalMMUIO)
+        connectWithResponseArbiter(BML.io.LocalMMUIO, MMU.io.BLocalMMUIO, ABMatrixRegNBanks)
     }
 
     BSL.foreach { bsl =>
         //BSL的默认输入
         bsl.io.ConfigInfo <> TaskCtrl.io.BSL_MicroTask_Config.get
         bsl.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-        connectWithResponseArbiter(bsl.io.LocalMMUIO, MMU.io.BSLocalMMUIO)
+        connectWithResponseArbiter(bsl.io.LocalMMUIO, MMU.io.BSLocalMMUIO, ABMatrixRegNBanks)
     }
 
     if (!cuteMatrixExtension.enableScalingFactor) {
@@ -308,12 +315,12 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     //CML的默认输入
     CML.io.ConfigInfo <> TaskCtrl.io.CML_MicroTask_Config
     CML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-    if (EnableEightChannelCML) {
-        connectWithResponseRouter(CML.io.LoadLocalMMUIO, MMU.io.CLoadLocalMMUIO, log2Ceil(CMatrixRegNBanks), log2Ceil(CMatrixRegBankNEntries))
-        connectWithResponseRouter(CML.io.StoreLocalMMUIO, MMU.io.CStoreLocalMMUIO, log2Ceil(CMatrixRegNBanks), log2Ceil(CMatrixRegBankNEntries))
+    if (CMLResponseChannelCount > 1) {
+        connectWithResponseBridge(CML.io.LoadLocalMMUIO, MMU.io.CLoadLocalMMUIO, CMatrixRegNBanks, CMLResponseChannelCount, log2Ceil(CMatrixRegNBanks), log2Ceil(CMatrixRegBankNEntries), CMemoryLoaderReadFromMemoryFIFODepth)
+        connectWithResponseBridge(CML.io.StoreLocalMMUIO, MMU.io.CStoreLocalMMUIO, CMatrixRegNBanks, CMLResponseChannelCount, log2Ceil(CMatrixRegNBanks), log2Ceil(CMatrixRegBankNEntries), CMemoryLoaderReadFromMemoryFIFODepth)
     } else {
-        connectWithResponseArbiter(CML.io.LoadLocalMMUIO, MMU.io.CLoadLocalMMUIO)
-        connectWithResponseArbiter(CML.io.StoreLocalMMUIO, MMU.io.CStoreLocalMMUIO)
+        connectWithResponseArbiter(CML.io.LoadLocalMMUIO, MMU.io.CLoadLocalMMUIO, CMatrixRegNBanks)
+        connectWithResponseArbiter(CML.io.StoreLocalMMUIO, MMU.io.CStoreLocalMMUIO, CMatrixRegNBanks)
     }
     CML.io.ToMatrixRegIO.LoadReadWriteResponse := 0.U
     CML.io.ToMatrixRegIO.StoreReadWriteResponse := 0.U

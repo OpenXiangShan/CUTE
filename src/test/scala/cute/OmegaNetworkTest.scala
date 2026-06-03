@@ -98,6 +98,7 @@ class DummyL2Cache(
     io.resp(ch).valid := arb.io.out.valid
     io.resp(ch).bits.data := arb.io.out.bits.addr
     io.resp(ch).bits.sourceId := arb.io.out.bits.sourceId
+    io.resp(ch).bits.coherent := true.B
     arb.io.out.ready := io.resp(ch).ready
 
     when(arb.io.out.fire) {
@@ -336,6 +337,7 @@ class SmokeTestTop extends Module {
     dummyLoader.io.resp(i).valid := dummyL2.io.resp(i).valid
     dummyLoader.io.resp(i).bits.data := dummyL2.io.resp(i).bits.data
     dummyLoader.io.resp(i).bits.sourceId := dummyL2.io.resp(i).bits.sourceId
+    dummyLoader.io.resp(i).bits.coherent := dummyL2.io.resp(i).bits.coherent
     dummyL2.io.resp(i).ready := dummyLoader.io.resp(i).ready
   }
 
