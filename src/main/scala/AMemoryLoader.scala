@@ -28,9 +28,14 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ToMatrixRegIO.BankAddr.map(_.bits := DontCare)
     io.ToMatrixRegIO.Data.map(_.valid := false.B)
     io.ToMatrixRegIO.Data.map(_.bits := DontCare)
-    io.LocalMMUIO.Request.valid := false.B
-    io.LocalMMUIO.Request.bits := DontCare // It will be set if Request is valid
-    io.LocalMMUIO.Response.ready := false.B
+
+    // Initialize all channels, but legacy AML only uses channel 0
+    for (i <- 0 until ABMatrixRegNBanks) {
+        io.LocalMMUIO.Request(i).valid := false.B
+        io.LocalMMUIO.Request(i).bits := DontCare
+        io.LocalMMUIO.Response(i).ready := false.B
+    }
+
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
 
@@ -121,8 +126,6 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         Bank_Fill_Valid(i) := Bank_Fill_Search_FIFO_Head(i) =/= Bank_Fill_Search_FIFO_Tail(i)
     }
 
-    val Request = io.LocalMMUIO.Request
-
     when(state === s_idle){
         ConfigInfo.MicroTaskReady := true.B
         when(ConfigInfo.MicroTaskReady && ConfigInfo.MicroTaskValid){
@@ -145,7 +148,9 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             }
         }
     }
-
+    // Legacy AML only uses channel 0 for requests
+    val Request = io.LocalMMUIO.Request(0)
+    val Response = io.LocalMMUIO.Response(0)
     switch(memoryload_state) {
         is(s_load_init) {
             memoryload_state := s_load_working
@@ -188,11 +193,12 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 val RequestMatrixRegBankId = (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) % ABMatrixRegNBanks.U
                 val RequestMatrixRegAddr = (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) / ABMatrixRegNBanks.U * ReduceGroupSize.U + CurrentLoaded_BlockTensor_K_Iter
 
-                Request.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_A_Stride_M + CurrentLoaded_BlockTensor_K_Iter * ReduceWidthByte.U
+                Request.bits.RequestAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_A_Stride_M + CurrentLoaded_BlockTensor_K_Iter * ReduceWidthByte.U
                 val sourceId = Mux(Conherent, io.LocalMMUIO.ConherentRequsetSourceID, io.LocalMMUIO.nonConherentRequsetSourceID)
                 Request.bits.RequestConherent := Conherent
                 Request.bits.RequestSourceID := sourceId.bits
                 Request.bits.RequestType_isWrite := false.B
+                Request.bits.UseAllocatedSourceID := true.B
                 Request.valid := (TotalRequestSize < MaxRequestIter)
 
                 when(Request.fire){
@@ -216,23 +222,23 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                     if (YJPAMLDebugEnable){
                         printf("[AML<%d>]FullLoad Request, M_Iter:%d, K_Iter:%d, ReqTime:%d, Addr:%x, BankId:%d, RegAddr:%d\n",
                           io.DebugInfo.DebugTimeStampe, CurrentLoaded_BlockTensor_M_Iter, CurrentLoaded_BlockTensor_K_Iter,
-                          Request_M_Iter_Time, Request.bits.RequestVirtualAddr, RequestMatrixRegBankId, RequestMatrixRegAddr)
+                          Request_M_Iter_Time, Request.bits.RequestAddr, RequestMatrixRegBankId, RequestMatrixRegAddr)
                     }
                 }
 
                 val current_fill_fifo_full = WireInit(false.B)
-                when(io.LocalMMUIO.Response.valid){
-                    val respSourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+                when(Response.valid){
+                    val respSourceId = Response.bits.ReseponseSourceID
                     val MatrixRegBankId = SoureceIdSearchTable(respSourceId).asTypeOf(new ASourceIdSearch).MatrixRegBankId
                     current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(MatrixRegBankId)
                 }
-                io.LocalMMUIO.Response.ready := MReg_Fill_Table_Not_Full && !current_fill_fifo_full
+                Response.ready := MReg_Fill_Table_Not_Full && !current_fill_fifo_full
 
-                when(io.LocalMMUIO.Response.fire){
-                    val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+                when(Response.fire){
+                    val sourceId = Response.bits.ReseponseSourceID
                     val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new ASourceIdSearch).MatrixRegBankId
                     val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new ASourceIdSearch).MatrixRegAddr
-                    val ResponseData = io.LocalMMUIO.Response.bits.ReseponseData
+                    val ResponseData = Response.bits.ReseponseData
                     val FIFOIndex = Bank_Fill_Search_FIFO_Head(MatrixRegBankId)
 
                     MReg_Fill_Table(MReg_Fill_Table_Insert_Index) := ResponseData

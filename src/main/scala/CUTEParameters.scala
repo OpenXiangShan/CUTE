@@ -519,7 +519,11 @@ case class CuteParams(
 
     val FPEparams: CuteFPEParams = CuteFPEParams.baseparams, //FPE的参数
 
-    val MatrixExtension: MatrixIsaParams = MatrixIsaParams()
+    val MatrixExtension: MatrixIsaParams = MatrixIsaParams(),
+
+    val EnableEightChannelAML: Boolean = false, // true: AML 八通道并行访存; false: AML 单通道轮询访存
+    val EnableEightChannelBML: Boolean = true, // true: BML 八通道并行访存; false: BML 单通道轮询访存
+    val EnableEightChannelCML: Boolean = true // true: CML 八通道并行访存; false: CML 单通道轮询访存
 ) {
 
     //所有参数都必须是2的n次方
@@ -730,6 +734,9 @@ trait CUTEImplParameters{
     def ReduceGroupSize = cuteParams.ReduceGroupSize
     def EnableDifftest = cuteParams.EnableDifftest
     def L2NBanks = cuteParams.L2NBanks
+    def EnableEightChannelAML = cuteParams.EnableEightChannelAML
+    def EnableEightChannelBML = cuteParams.EnableEightChannelBML
+    def EnableEightChannelCML = cuteParams.EnableEightChannelCML
 
     def MinGroupSize = FPEparams.MinGroupSize //FPE的最小计算组大小
     def MinDataTypeWidth = FPEparams.MinDataTypeWidth //FPE的最小数据类型宽度
@@ -1166,51 +1173,47 @@ class CMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // val Chosen = Input(Bool())
 }
 
+class MMURequestIO(implicit p: Parameters) extends CuteBundle{
+    val RequestAddr = UInt(MMUAddrWidth.W)
+    val RequestConherent = Bool()
+    val RequestData = UInt(MMUDataWidth.W)
+    val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
+    val RequestType_isWrite = Bool()
+    val UseAllocatedSourceID = Bool()
+    val isA = Bool()
+    val MatrixIsAcc = Bool()
+    val RequestMask = UInt(MMUMaskWidth.W)
+}
+
+class MMUResponseIO(implicit p: Parameters) extends CuteBundle{
+    val ReseponseData = UInt(MMUDataWidth.W)
+    val ReseponseConherent = Bool()
+    val ReseponseSourceID = UInt(SoureceMaxNumBitSize.W)
+}
+
 //LocalMMU的接口
 class LocalMMUIO(implicit p: Parameters) extends CuteBundle{
 
     //发出的访存请求
-    val Request = Flipped(DecoupledIO(new Bundle{
-        val RequestVirtualAddr = UInt(MMUAddrWidth.W)
-        val RequestConherent = Bool()
-        val RequestData = UInt(MMUDataWidth.W)
-        val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
-        val RequestType_isWrite = Bool()
-    }))
+    val Request = Flipped(Vec(ABMatrixRegNBanks, DecoupledIO(new MMURequestIO)))
     //读请求分发到的TL Link的事务编号
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))
     val nonConherentRequsetSourceID = Valid(UInt(MemorysourceMaxNumBitSize.W))
 
     //Memoryloader一定能保证收回！
-    val Response = DecoupledIO(new Bundle{
-        val ReseponseData = UInt(MMUDataWidth.W)
-        val ReseponseConherent = Bool()
-        val ReseponseSourceID = UInt(SoureceMaxNumBitSize.W)
-    })
+    val Response = Vec(ABMatrixRegNBanks, DecoupledIO(new MMUResponseIO))
 }
 
 class MMU2TLIO(implicit p: Parameters) extends CuteBundle{
 
     //发出的访存请求
-    val Request = Flipped(DecoupledIO(new Bundle{
-        val RequestPhysicalAddr = UInt(MMUAddrWidth.W)
-        val RequestConherent = Bool()
-        val RequestData = UInt(MMUDataWidth.W)
-        val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
-        val RequestType_isWrite = Bool()
-        val RequestMask = UInt(MMUMaskWidth.W) //MMU的Mask
-        val MatrixIsAcc = Bool() // false for A/B matrix (tile matrix register), true for C matrix (accumulation matrix register)
-    }))
+    val Request = Flipped(Vec(ABMatrixRegNBanks, DecoupledIO(new MMURequestIO)))
     //读请求分发到的TL Link的事务编号
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))
     val nonConherentRequsetSourceID = Valid(UInt(MemorysourceMaxNumBitSize.W))
 
     //Memoryloader一定能保证收回！
-    val Response = DecoupledIO(new Bundle{
-        val ReseponseData = UInt(MMUDataWidth.W)
-        val ReseponseConherent = Bool()
-        val ReseponseSourceID = UInt(SoureceMaxNumBitSize.W)
-    })
+    val Response = Vec(ABMatrixRegNBanks, DecoupledIO(new MMUResponseIO))
 }
 
 class FReducePEDataType {

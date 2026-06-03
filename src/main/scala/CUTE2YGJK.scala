@@ -25,153 +25,143 @@ class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.basePar
 
 
 
+
 class Cute2TL(implicit p: Parameters) extends LazyModule with CUTEImplParameters {
   lazy val module = new CUTE2TLImp(this)
-  val node = TLClientNode(Seq(TLMasterPortParameters.v1(
-    clients = Seq(TLMasterParameters.v1(
-      name = "CUTE",
-      sourceId = IdRange(0, LLCSourceMaxNum)
-    )),
-    requestFields = Seq(MatrixField(2), AmeIndexField())
-  )))
+  // Changed from single TLClientNode with Seq.tabulate to Seq of independent TLClientNodes
+  val node = Seq.tabulate(ABMatrixRegNBanks) { i =>
+    TLClientNode(
+      Seq(TLMasterPortParameters.v1(
+        clients = Seq(TLMasterParameters.v1(
+          name = s"CUTE_$i",
+          sourceId = IdRange(0, 1)  // 固定 source ID，信息通过 AmeIndex 传递
+        )),
+        requestFields = Seq(MatrixField(2), AmeIndexField()),
+        responseKeys = Seq(AmeIndexKey)
+      ))
+    )
+  }
 }
 
 //这里的CUTE到LLC的节点
+
+class MatrixDataIO(implicit p: Parameters) extends CuteBundle {
+  val data = UInt(512.W)
+  val source = UInt(64.W)
+}
+
 class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParameters{
-  val edge = outer.node.edges.out(0)
-  val (tl_out, _) = outer.node.out(0)
+  // Updated for Seq of independent TLClientNodes
+  val edges = outer.node.map(_.edges.out(0))
+  val tl_outs = outer.node.map(_.out(0))
 
   val io = IO(new Bundle{
     val mmu = (new MMU2TLIO)
     val idle = Output(Bool())
-    val matrix_data_in = Flipped(Decoupled(tl_out.d.bits.cloneType))
+    val matrix_data_in = Flipped(Vec(ABMatrixRegNBanks, Decoupled(new MatrixDataIO)))
   })
-
-  val data = io.mmu.Request.bits.RequestData
-  val busy = RegInit(VecInit(Seq.fill(LLCSourceMaxNum)(false.B)))
-  val id = WireInit(0.U(LLCSourceMaxNumBitSize.W))
-  
-  val is_idle = !(busy.reduce(_|_))
-  val is_full = busy.reduce(_&_)
-  io.idle := is_idle
-
-
-  for(i <- 0 until LLCSourceMaxNum){
-    when(busy(i) === false.B){
-      id := i.U
-    }
-  }
-  io.mmu.ConherentRequsetSourceID.bits := id
-  io.mmu.ConherentRequsetSourceID.valid := !is_full
-  io.mmu.nonConherentRequsetSourceID.bits := 0.U
-  io.mmu.nonConherentRequsetSourceID.valid := false.B
-  io.mmu.Response.bits.ReseponseData := 0.U
-  io.mmu.Response.bits.ReseponseConherent := false.B
-    //输出是否sourceid已满的信息
-    // printf("[CUTE2YGJK.node]is_full: %x\n", is_full)
-  when(io.mmu.Request.fire){
-    //输出mmu的sourceid的信息
-        if (YJPDebugEnable)
-        {
-            printf("[CUTE2YGJK.node]sourceid: %x\n", io.mmu.ConherentRequsetSourceID.bits)
-            //输出其他mmu的io.mmu.Request.bits的 所有信息,包含变量名
-            printf("[CUTE2YGJK.node.io.mmu.Request.bits] RequestType_isWrite %x, RequestPhysicalAddr %x, RequestData %x\n", io.mmu.Request.bits.RequestType_isWrite, io.mmu.Request.bits.RequestPhysicalAddr, io.mmu.Request.bits.RequestData)
-        }
-    }
-
-    
-
-  when(!(is_full)){
-    when(tl_out.a.fire){
-      busy(id):=true.B
-    }
-  }.otherwise
-  {
-    //输出是否sourceid已满的信息
-    if (YJPDebugEnable)
-    {
-        printf("[CUTE2YGJK.node]is_full: %x\n", is_full)
-    }
-  }
-  //只要有请求，就输出一共有有多少个infligt的请求
-  when(io.mmu.Request.valid || io.mmu.Response.valid){
-    //统计busy，一共有多少个在飞行中的请求,及有多少个ture.B
-    // printf("[CUTE2YGJK.node]busy: %d\n", busy.count(_ === true.B))
-  }
-  // tl_out.d returns write acknowledgment (AccessAck), io.matrix_data_in returns read data.
-  // Both may be valid at the same time and compete for the busy(source) flag.
-  // Here, io.matrix_data_in is given higher priority than tl_out.d,
-  // so when io.matrix_data_in fires, tl_out.d will not fire.
-  io.matrix_data_in.ready := io.mmu.Response.ready
-  tl_out.d.ready := io.mmu.Response.ready && !io.matrix_data_in.valid
-  when(io.matrix_data_in.fire || tl_out.d.fire){
-    // io.matrix_data_in and tl_out.d may both be valid at the same time,
-    // but the previously set priority rule for tl_out.d.ready ensures that when io.matrix_data_in is valid,
-    // the one that fires must be io.matrix_data_in. Therefore, when io.matrix_data_in is valid,
-    // the source must come from io.matrix_data_in.
-    val d_bits = Mux(io.matrix_data_in.valid, io.matrix_data_in.bits, tl_out.d.bits)
-    busy(d_bits.source) := false.B
-    assert(busy(d_bits.source), "Source %x in resp is not busy.", d_bits.source)
-    if (YJPDebugEnable)
-    {
-        when(d_bits.opcode === TLMessages.AccessAckData){
-            printf("[CUTE2YGJK.node]io.matrix_data_in.fire: %x, matrix_data_in.bits.data: %x\n", io.matrix_data_in.bits.opcode, io.matrix_data_in.bits.data)
-        }
-        when(d_bits.opcode === TLMessages.AccessAck){
-            printf("[CUTE2YGJK.node]tl_out.d.fire: %x.AccessAck\n", tl_out.d.bits.opcode)
-        }
-    }
-  }
-
-  if(YJPDebugEnable){
-    val nack_cnt = RegInit(0.U(32.W))
-    val any_d_valid = tl_out.d.valid || io.matrix_data_in.valid
-    when(any_d_valid && io.mmu.Response.ready === false.B){
-      nack_cnt := nack_cnt + 1.U
-        printf("[CUTE2YGJK.node]nack_cnt: %d\n", nack_cnt)
-    }.otherwise(
-        nack_cnt := 0.U
-    )
-  }
-
-  tl_out.a.valid := io.mmu.Request.valid && !is_full
-  tl_out.a.bits := Mux1H(Seq(
-    (io.mmu.Request.bits.RequestType_isWrite === 0.U) -> edge.Get(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(outsideDataWidthByte).U)._2,
-    (io.mmu.Request.bits.RequestType_isWrite === 1.U) -> edge.Put(id, io.mmu.Request.bits.RequestPhysicalAddr, log2Ceil(outsideDataWidthByte).U, data)._2
-  ))
-
-  // Assign MatrixKey to cooperate with HBL2.
-  // MatrixIsAcc: false for A/B matrix (tile matrix register), true for C matrix (accumulation matrix register)
-  // MatrixKey: "b01" for A/B matrix read and C matrix write, "b11" for C matrix read.
-  tl_out.a.bits.user.lift(MatrixKey).foreach { matrixKey =>
-    val isMatrixCread = io.mmu.Request.bits.MatrixIsAcc && !io.mmu.Request.bits.RequestType_isWrite
-    matrixKey := Mux(isMatrixCread, "b11".U, "b01".U)
-  }
-  tl_out.a.bits.user.lift(AmeIndexKey).foreach { ameIndex =>
-    require(ameIndex.getWidth >= id.getWidth, "AmeIndex should cover Cute2TL id range.")
-    ameIndex := id
-  }
-
-  io.mmu.Response.valid := tl_out.d.valid || io.matrix_data_in.valid
-  io.mmu.Request.ready := tl_out.a.ready && !(busy.reduce(_&_))
-  io.mmu.Response.bits.ReseponseData := Mux(io.matrix_data_in.valid, io.matrix_data_in.bits.data, tl_out.d.bits.data)
-  io.mmu.Response.bits.ReseponseSourceID := Mux(io.matrix_data_in.valid, io.matrix_data_in.bits.source, tl_out.d.bits.source)
 
   val time_stamp = RegInit(0.U(64.W))
   time_stamp := time_stamp + 1.U
-  when(io.mmu.Response.fire){
-    if (YJPDebugEnable)
-    {
-        printf("[CUTE2YGJK.node<%d>]io.mmu.Response.fire: %x, io.mmu.Response.bits.ReseponseData: %x\n", time_stamp, io.mmu.Response.bits.ReseponseSourceID, io.mmu.Response.bits.ReseponseData)
+
+  for (channel <- 0 until ABMatrixRegNBanks) {
+    val edge_ch = edges(channel)
+    val (tl_out_ch, _) = tl_outs(channel)
+
+    // Extract repeated IOs and bits to local vals
+    val mmuReq        = io.mmu.Request(channel)
+    val mmuReqBits    = mmuReq.bits
+    val mmuResp       = io.mmu.Response(channel)
+    val mmuRespBits   = mmuResp.bits
+    val matrixDataIn  = io.matrix_data_in(channel)
+    val tlA           = tl_out_ch.a
+    val tlABits       = tlA.bits
+    val tlD           = tl_out_ch.d
+    val tlDBits       = tlD.bits
+
+    val useAllocId = mmuReqBits.UseAllocatedSourceID
+
+    tlA.valid := mmuReq.valid
+    mmuReq.ready := tlA.ready
+
+    tlABits := Mux1H(Seq(
+      (mmuReqBits.RequestType_isWrite === 0.U) -> edge_ch.Get(
+        0.U,
+        mmuReqBits.RequestAddr,
+        log2Ceil(outsideDataWidthByte).U
+      )._2,
+      (mmuReqBits.RequestType_isWrite === 1.U) -> edge_ch.Put(
+        0.U,
+        mmuReqBits.RequestAddr,
+        log2Ceil(outsideDataWidthByte).U,
+        mmuReqBits.RequestData,
+        mmuReqBits.RequestMask
+      )._2
+    ))
+
+    // Assign MatrixKey for AML channels (A matrix: "b01")
+    tlABits.user.lift(MatrixKey).foreach { matrixKey =>
+      matrixKey := Mux(io.mmu.Request(0).bits.MatrixIsAcc, "b11".U, "b01".U)
+    }
+
+    tlABits.user.lift(AmeIndexKey).foreach { ameIndex =>
+      ameIndex := mmuReqBits.RequestSourceID
+    }
+
+    // Direct pass-through for AML responses from TL-D channel
+    // 从 user 字段获取 AmeIndex（完全忽略 tlDBits.source）
+    val ameIndexFromUser = tlDBits.user.lift(AmeIndexKey).getOrElse(0.U)
+
+    // 注意：ameIndex 可以为 0（RequestSourceID 从 0 开始），不检查是否为 0
+
+    mmuResp.valid := tlD.valid || matrixDataIn.valid
+    mmuRespBits.ReseponseData := matrixDataIn.bits.data
+    mmuRespBits.ReseponseSourceID := Mux(
+      matrixDataIn.valid,
+      matrixDataIn.bits.source,
+      ameIndexFromUser
+    )
+    mmuRespBits.ReseponseConherent := true.B
+
+    // Direct pass-through for AML matrix_data_in
+    matrixDataIn.ready := mmuResp.ready
+    tlD.ready := mmuResp.ready && !matrixDataIn.valid
+
+    // Debug output for AML channels
+    when(mmuReq.fire){
+      if (YJPDebugEnable)
+      {
+        printf("[CUTE2TL][%d] Channel %d: A.fire, AmeIndex=%d, useAllocId=%d, addr=0x%x, isWrite=%d, MatrixIsAcc=%d\n",
+          time_stamp, channel.U, mmuReqBits.RequestSourceID, useAllocId,
+          mmuReqBits.RequestAddr, mmuReqBits.RequestType_isWrite, mmuReqBits.MatrixIsAcc)
+      }
+    }
+
+    // T7: 添加 AML Response 调试日志
+    when(mmuResp.fire){
+      if (YJPDebugEnable)
+      {
+        printf("[CUTE2TL][%d] Channel %d: Resp.fire, source=%d, matrixDataIn.valid=%d, tlD.valid=%d, data=0x%x\n",
+          time_stamp, channel.U, mmuRespBits.ReseponseSourceID, matrixDataIn.valid, tlD.valid, mmuRespBits.ReseponseData)
+      }
+    }
+
+    // T7: 添加 TL-D 通道状态调试日志
+    when(tlD.valid){
+      if (YJPDebugEnable)
+      {
+        printf("[CUTE2TL][%d] Channel %d TL-D: valid=%x, ready=%x, source=%x, AmeIndex(user)=%x\n",
+          time_stamp, channel.U, tlD.valid, tlD.ready, tlDBits.source,
+          tlDBits.user.lift(AmeIndexKey).getOrElse(0.U))
+      }
     }
   }
 
-  when(io.mmu.Request.fire){
-    if (YJPDebugEnable)
-    {
-        printf("[CUTE2YGJK.node<%d>]io.mmu.Request.fire: %x, io.mmu.Request.bits.RequestType_isWrite: %x, io.mmu.Request.bits.RequestPhysicalAddr: %x, io.mmu.Request.bits.RequestData: %x\n", time_stamp,io.mmu.ConherentRequsetSourceID.bits, io.mmu.Request.bits.RequestType_isWrite, io.mmu.Request.bits.RequestPhysicalAddr, io.mmu.Request.bits.RequestData)
-    }
-  }
+  io.idle := true.B
+  io.mmu.ConherentRequsetSourceID.bits := 0.U
+  io.mmu.ConherentRequsetSourceID.valid := true.B
+  io.mmu.nonConherentRequsetSourceID.bits := 0.U
+  io.mmu.nonConherentRequsetSourceID.valid := false.B
 }
 
 
@@ -221,7 +211,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
 //     }
 //     // if (YJPDebugEnable)
 //     // {
-//     //     //输出io.cmd的信息和io.resp的信息
+//     //     //输出io.cmd的信息和io.cmd.bits的信息
 //     //     printf("[CUTE2YGJK.top]io.cmd.fire: %x, io.cmd.bits.inst: %x, io.cmd.bits.rs1: %x, io.cmd.bits.rs2: %x, io.cmd.bits.inst.rd: %x, io.cmd.bits.inst.funct: %x\n", io.cmd.fire, io.cmd.bits.inst.asUInt, io.cmd.bits.rs1, io.cmd.bits.rs2, io.cmd.bits.inst.rd, io.cmd.bits.inst.funct)
 //     //     //输出valid和ready信息
 //     //     printf("[CUTE2YGJK.top]io.cmd.valid: %x, io.cmd.ready: %x, io.resp.valid: %x, io.resp.ready: %x\n", io.cmd.valid, io.cmd.ready, io.resp.valid, io.resp.ready)
@@ -247,7 +237,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
 //     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 7.U){ //查询CUTE宏指令队列是否已满
 //       rd_data := acc.io.ctrl2top.InstFIFO_Full
 //     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct === 8.U){ //查询CUTE宏指令队列目前有多少指令
-//       rd_data := acc.io.ctrl2top.InstFIFO_Info 
+//       rd_data := acc.io.ctrl2top.InstFIFO_Info
 //     }.elsewhen(io.cmd.fire && io.cmd.bits.inst.opcode === "h0B".U && io.cmd.bits.inst.funct >= 64.U){
 //       rd_data := acc.io.ctrl2top.cute_return_val
 //     }

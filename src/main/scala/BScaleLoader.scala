@@ -25,9 +25,11 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
 
     io.ToMatrixRegIO.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.BankAddr)
     io.ToMatrixRegIO.Data := 0.U.asTypeOf(io.ToMatrixRegIO.Data)
-    io.LocalMMUIO.Request.valid := false.B
-    io.LocalMMUIO.Request.bits := 0.U.asTypeOf(io.LocalMMUIO.Request.bits)
-    io.LocalMMUIO.Response.ready := false.B
+    for (i <- 0 until ABMatrixRegNBanks) {
+        io.LocalMMUIO.Request(i).valid := false.B
+        io.LocalMMUIO.Request(i).bits := 0.U.asTypeOf(io.LocalMMUIO.Request(i).bits)
+        io.LocalMMUIO.Response(i).ready := false.B
+    }
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
 
@@ -108,7 +110,7 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
     val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)).W))
 
     
-    val Request = io.LocalMMUIO.Request
+    val Request = io.LocalMMUIO.Request(0)  // TODO: Support multiple channels for BScaleLoader
     Request.valid := false.B
     when(memoryload_state === s_load_init){
         memoryload_state := s_load_working
@@ -123,12 +125,13 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
 
         //只要Request是ready，我们发出的访存请求就会被MMU送往总线，我们可以发出下一个访存请求
         //不用担心乘法电路延迟，再不济，可以提前几个周期将乘法结果算好，做成fifo送进来
-        Request.bits.RequestVirtualAddr := Scale_Block_BaseAddr + outsideDataWidthByte.U * MemoryRequestSize
+        Request.bits.RequestAddr := Scale_Block_BaseAddr + outsideDataWidthByte.U * MemoryRequestSize
         
         val sourceId = Mux(Conherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
         Request.bits.RequestConherent := Conherent
         Request.bits.RequestSourceID := sourceId.bits
         Request.bits.RequestType_isWrite := false.B
+        Request.bits.UseAllocatedSourceID := true.B
         Request.valid := true.B
         when(MemoryRequestSize === MaxRequestIter)//Is_invalid_IH_IW时，不发出访存请求，尝试直接0填充
         {
@@ -148,7 +151,7 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
                 //输出id和request的信息
                 printf("[BML<%d>]sourceId:%d,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,sourceId.bits,TableItem.MatrixRegAddr)
                 //输出这次request的信息
-                printf("[BML<%d>]RequestVirtualAddr:%x,RequestConherent:%d,RequestSourceID:%d,RequestType_isWrite:%d\n",io.DebugInfo.DebugTimeStampe,Request.bits.RequestVirtualAddr,Request.bits.RequestConherent,Request.bits.RequestSourceID,Request.bits.RequestType_isWrite)
+                printf("[BML<%d>]RequestAddr:%x,RequestConherent:%d,RequestSourceID:%d,RequestType_isWrite:%d\n",io.DebugInfo.DebugTimeStampe,Request.bits.RequestAddr,Request.bits.RequestConherent,Request.bits.RequestSourceID,Request.bits.RequestType_isWrite)
             }
             when(MemoryRequestSize < MaxRequestIter){
                 MemoryRequestSize := MemoryRequestSize + 1.U
@@ -158,15 +161,16 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
         //接受访存的返回值
         //一个cam来存储访存请求的source_id对应的Scarchpad的地址和bank号
         //根据response的sourceid，找到对应的Scarchpad的Fill_Table的队伍头的索引，填充到Fill_Table中
-        io.LocalMMUIO.Response.ready := true.B
+        val Response = io.LocalMMUIO.Response(0)
+        Response.ready := true.B
         
-        when(io.LocalMMUIO.Response.fire){
+        when(Response.fire){
             //Trick注意这个设计，是doublebuffer的，AB只能是doublebuffer，回数一定是不会堵的，而且我们有时间对数据进行压缩解压缩～
             //如果要做release设计，要么数据位宽翻倍，腾出周期来使得有空泡能给写任务进行，要么就是数据位宽不变，将读写端口变成独立的读和独立的写端口
-            val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+            val sourceId = Response.bits.ReseponseSourceID
             val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new BScaleSourceIdSearch).MatrixRegAddr
             val ResponseData = Wire(Vec(ABScaleNSlices,UInt((ScaleWidth * ReduceGroupSize).W)))
-            ResponseData := io.LocalMMUIO.Response.bits.ReseponseData.asTypeOf(ResponseData)
+            ResponseData := Response.bits.ReseponseData.asTypeOf(ResponseData)
 
             TotalLoadSize := TotalLoadSize + 1.U
             io.ToMatrixRegIO.BankAddr.valid := true.B
@@ -181,7 +185,7 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
             if (YJPBMLDebugEnable)
             {
                 //输出这次response的信息
-                printf("[BSL<%d>]ResponseData:%x,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,io.LocalMMUIO.Response.bits.ReseponseData,MatrixRegAddr)
+                printf("[BSL<%d>]ResponseData:%x,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,Response.bits.ReseponseData,MatrixRegAddr)
             }
         }
 

@@ -83,7 +83,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         //ASL的默认输入
         asl.io.ConfigInfo <> TaskCtrl.io.ASL_MicroTask_Config.get
         asl.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-        asl.io.LocalMMUIO <> MMU.io.ASLocalMMUIO.get
+        asl.io.LocalMMUIO <> MMU.io.ASLocalMMUIO
     }
 
     //BDC的默认输入
@@ -110,7 +110,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         //BSL的默认输入
         bsl.io.ConfigInfo <> TaskCtrl.io.BSL_MicroTask_Config.get
         bsl.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-        bsl.io.LocalMMUIO <> MMU.io.BSLocalMMUIO.get
+        bsl.io.LocalMMUIO <> MMU.io.BSLocalMMUIO
     }
 
     //CDC的默认输入

@@ -41,9 +41,14 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ToMatrixRegIO.BankAddr.map(_.bits := DontCare)
     io.ToMatrixRegIO.Data.map(_.valid := false.B)
     io.ToMatrixRegIO.Data.map(_.bits := DontCare)
-    io.LocalMMUIO.Request.valid := false.B
-    io.LocalMMUIO.Request.bits := DontCare // It will be set if Request is valid
-    io.LocalMMUIO.Response.ready := false.B
+
+    // Initialize all channels, but legacy BML only uses channel 0
+    for (i <- 0 until ABMatrixRegNBanks) {
+        io.LocalMMUIO.Request(i).valid := false.B
+        io.LocalMMUIO.Request(i).bits := DontCare
+        io.LocalMMUIO.Response(i).ready := false.B
+    }
+
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
 
@@ -196,7 +201,9 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     }
 
     
-    val Request = io.LocalMMUIO.Request
+    // Legacy BML only uses channel 0 for requests
+    val Request = io.LocalMMUIO.Request(0)
+    val Response = io.LocalMMUIO.Response(0)
     switch(memoryload_state) {
         is(s_load_init) {
             memoryload_state := s_load_working
@@ -211,12 +218,13 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
 
             //只要Request是ready，我们发出的访存请求就会被MMU送往总线，我们可以发出下一个访存请求
             //不用担心乘法电路延迟，再不济，可以提前几个周期将乘法结果算好，做成fifo送进来
-            Request.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_N * ApplicationTensor_B_Stride_N) + (CurrentLoaded_BlockTensor_K * ReduceWidthByte.U)
+            Request.bits.RequestAddr := Tensor_Block_BaseAddr + (CurrentLoaded_BlockTensor_N * ApplicationTensor_B_Stride_N) + (CurrentLoaded_BlockTensor_K * ReduceWidthByte.U)
             
             val sourceId = Mux(Conherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
             Request.bits.RequestConherent := Conherent
             Request.bits.RequestSourceID := sourceId.bits
             Request.bits.RequestType_isWrite := false.B
+            Request.bits.UseAllocatedSourceID := true.B
             Request.valid := true.B
             when(CurrentLoaded_BlockTensor_N === MaxBlockTensor_N_Index || CurrentLoaded_BlockTensor_K === MaxBlockTensor_K_Index)//Is_invalid_IH_IW时，不发出访存请求，尝试直接0填充
             {
@@ -253,7 +261,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                     //输出id和request的信息
                     printf("[BML<%d>]sourceId:%d,MatrixRegBankId:%d,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,sourceId.bits,TableItem.MatrixRegBankId,TableItem.MatrixRegAddr)
                     //输出这次request的信息
-                    printf("[BML<%d>]RequestVirtualAddr:%x,RequestConherent:%d,RequestSourceID:%d,RequestType_isWrite:%d\n",io.DebugInfo.DebugTimeStampe,Request.bits.RequestVirtualAddr,Request.bits.RequestConherent,Request.bits.RequestSourceID,Request.bits.RequestType_isWrite)
+                    printf("[BML<%d>]RequestAddr:%x,RequestConherent:%d,RequestSourceID:%d,RequestType_isWrite:%d\n",io.DebugInfo.DebugTimeStampe,Request.bits.RequestAddr,Request.bits.RequestConherent,Request.bits.RequestSourceID,Request.bits.RequestType_isWrite)
                 }
                 when(CurrentLoaded_BlockTensor_N < MaxBlockTensor_N_Index){
                     when(CurrentLoaded_BlockTensor_K + MAX_Fill_Times.U < MaxBlockTensor_K_Index){
@@ -266,9 +274,9 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 }
             }
             val current_fill_fifo_full = WireInit(false.B)
-            when(io.LocalMMUIO.Response.valid)
+            when(Response.valid)
             {
-                val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+                val sourceId = Response.bits.ReseponseSourceID
                 val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).MatrixRegBankId
                 current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(MatrixRegBankId)
             }
@@ -277,18 +285,18 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             //根据response的sourceid，找到对应的MatrixReg的Fill_Table的队伍头的索引，填充到Fill_Table中
             if (ABMLNeedMRegFillTable)
             {
-                io.LocalMMUIO.Response.ready := MReg_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
-            } else 
+                Response.ready := MReg_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
+            } else
             {
-                io.LocalMMUIO.Response.ready := true.B
+                Response.ready := true.B
             }
-            when(io.LocalMMUIO.Response.fire){
+            when(Response.fire){
                 //Trick注意这个设计，是doublebuffer的，AB只能是doublebuffer，回数一定是不会堵的，而且我们有时间对数据进行压缩解压缩～
                 //如果要做release设计，要么数据位宽翻倍，腾出周期来使得有空泡能给写任务进行，要么就是数据位宽不变，将读写端口变成独立的读和独立的写端口
-                val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+                val sourceId = Response.bits.ReseponseSourceID
                 val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).MatrixRegBankId
                 val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).MatrixRegAddr
-                val ResponseData = io.LocalMMUIO.Response.bits.ReseponseData
+                val ResponseData = Response.bits.ReseponseData
                 val FIFOIndex = Bank_Fill_Search_FIFO_Head(MatrixRegBankId)//该bank的fill_fifo_index，标注了它当前在fillfifo的哪个位置，我们一共有bank个fill_fifo
 
                 if (!ABMLNeedMRegFillTable)

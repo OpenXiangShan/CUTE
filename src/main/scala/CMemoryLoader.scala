@@ -44,12 +44,14 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ToMatrixRegIO.WriteRequestToMatrixReg.Data.map(_.bits := DontCare)
     io.ToMatrixRegIO.LoadReadWriteRequest := 0.U
     io.ToMatrixRegIO.StoreReadWriteRequest := 0.U
-    io.LoadLocalMMUIO.Request.valid := false.B
-    io.LoadLocalMMUIO.Request.bits := DontCare
-    io.LoadLocalMMUIO.Response.ready := false.B
-    io.StoreLocalMMUIO.Request.valid := false.B
-    io.StoreLocalMMUIO.Request.bits := DontCare
-    io.StoreLocalMMUIO.Response.ready := false.B
+    for (i <- 0 until ABMatrixRegNBanks) {
+        io.LoadLocalMMUIO.Request(i).valid := false.B
+        io.LoadLocalMMUIO.Request(i).bits := DontCare
+        io.LoadLocalMMUIO.Response(i).ready := false.B
+        io.StoreLocalMMUIO.Request(i).valid := false.B
+        io.StoreLocalMMUIO.Request(i).bits := DontCare
+        io.StoreLocalMMUIO.Response(i).ready := false.B
+    }
 
     val CurrentLoadMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
     val CurrentStoreMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
@@ -257,7 +259,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Request_M_Iter_Time = RegInit(0.U(log2Ceil(Matrix_MN).W))
     // val Fill_N_Iter_Time = RegInit(0.U(log2Ceil(Tensor_MN).W))
     //读数请求
-    val ReadRequest = io.LoadLocalMMUIO.Request
+    val ReadRequest = io.LoadLocalMMUIO.Request(0)
     switch(memoryload_state) {
         is(s_load_init) {
             memoryload_state := s_load_working
@@ -325,7 +327,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 val RequestMatrixRegBankId = (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) % CMatrixRegNBanks.U //访存请求落在哪个MatrixRegBank上
                 val RequestMatrixRegAddr = (CurrentLoaded_BlockTensor_M_Iter / CMatrixRegNBanks.U * LoadMatrixRegTensor_N / Matrix_MN.U) + (CurrentLoaded_BlockTensor_N_Iter / Matrix_MN.U) //该访存请求的第零号数据，落在哪个MatrixRegBank的哪个地址上
                 
-                ReadRequest.bits.RequestVirtualAddr := LoadTensorBlockBaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_C_Stride_M + CurrentLoaded_BlockTensor_N_Iter * C_DataWidth
+                ReadRequest.bits.RequestAddr := LoadTensorBlockBaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_C_Stride_M + CurrentLoaded_BlockTensor_N_Iter * C_DataWidth
                 
                 // val CurrentBankID = RequestMatrixRegBankId
                 // val CurrentFIFOIndex = FromMemoryLoaderReadFIFOHead
@@ -355,7 +357,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                         }
                     }
                     //输出发出的访存请求
-                    // printf("[CMemoryLoader]RequestVirtualAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x\n", ReadRequest.bits.RequestVirtualAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite)
+                    // printf("[CMemoryLoader]RequestAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x\n", ReadRequest.bits.RequestAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite)
                     //输出这次请求的TableItem
                     // printf("[CMemoryLoader]TableItem: %x, %x, %x\n", TableItem.MatrixRegBankId, TableItem.MatrixRegAddr, TableItem.FIFOIndex)
 
@@ -365,7 +367,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                     //输出request的次数
                     if (YJPCMLDebugEnable)
                     {
-                        printf("[CMemoryLoader_Load<%d>]RequestMatrixRegAddr: %x,RequestMatrixRegBankId: %x,CurrentLoaded_BlockTensor_N_Iter: %x,CurrentLoaded_BlockTensor_M_Iter: %x,Request_M_Iter_Time: %x,RequestVirtualAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x, RequestTimes: %d\n", io.DebugInfo.DebugTimeStampe, RequestMatrixRegAddr,RequestMatrixRegBankId,CurrentLoaded_BlockTensor_N_Iter,CurrentLoaded_BlockTensor_M_Iter,Request_M_Iter_Time,ReadRequest.bits.RequestVirtualAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite, TotalRequestSize)
+                        printf("[CMemoryLoader_Load<%d>]RequestMatrixRegAddr: %x,RequestMatrixRegBankId: %x,CurrentLoaded_BlockTensor_N_Iter: %x,CurrentLoaded_BlockTensor_M_Iter: %x,Request_M_Iter_Time: %x,RequestAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x, RequestTimes: %d\n", io.DebugInfo.DebugTimeStampe, RequestMatrixRegAddr,RequestMatrixRegBankId,CurrentLoaded_BlockTensor_N_Iter,CurrentLoaded_BlockTensor_M_Iter,Request_M_Iter_Time,ReadRequest.bits.RequestAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite, TotalRequestSize)
                     }
                     when(TotalRequestSize === MaxRequestIter){
                         //assert!
@@ -376,22 +378,22 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 }
                 
                 val current_fill_fifo_full = WireInit(false.B)
-                when(io.LoadLocalMMUIO.Response.valid)
+                when(io.LoadLocalMMUIO.Response(0).valid)
                 {
-                    val sourceId = io.LoadLocalMMUIO.Response.bits.ReseponseSourceID
+                    val sourceId = io.LoadLocalMMUIO.Response(0).bits.ReseponseSourceID
                     val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegBankId
                     current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(MatrixRegBankId)
                 }
 
-                io.LoadLocalMMUIO.Response.ready := MReg_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
+                io.LoadLocalMMUIO.Response(0).ready := MReg_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
                 //接受访存的返回值
                 //一个cam来存储访存请求的source_id对应的MatrixReg的地址和bank号
                 //根据response的sourceid，找到对应的MatrixReg的地址和bank号，回填数据
-                when(io.LoadLocalMMUIO.Response.fire){
-                    val sourceId = io.LoadLocalMMUIO.Response.bits.ReseponseSourceID
+                when(io.LoadLocalMMUIO.Response(0).fire){
+                    val sourceId = io.LoadLocalMMUIO.Response(0).bits.ReseponseSourceID
                     val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegBankId
                     val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegAddr
-                    val ResponseData = io.LoadLocalMMUIO.Response.bits.ReseponseData
+                    val ResponseData = io.LoadLocalMMUIO.Response(0).bits.ReseponseData
                     val FIFOIndex = Bank_Fill_Search_FIFO_Head(MatrixRegBankId)//该bank的fill_fifo_index，标注了它当前在fillfifo的哪个位置，我们一共有bank个fill_fifo
 
                     MReg_Fill_Table(MReg_Fill_Table_Insert_Index) := ResponseData
@@ -508,7 +510,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             //     val sourceId = Mux(IsConherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
             //     val Max_RepeatRowLoad_Memory_Load_Times = Tensor_MN.U * C_DataWidth / outsideDataWidthByte.U //总共要发出的访存请求的次数
             //     val Max_MReg_Write_Times = Tensor_MN*Tensor_MN*ResultWidthByte/CMatrixReg_Total_Bandwidth //总共要写入MReg的次数
-            //     ReadRequest.bits.RequestVirtualAddr := Tensor_Block_BaseAddr +  CurrentLoaded_BlockTensor_N_Iter * C_DataWidth
+            //     ReadRequest.bits.RequestAddr := Tensor_Block_BaseAddr +  CurrentLoaded_BlockTensor_N_Iter * C_DataWidth
             //     ReadRequest.bits.RequestConherent := IsConherent
             //     ReadRequest.bits.RequestSourceID := sourceId.bits
             //     ReadRequest.bits.RequestType_isWrite := false.B
@@ -553,7 +555,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             //         Repeat_Fill_Request_Infight := Repeat_Fill_Request_Infight + 1.U
             //         if (YJPCMLDebugEnable)
             //         {
-            //             printf("[CMemoryLoader_Load<%d>]RepeatRowLoad,CurrentLoaded_BlockTensor_N_Iter: %x, RequestVirtualAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x\n", io.DebugInfo.DebugTimeStampe, CurrentLoaded_BlockTensor_N_Iter, ReadRequest.bits.RequestVirtualAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite)
+            //             printf("[CMemoryLoader_Load<%d>]RepeatRowLoad,CurrentLoaded_BlockTensor_N_Iter: %x, RequestAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x\n", io.DebugInfo.DebugTimeStampe, CurrentLoaded_BlockTensor_N_Iter, ReadRequest.bits.RequestAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite)
             //         }
             //         when(TotalRequestSize === Max_RepeatRowLoad_Memory_Load_Times){
             //             //assert!
@@ -692,10 +694,10 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val FireTimes = RegInit(0.U(log2Ceil(CMatrixRegNBanks).W))
 
     when(Write_Mem_Wait_Table.reduce(_||_)){
-        io.StoreLocalMMUIO.Response.ready := true.B
+        io.StoreLocalMMUIO.Response(0).ready := true.B
     }
-    when(io.StoreLocalMMUIO.Response.fire){
-        val sourceId = io.StoreLocalMMUIO.Response.bits.ReseponseSourceID
+    when(io.StoreLocalMMUIO.Response(0).fire){
+        val sourceId = io.StoreLocalMMUIO.Response(0).bits.ReseponseSourceID
         Write_Mem_Wait_Table(sourceId) := false.B
     }
 
@@ -815,7 +817,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             }
 
             //只要fifo内的数据有效，就可以写入LLC
-            val WriteRequest = io.StoreLocalMMUIO.Request
+            val WriteRequest = io.StoreLocalMMUIO.Request(0)
             WriteRequest.valid := false.B
             when(!FromMatrixRegReadFIFOEmpty && Reorder_ToLLC_Reg_Ready_Get){
                 val Read_Data_list = WireInit(VecInit(Seq.fill(Matrix_MN)(0.U(Per_GetMatrix_NDim_Width.W))))
@@ -856,7 +858,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                     }
                 }
                 
-                WriteRequest.bits.RequestVirtualAddr := StoreTensorBlockBaseAddr + (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) * ApplicationTensor_D_Stride_M + CurrentStore_BlockTensor_Reduce_DIM_Iter * D_DataType
+                WriteRequest.bits.RequestAddr := StoreTensorBlockBaseAddr + (CurrentStore_BlockTensor_Major_DIM_Iter + CurrentStore_BlockTensor_SubMajor_DIM_Iter) * ApplicationTensor_D_Stride_M + CurrentStore_BlockTensor_Reduce_DIM_Iter * D_DataType
                 WriteRequest.bits.RequestConherent := IsStoreConherent
                 WriteRequest.bits.RequestSourceID := io.StoreLocalMMUIO.ConherentRequsetSourceID.bits
                 WriteRequest.bits.RequestType_isWrite := true.B
@@ -887,7 +889,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
 
                     if (YJPCMLDebugEnable)
                     {
-                        printf("[CMemoryLoader_Store<%d>]WriteRequest: RequestVirtualAddr= %x, RequestConherent= %x,RequestSourceID= %x,RequestType_isWrite= %x,CurrentStore_BlockTensor_Major_DIM_Iter: %x, CurrentStore_BlockTensor_Reduce_DIM_Iter: %x,RequestData:%x\n", io.DebugInfo.DebugTimeStampe, WriteRequest.bits.RequestVirtualAddr, WriteRequest.bits.RequestConherent, WriteRequest.bits.RequestSourceID, WriteRequest.bits.RequestType_isWrite, CurrentStore_BlockTensor_Major_DIM_Iter, CurrentStore_BlockTensor_Reduce_DIM_Iter,WriteRequest.bits.RequestData)
+                        printf("[CMemoryLoader_Store<%d>]WriteRequest: RequestAddr= %x, RequestConherent= %x,RequestSourceID= %x,RequestType_isWrite= %x,CurrentStore_BlockTensor_Major_DIM_Iter: %x, CurrentStore_BlockTensor_Reduce_DIM_Iter: %x,RequestData:%x\n", io.DebugInfo.DebugTimeStampe, WriteRequest.bits.RequestAddr, WriteRequest.bits.RequestConherent, WriteRequest.bits.RequestSourceID, WriteRequest.bits.RequestType_isWrite, CurrentStore_BlockTensor_Major_DIM_Iter, CurrentStore_BlockTensor_Reduce_DIM_Iter,WriteRequest.bits.RequestData)
                     }
                     
 
