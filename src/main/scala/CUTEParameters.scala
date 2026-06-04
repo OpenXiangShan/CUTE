@@ -988,6 +988,7 @@ class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
     val HasTail                         = Bool()
     val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
     val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
+}
 class ASLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val ApplicationScale_A = (new ApplicationScale_A_Info)
