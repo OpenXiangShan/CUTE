@@ -94,7 +94,7 @@ class CMLWrapper(implicit p: Parameters) extends CuteModule {
         val StoreMatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
     })
 
-    if (CMLResponseChannelCount > 1) {
+    if (CMLUseMultiChannelLoader) {
         val inner = Module(new MultiChannelsCMemLoader)
         inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
         inner.io.ConfigInfo <> io.ConfigInfo
@@ -315,9 +315,9 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     //CML的默认输入
     CML.io.ConfigInfo <> TaskCtrl.io.CML_MicroTask_Config
     CML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-    if (CMLResponseChannelCount > 1) {
-        connectWithResponseBridge(CML.io.LoadLocalMMUIO, MMU.io.CLoadLocalMMUIO, CMatrixRegNBanks, CMLResponseChannelCount, log2Ceil(CMatrixRegNBanks), log2Ceil(CMatrixRegBankNEntries), CMemoryLoaderReadFromMemoryFIFODepth)
-        connectWithResponseBridge(CML.io.StoreLocalMMUIO, MMU.io.CStoreLocalMMUIO, CMatrixRegNBanks, CMLResponseChannelCount, log2Ceil(CMatrixRegNBanks), log2Ceil(CMatrixRegBankNEntries), CMemoryLoaderReadFromMemoryFIFODepth)
+    if (CMLUseMultiChannelLoader) {
+        connectWithResponseBridge(CML.io.LoadLocalMMUIO, MMU.io.CLoadLocalMMUIO, CMatrixRegNBanks, CLoadBridgeResponseChannelCount, log2Ceil(CMatrixRegNBanks), log2Ceil(CMatrixRegBankNEntries), CMemoryLoaderReadFromMemoryFIFODepth)
+        connectWithResponseBridge(CML.io.StoreLocalMMUIO, MMU.io.CStoreLocalMMUIO, CMatrixRegNBanks, CStoreBridgeResponseChannelCount, log2Ceil(CMatrixRegNBanks), log2Ceil(CMatrixRegBankNEntries), CMemoryLoaderReadFromMemoryFIFODepth)
     } else {
         connectWithResponseArbiter(CML.io.LoadLocalMMUIO, MMU.io.CLoadLocalMMUIO, CMatrixRegNBanks)
         connectWithResponseArbiter(CML.io.StoreLocalMMUIO, MMU.io.CStoreLocalMMUIO, CMatrixRegNBanks)

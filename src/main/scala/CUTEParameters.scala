@@ -585,12 +585,22 @@ case class CuteParams(
 
     val EnableTwoChannelCML: Boolean = false,
     val EnableFourChannelCML: Boolean = true,
-    val EnableEightChannelCML: Boolean = false// true: CML 八通道并行访存; false: CML 单通道轮询访存
+    val EnableEightChannelCML: Boolean = false,// true: CML 八通道并行访存; false: CML 单通道轮询访存
+
+    val EnableTwoChannelCLoadBridge: Boolean = false,
+    val EnableFourChannelCLoadBridge: Boolean = false,
+    val EnableEightChannelCLoadBridge: Boolean = false,
+
+    val EnableTwoChannelCStoreBridge: Boolean = false,
+    val EnableFourChannelCStoreBridge: Boolean = false,
+    val EnableEightChannelCStoreBridge: Boolean = false
 ) {
 
     ResponseChannelHelper.requireLoaderRespMode("AML", EnableTwoChannelAML, EnableFourChannelAML, EnableEightChannelAML)
     ResponseChannelHelper.requireLoaderRespMode("BML", EnableTwoChannelBML, EnableFourChannelBML, EnableEightChannelBML)
     ResponseChannelHelper.requireLoaderRespMode("CML", EnableTwoChannelCML, EnableFourChannelCML, EnableEightChannelCML)
+    ResponseChannelHelper.requireLoaderRespMode("CLoadBridge", EnableTwoChannelCLoadBridge, EnableFourChannelCLoadBridge, EnableEightChannelCLoadBridge)
+    ResponseChannelHelper.requireLoaderRespMode("CStoreBridge", EnableTwoChannelCStoreBridge, EnableFourChannelCStoreBridge, EnableEightChannelCStoreBridge)
 
     //所有参数都必须是2的n次方
     // require(ReduceWidthByte == 64, "FP8/4 now only support 512 bit reduce width")
@@ -809,9 +819,28 @@ trait CUTEImplParameters{
     def EnableTwoChannelCML = cuteParams.EnableTwoChannelCML
     def EnableFourChannelCML = cuteParams.EnableFourChannelCML
     def EnableEightChannelCML = cuteParams.EnableEightChannelCML
+    def EnableTwoChannelCLoadBridge = cuteParams.EnableTwoChannelCLoadBridge
+    def EnableFourChannelCLoadBridge = cuteParams.EnableFourChannelCLoadBridge
+    def EnableEightChannelCLoadBridge = cuteParams.EnableEightChannelCLoadBridge
+    def EnableTwoChannelCStoreBridge = cuteParams.EnableTwoChannelCStoreBridge
+    def EnableFourChannelCStoreBridge = cuteParams.EnableFourChannelCStoreBridge
+    def EnableEightChannelCStoreBridge = cuteParams.EnableEightChannelCStoreBridge
     def AMLResponseChannelCount = ResponseChannelHelper.loaderRespChannelCount(EnableTwoChannelAML, EnableFourChannelAML, EnableEightChannelAML)
     def BMLResponseChannelCount = ResponseChannelHelper.loaderRespChannelCount(EnableTwoChannelBML, EnableFourChannelBML, EnableEightChannelBML)
     def CMLResponseChannelCount = ResponseChannelHelper.loaderRespChannelCount(EnableTwoChannelCML, EnableFourChannelCML, EnableEightChannelCML)
+    def CLoadBridgeResponseChannelCount =
+      if (EnableTwoChannelCLoadBridge || EnableFourChannelCLoadBridge || EnableEightChannelCLoadBridge) {
+        ResponseChannelHelper.loaderRespChannelCount(EnableTwoChannelCLoadBridge, EnableFourChannelCLoadBridge, EnableEightChannelCLoadBridge)
+      } else {
+        CMLResponseChannelCount
+      }
+    def CStoreBridgeResponseChannelCount =
+      if (EnableTwoChannelCStoreBridge || EnableFourChannelCStoreBridge || EnableEightChannelCStoreBridge) {
+        ResponseChannelHelper.loaderRespChannelCount(EnableTwoChannelCStoreBridge, EnableFourChannelCStoreBridge, EnableEightChannelCStoreBridge)
+      } else {
+        CMLResponseChannelCount
+      }
+    def CMLUseMultiChannelLoader = CLoadBridgeResponseChannelCount > 1 || CStoreBridgeResponseChannelCount > 1
 
     def MinGroupSize = FPEparams.MinGroupSize //FPE的最小计算组大小
     def MinDataTypeWidth = FPEparams.MinDataTypeWidth //FPE的最小数据类型宽度
