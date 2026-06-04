@@ -146,7 +146,7 @@ class BDataController(implicit p: Parameters) extends CuteModule{
                 //     printf("[BDataController<%d>]BDataController: M_IteratorMax is %d, N_IteratorMax is %d, K_IteratorMax is %d\n",io.DebugInfo.DebugTimeStampe, M_IteratorMax, N_IteratorMax, K_IteratorMax)
                 // }
                 //MTE循环的最外层是M，然后是N，最后是K,所以这里在同步信号的ComputeGo的协同下，执行Max_Caculate_Iter次取数
-                val next_addr = Wire(UInt(ABMatrixRegBankNEntrys.W))
+                val next_addr = Wire(UInt(ABMatrixRegBankNEntries.W))
                 next_addr := N_Iterator * K_IteratorMax + K_Iterator
                 MatrixRegRequestBankAddr.bits.foreach(_ := next_addr)
                 

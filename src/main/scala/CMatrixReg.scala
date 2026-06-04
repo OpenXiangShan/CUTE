@@ -41,33 +41,13 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
 
     //按照目前的设计，可以服务所有请求
     io.MatrixRegIO.FromDataController.ReadWriteResponse := io.MatrixRegIO.FromDataController.ReadWriteRequest
-    io.MatrixRegIO.FromMemoryLoader.ReadWriteResponse := io.MatrixRegIO.FromMemoryLoader.ReadWriteRequest
-
-    when(io.MatrixRegIO.FromMemoryLoader.ReadWriteRequest(MatrixRegTaskType.ReadFromMemoryLoaderIndex)) {
-        for (i <- 0 until CMatrixRegNBanks) {
-            when(io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr(i).valid) {
-                if (YJPCMLDebugEnable) {
-                    printf("[CMatrixReg_CMLReadReq(%d)] bank=%d addr=%x\n", scp_id.U, i.U, io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr(i).bits)
-                }
-            }
-        }
-    }
-
-    when(io.MatrixRegIO.FromMemoryLoader.ReadWriteRequest(MatrixRegTaskType.WriteFromMemoryLoaderIndex)) {
-        for (i <- 0 until CMatrixRegNBanks) {
-            when(io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.BankAddr(i).valid && io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.Data(i).valid) {
-                if (YJPCMLDebugEnable) {
-                    printf("[CMatrixReg_CMLWriteReq(%d)] bank=%d addr=%x data=%x mask=%x\n", scp_id.U, i.U,
-                      io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.BankAddr(i).bits,
-                      io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.Data(i).bits,
-                      io.MatrixRegIO.FromMemoryLoader.WriteRequestToMatrixReg.ByteMask(i).bits)
-                }
-            }
-        }
-    }
+    io.MatrixRegIO.FromMemoryLoader.LoadReadWriteResponse := io.MatrixRegIO.FromMemoryLoader.LoadReadWriteRequest
+    io.MatrixRegIO.FromMemoryLoader.StoreReadWriteResponse := io.MatrixRegIO.FromMemoryLoader.StoreReadWriteRequest
 
     //记录当前拍回数应该返回给哪条数据线
-    val request = io.MatrixRegIO.FromDataController.ReadWriteRequest | io.MatrixRegIO.FromMemoryLoader.ReadWriteRequest
+    val request = io.MatrixRegIO.FromDataController.ReadWriteRequest |
+      io.MatrixRegIO.FromMemoryLoader.LoadReadWriteRequest |
+      io.MatrixRegIO.FromMemoryLoader.StoreReadWriteRequest
     val PreRequest = RegNext(request)
 
     val decode_request = new MatrixRegTaskDecode(request)
@@ -76,11 +56,11 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
     assert(!(decode_request.IsReadFromDataController && decode_request.IsReadFromMemoryLoader), "CMatrixReg: ReadFromDataController and ReadFromMemoryLoader should not be both true at the same time")
     assert(!(decode_request.IsWriteFromDataController && decode_request.IsWriteFromMemoryLoader), "CMatrixReg: WriteFromDataController and WriteFromMemoryLoader should not be both true at the same time")
     
-    val read_request_per_bank_addr = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(CMatrixRegBankNEntrys.W))))
+    val read_request_per_bank_addr = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(CMatrixRegBankNEntries.W))))
     val read_request_per_bank_valid = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(false.B)))
     val read_request_response_valid = RegInit(VecInit(Seq.fill(CMatrixRegNBanks)(false.B)))
 
-    val write_request_per_bank_addr = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(CMatrixRegBankNEntrys.W))))
+    val write_request_per_bank_addr = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(CMatrixRegBankNEntries.W))))
     val write_request_per_bank_data= WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U((8*CMatrixRegEntryByteSize).W))))
     val write_request_per_bank_mask = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(Fill(CMatrixRegEntryByteSize, true.B))))
     val write_request_per_bank_valid = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(false.B)))
@@ -101,7 +81,7 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
     val sram_banks = (0 until CMatrixRegNBanks) map { i =>
 
         // 两个单口SRAM，奇偶地址各自负责，期望奇偶地址读写错开，奇读偶写，偶读奇写
-        val bankDepthHalf = (CMatrixRegBankNEntrys + 1) / 2
+        val bankDepthHalf = (CMatrixRegBankNEntries + 1) / 2
         val evenBank = Module(new SRAMTemplate(
             gen = UInt(8.W),
             set = bankDepthHalf,
@@ -147,12 +127,6 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
         io.MatrixRegIO.FromDataController.ReadResponseData(i).valid := decode_pre_request.IsReadFromDataController && read_request_response_valid(i)
         io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(i).valid := decode_pre_request.IsReadFromMemoryLoader && read_request_response_valid(i)
 
-        when(io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(i).valid) {
-            if (YJPCMLDebugEnable) {
-                printf("[CMatrixReg_CMLReadResp(%d)] bank=%d addr=%x data=%x\n", scp_id.U, i.U, debug_s1_bank_addr, s1_bank_read_data)
-            }
-        }
-
         //单口读路径：奇偶分流
         // 偶地址SRAM读请求
         evenBank.io.r.req.valid := s0_bank_read_valid && s0_read_is_even
@@ -189,4 +163,3 @@ class CMatrixReg(scp_id:Int)(implicit p: Parameters) extends CuteModule{
         (evenBank, oddBank)
     }
 }
-
