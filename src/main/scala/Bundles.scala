@@ -163,7 +163,7 @@ object Bundles {
 
   class AmuArithIO extends Bundle {
     // Only support mzero1r currently
-
+    
     // dest matrix register index
     val md     = UInt(4.W) // 12 : 9
     // operation type

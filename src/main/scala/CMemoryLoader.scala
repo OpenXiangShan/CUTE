@@ -108,8 +108,6 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         difftestStoreFinish.pc := StorePcReg.get
         difftestStoreFinish.bankValid.foreach(_ := false.B)
         difftestStoreFinish.bankAddr.foreach(_ := 0.U)
-        difftestStoreFinish.bankMask.foreach(_ := 0.U)
-        difftestStoreFinish.data.foreach(_ := 0.U)
         difftestStoreFinish.finish := storeFinishAny
     }
 

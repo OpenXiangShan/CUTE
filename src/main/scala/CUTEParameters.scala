@@ -436,7 +436,7 @@ case class CuteMMUParams(
 object Cutev3extParams {
     // NoV3ExtParams:
     def NoextParams = Cutev3extParams(
-    TaskCtrl_AutoClear = false, //whether the task controller auto-clears completed instructions
+    TaskCtrl_AutoClear = false, //whether the task controller auto-clears completed instructions  
     )
 
     // V3 Base Ext
@@ -746,7 +746,7 @@ trait CUTEImplParameters{
     def ScaleElementWidth = FPEparams.ScaleElementWidth //FPE scale element width
 
     def cmptreelayers = FPEparams.cmptreelayers //FPE compute tree depth
-    def fp8cmptreelayers = FPEparams.fp8cmptreelayers
+    def fp8cmptreelayers = FPEparams.fp8cmptreelayers 
 
     def P3AddNum :Int = cuteParams.P3AddNum //number of P3 adders in FPE
     def P2AddNum :Int = cuteParams.P2AddNum
@@ -960,6 +960,12 @@ class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
+class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
+    val ApplicationScale_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
+    val BlockScale_A_BaseVaddr         = (UInt(MMUAddrWidth.W))  // main active field
+    val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
+}
+
 class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val ApplicationTensor_A = new ApplicationTensor_A_Info
@@ -1042,11 +1048,6 @@ class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
     val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
-class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationScale_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
-    val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // main active field
-    val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
-}
 
 class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_C_BaseVaddr   = (UInt(MMUAddrWidth.W))
@@ -1148,6 +1149,15 @@ class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
     val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))
     val ByteMask = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryByteSize.W))))
+}
+
+class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(AScratchpadBankNLines), and it is input data that requires handshaking
+    val BankAddr = Flipped(Valid(UInt(log2Ceil(ABScaleBankNEntries).W)))
+    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
+    val Data = Flipped(Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W))))
+    //chosen selects the ScratchPad; it is a Bool. We use double buffering, selecting one for output and one for loading
+    // val Chosen = Input(Bool())
 }
 
 class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{

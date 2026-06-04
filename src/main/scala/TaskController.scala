@@ -304,6 +304,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     decEntryEnq.writeValid(i) := false.B
   }
 
+
+  val enqMma = decodeMma(amuCtrlBits)
+  val enqLsu = decodeLsu(amuCtrlBits)
+  val enqArith = decodeArith(amuCtrlBits)
+
   val enqMma = decodeMma(amuCtrlBits)
   val enqLsu = decodeLsu(amuCtrlBits)
   val enqArith = decodeArith(amuCtrlBits)

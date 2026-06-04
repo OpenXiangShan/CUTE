@@ -198,6 +198,16 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         }
     }
 
+    if (cuteMatrixExtension.enableScalingFactor) {
+        // AB Scale Regs
+        (ASMRegs.get ++ BSMRegs.get).foreach { reg =>
+            reg.io.FromScaleController.BankAddr.valid := false.B
+            reg.io.FromScaleController.BankAddr.bits := 0.U.asTypeOf(reg.io.FromScaleController.BankAddr.bits)
+            reg.io.FromScaleLoader.BankAddr := 0.U.asTypeOf(reg.io.FromScaleLoader.BankAddr)
+            reg.io.FromScaleLoader.Data := 0.U.asTypeOf(reg.io.FromScaleLoader.Data)
+        }
+    }
+
     // C MatrixReg
     for (i <- 0 until CMatrixRegCount){
         CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteRequest := 0.U

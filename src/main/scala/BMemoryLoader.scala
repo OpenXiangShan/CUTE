@@ -64,6 +64,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
           (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
         difftestAmuFinish.pc := pcReg
+        // DiffAmuFinishEvent packing is parameterized by words-per-bank.
         val eventWordsPerBank = difftestAmuFinish.data.length / ABMatrixRegNBanks
         val abMRegWordsPerBank = ABMatrixRegEntryBitSize / 64
         require(difftestAmuFinish.data.length % ABMatrixRegNBanks == 0, "DiffAmuFinishEvent.data should divide by AB bank count")
