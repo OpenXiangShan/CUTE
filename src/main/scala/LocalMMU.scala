@@ -14,6 +14,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         val CLoadLocalMMUIO = (new LocalMMUIO)
         val CStoreLocalMMUIO = (new LocalMMUIO)
         val LastLevelCacheTLIO = Flipped(new MMU2TLIO)
+        val perfProbe = Output(new LocalMMUPerfProbe)
     })
 
     val FirstRequestIndex = RegInit(0.U(LocalMMUTaskType.TaskTypeBitWidth.W))
@@ -205,4 +206,12 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     val cStoreWr = io.CStoreLocalMMUIO.Request.fire & io.CStoreLocalMMUIO.Request.bits.RequestType_isWrite
     XSPerfAccumulate("CUTE_MMU_C_rd_request", cLoadRd || cStoreRd)
     XSPerfAccumulate("CUTE_MMU_C_wr_request", cLoadWr || cStoreWr)
+
+    val outReqFire = io.LastLevelCacheTLIO.Request.fire
+    val outReqIsWr = io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite
+    val outReqMask32B = PopCount(io.LastLevelCacheTLIO.Request.bits.RequestMask) >> 5
+    io.perfProbe.rdReq := outReqFire && !outReqIsWr
+    io.perfProbe.wrReq := outReqFire && outReqIsWr
+    io.perfProbe.rd32BReq := Mux(outReqFire && !outReqIsWr, outReqMask32B, 0.U).asUInt
+    io.perfProbe.wr32BReq := Mux(outReqFire && outReqIsWr, outReqMask32B, 0.U).asUInt
 }
