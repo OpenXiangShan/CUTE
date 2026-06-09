@@ -960,9 +960,9 @@ class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
-class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationScale_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
-    val BlockScale_A_BaseVaddr         = (UInt(MMUAddrWidth.W))  // main active field
+class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
+    val ApplicationScale_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
+    val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // main active field
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
@@ -1149,15 +1149,6 @@ class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
     val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))
     val ByteMask = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryByteSize.W))))
-}
-
-class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(AScratchpadBankNLines), and it is input data that requires handshaking
-    val BankAddr = Flipped(Valid(UInt(log2Ceil(ABScaleBankNEntries).W)))
-    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
-    val Data = Flipped(Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W))))
-    //chosen selects the ScratchPad; it is a Bool. We use double buffering, selecting one for output and one for loading
-    // val Chosen = Input(Bool())
 }
 
 class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{

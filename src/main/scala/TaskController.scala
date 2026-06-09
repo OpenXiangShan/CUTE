@@ -309,10 +309,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val enqLsu = decodeLsu(amuCtrlBits)
   val enqArith = decodeArith(amuCtrlBits)
 
-  val enqMma = decodeMma(amuCtrlBits)
-  val enqLsu = decodeLsu(amuCtrlBits)
-  val enqArith = decodeArith(amuCtrlBits)
-
   when(amuCtrlBits.isMma()) {
     val mma = enqMma
     decEntryEnq.readRegs(0) := mma.ms1
