@@ -138,6 +138,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.AML_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.AML_MicroTask_Config.MatrixRegTensor_K := 0.U
   io.AML_MicroTask_Config.Conherent := false.B
+  io.AML_MicroTask_Config.Is_Transpose := false.B
   io.AML_MicroTask_Config.MatrixRegId := 0.U
   io.AML_MicroTask_Config.MicroTaskValid := false.B
   io.AML_MicroTask_Config.MicroTaskEndReady := false.B
@@ -159,6 +160,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.BML_MicroTask_Config.MatrixRegTensor_N := 0.U
   io.BML_MicroTask_Config.MatrixRegTensor_K := 0.U
   io.BML_MicroTask_Config.Conherent := false.B
+  io.BML_MicroTask_Config.Is_Transpose := false.B
   io.BML_MicroTask_Config.MatrixRegId := 0.U
   io.BML_MicroTask_Config.MicroTaskValid := false.B
   io.BML_MicroTask_Config.MicroTaskEndReady := false.B
@@ -301,6 +303,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     decEntryEnq.writeRegs(i) := 0.U
     decEntryEnq.writeValid(i) := false.B
   }
+
 
   val enqMma = decodeMma(amuCtrlBits)
   val enqLsu = decodeLsu(amuCtrlBits)
@@ -602,6 +605,33 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     ))
   }
 
+  private val loadByteCountBits = MatrixRegMaxTensorDimBitSize + 2
+
+  private def loadByteCount(dim: UInt, widths: UInt): UInt = {
+    val dimWide = dim.pad(loadByteCountBits)
+    val byteCount = WireDefault((dimWide << 2)(loadByteCountBits - 1, 0))
+    switch(widths) {
+      is(Bundles.MSew.e8)  { byteCount := dimWide }
+      is(Bundles.MSew.e16) { byteCount := (dimWide << 1)(loadByteCountBits - 1, 0) }
+      is(Bundles.MSew.e32) { byteCount := (dimWide << 2)(loadByteCountBits - 1, 0) }
+      is(Bundles.MSew.e4)  { byteCount := dimWide >> 1 }
+    }
+    byteCount
+  }
+
+  private def loadBeatCount(dim: UInt, widths: UInt): UInt = {
+    val beatCount = (loadByteCount(dim, widths) + (outsideDataWidthByte - 1).U) >> log2Ceil(outsideDataWidthByte)
+    beatCount.pad(MatrixRegMaxTensorDimBitSize)(MatrixRegMaxTensorDimBitSize - 1, 0)
+  }
+
+  private def loadHasTail(dim: UInt, widths: UInt): Bool = {
+    loadByteCount(dim, widths)(log2Ceil(outsideDataWidthByte) - 1, 0).orR
+  }
+
+  private def loadTailByteMask(dim: UInt, widths: UInt): UInt = {
+    Cat(0.U((log2Ceil(outsideDataWidthByte + 1) - log2Ceil(outsideDataWidthByte)).W), loadByteCount(dim, widths)(log2Ceil(outsideDataWidthByte) - 1, 0))
+  }
+
   private def decodeMmaComputeType(mma: AmuMmaIO): UInt = {
     val computeType = WireInit(MteComputeType.ComputeTypeUndef)
     when(mma.isfp) {
@@ -642,18 +672,24 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     switch(issueSlot.opKind) {
       is(TaskCtrlOpKind.LoadA) {
         val regIdx = issueLsu.ms(1, 0)
-        val kVal = computeKFromMsew(issueLsu.column, issueLsu.widths) / ReduceWidthByte.U
+        val matrixDim = Mux(issueLsu.transpose, issueLsu.column, issueLsu.row)
+        val reduceDim = Mux(issueLsu.transpose, issueLsu.row, issueLsu.column)
+        val kVal = loadBeatCount(reduceDim, issueLsu.widths)
 
         io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := issueLsu.baseAddr
         io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := issueLsu.stride
         io.AML_MicroTask_Config.ApplicationTensor_A.dataType := loadDataType(issueLsu.widths)
+        io.AML_MicroTask_Config.ApplicationTensor_A.HasTail := loadHasTail(reduceDim, issueLsu.widths)
+        io.AML_MicroTask_Config.ApplicationTensor_A.TailByteMask := loadTailByteMask(reduceDim, issueLsu.widths)
+        io.AML_MicroTask_Config.ApplicationTensor_A.K_Beat_Count := kVal
         io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
         io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
         io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-        io.AML_MicroTask_Config.MatrixRegTensor_M := issueLsu.row
+        io.AML_MicroTask_Config.MatrixRegTensor_M := matrixDim
         io.AML_MicroTask_Config.MatrixRegTensor_K := kVal
         io.AML_MicroTask_Config.MatrixRegId := regIdx
         io.AML_MicroTask_Config.Conherent := true.B
+        io.AML_MicroTask_Config.Is_Transpose := issueLsu.transpose
         io.AML_MicroTask_Config.MicroTaskValid := true.B
         if (EnableDifftest) {
           io.AML_MicroTask_Config.pc.get := issueCtrl.pc.get
@@ -687,16 +723,22 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
       is(TaskCtrlOpKind.LoadB) {
         val regIdx = issueLsu.ms(1, 0)
-        val kVal = computeKFromMsew(issueLsu.row, issueLsu.widths) / ReduceWidthByte.U
+        val matrixDim = Mux(issueLsu.transpose, issueLsu.row, issueLsu.column)
+        val reduceDim = Mux(issueLsu.transpose, issueLsu.column, issueLsu.row)
+        val kVal = loadBeatCount(reduceDim, issueLsu.widths)
 
         io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr := issueLsu.baseAddr
         io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_Stride_N := issueLsu.stride
         io.BML_MicroTask_Config.ApplicationTensor_B.BlockTensor_B_BaseVaddr := issueLsu.baseAddr
         io.BML_MicroTask_Config.ApplicationTensor_B.dataType := loadDataType(issueLsu.widths)
-        io.BML_MicroTask_Config.MatrixRegTensor_N := issueLsu.column
+        io.BML_MicroTask_Config.ApplicationTensor_B.HasTail := loadHasTail(reduceDim, issueLsu.widths)
+        io.BML_MicroTask_Config.ApplicationTensor_B.TailByteMask := loadTailByteMask(reduceDim, issueLsu.widths)
+        io.BML_MicroTask_Config.ApplicationTensor_B.K_Beat_Count := kVal
+        io.BML_MicroTask_Config.MatrixRegTensor_N := matrixDim
         io.BML_MicroTask_Config.MatrixRegTensor_K := kVal
         io.BML_MicroTask_Config.MatrixRegId := regIdx
         io.BML_MicroTask_Config.Conherent := true.B
+        io.BML_MicroTask_Config.Is_Transpose := issueLsu.transpose
         io.BML_MicroTask_Config.MicroTaskValid := true.B
         if (EnableDifftest) {
           io.BML_MicroTask_Config.pc.get := issueCtrl.pc.get
@@ -730,17 +772,23 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
       is(TaskCtrlOpKind.LoadC) {
         val regIdx = issueLsu.ms(1, 0)
+        val matrixDimM = Mux(issueLsu.transpose, issueLsu.column, issueLsu.row)
+        val matrixDimN = Mux(issueLsu.transpose, issueLsu.row, issueLsu.column)
+        val nVal = loadBeatCount(matrixDimN, issueLsu.widths)
 
         io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := issueLsu.baseAddr
         io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_Stride_M := issueLsu.stride
         io.CML_MicroTask_Config.ApplicationTensor_C.BlockTensor_C_BaseVaddr := issueLsu.baseAddr
         io.CML_MicroTask_Config.ApplicationTensor_C.dataType := loadDataType(issueLsu.widths)
+        io.CML_MicroTask_Config.ApplicationTensor_C.HasTail := loadHasTail(matrixDimN, issueLsu.widths)
+        io.CML_MicroTask_Config.ApplicationTensor_C.TailByteMask := loadTailByteMask(matrixDimN, issueLsu.widths)
+        io.CML_MicroTask_Config.ApplicationTensor_C.N_Beat_Count := nVal
         io.CML_MicroTask_Config.Conherent := true.B
         io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
         io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
         io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-        io.CML_MicroTask_Config.MatrixRegTensor_M := issueLsu.row
-        io.CML_MicroTask_Config.MatrixRegTensor_N := issueLsu.column
+        io.CML_MicroTask_Config.MatrixRegTensor_M := matrixDimM
+        io.CML_MicroTask_Config.MatrixRegTensor_N := matrixDimN
         io.CML_MicroTask_Config.MatrixRegId := regIdx
         io.CML_MicroTask_Config.Is_Transpose := issueLsu.transpose
         io.CML_MicroTask_Config.LoadMicroTaskValid := true.B
@@ -831,6 +879,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
         io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
         io.AML_MicroTask_Config.Conherent := true.B
+        io.AML_MicroTask_Config.Is_Transpose := false.B
         if (EnableDifftest) {
           io.AML_MicroTask_Config.pc.get := issueCtrl.pc.get
           io.AML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
@@ -1390,6 +1439,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     releaseFinish.pc := Mux(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release, releaseIssueOwnerEntry.ctrl.pc.get, 0.U)
     releaseFinish.bankValid.foreach(_ := false.B)
     releaseFinish.bankAddr.foreach(_ := 0.U)
+    releaseFinish.bankMask.foreach(_ := 0.U)
     releaseFinish.data.foreach(_ := 0.U)
     releaseFinish.finish := issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
 

@@ -19,6 +19,7 @@ import freechips.rocketchip.util.SeqToAugmentedSeq
 class CSourceIdSearch(implicit p: Parameters) extends CuteBundle{
     val MatrixRegBankId =UInt(log2Ceil(CMatrixRegNBanks).W)
     val MatrixRegAddr = UInt(log2Ceil(CMatrixRegBankNEntries).W)
+    val MatrixRegisTail = Bool()
 }
 
 class CMemoryLoader(implicit p: Parameters) extends CuteModule{
@@ -46,10 +47,14 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ToMatrixRegIO.StoreReadWriteRequest := 0.U
     io.LoadLocalMMUIO.Request.valid := false.B
     io.LoadLocalMMUIO.Request.bits := DontCare
+    io.LoadLocalMMUIO.Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
     io.LoadLocalMMUIO.Response.ready := false.B
     io.StoreLocalMMUIO.Request.valid := false.B
     io.StoreLocalMMUIO.Request.bits := DontCare
+    io.StoreLocalMMUIO.Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
     io.StoreLocalMMUIO.Response.ready := false.B
+    io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask.map(_.valid := false.B)
+    io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask.map(_.bits := Fill(CMatrixRegEntryByteSize, true.B))
 
     val CurrentLoadMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
     val CurrentStoreMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
@@ -82,6 +87,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         for (i <- 0 until CMatrixRegNBanks) {
           difftestLoadFinish.bankValid(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).valid
           difftestLoadFinish.bankAddr(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).bits
+          difftestLoadFinish.bankMask(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask(i).bits
           for (w <- 0 until eventWordsPerBank) {
             if (w < cMRegWordsPerBank) {
               val lo = w * 64
@@ -102,7 +108,6 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         difftestStoreFinish.pc := StorePcReg.get
         difftestStoreFinish.bankValid.foreach(_ := false.B)
         difftestStoreFinish.bankAddr.foreach(_ := 0.U)
-        difftestStoreFinish.data.foreach(_ := 0.U)
         difftestStoreFinish.finish := storeFinishAny
     }
 
@@ -133,6 +138,9 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     val ApplicationTensor_C_Stride_M = RegInit(0.U(MMUAddrWidth.W))
     val ApplicationTensor_D_Stride_M = RegInit(0.U(MMUAddrWidth.W))
+    val HasTail = RegInit(false.B)
+    val TailByteMask = RegInit(0.U(log2Ceil(outsideDataWidthByte + 1).W))
+    val N_Beat_Count = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
@@ -152,6 +160,9 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         IsLoadConherent := io.ConfigInfo.Conherent
         LoadMatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_M
         LoadMatrixRegTensor_N := io.ConfigInfo.MatrixRegTensor_N
+        HasTail := io.ConfigInfo.ApplicationTensor_C.HasTail
+        TailByteMask := io.ConfigInfo.ApplicationTensor_C.TailByteMask
+        N_Beat_Count := io.ConfigInfo.ApplicationTensor_C.N_Beat_Count
 
         Is_ZeroLoad := io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad
         Is_FullLoad := io.ConfigInfo.LoadTaskInfo.Is_FullLoad
@@ -225,6 +236,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val MReg_Fill_Table = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
     val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(CMatrixRegBankNEntries).W)))))//记录这个LLC回的数是在scp的哪个地址
     val MReg_Fill_Table_Time = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/CMatrixRegEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
+    val MReg_Fill_Table_IsTail = RegInit(VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(false.B)))
     val MReg_Fill_Table_Free = MReg_Fill_Table_Time.map(_ === 0.U)//记录这个FIFO能否能填数据
     val MReg_Fill_Table_Valid = MReg_Fill_Table_Time.map(_ =/= 0.U)//记录这个FIFO里的数据是否有效
     val MReg_Fill_Table_Insert_Index = PriorityEncoder(MReg_Fill_Table_Free)//返回第一个空位的index
@@ -265,13 +277,14 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             TotalRequestSize := 0.U
             CurrentLoaded_BlockTensor_M_Iter := 0.U
             CurrentLoaded_BlockTensor_N_Iter := 0.U
-            MaxRequestIter := LoadMatrixRegTensor_M * LoadMatrixRegTensor_N * ResultWidthByte.U / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
+            MaxRequestIter := LoadMatrixRegTensor_M * N_Beat_Count //总共要发出的访存请求的次数
             Bank_Fill_Search_FIFO := 0.U.asTypeOf(Bank_Fill_Search_FIFO)
             Bank_Fill_Search_FIFO_Head := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Head)
             Bank_Fill_Search_FIFO_Tail := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Tail)
             MReg_Fill_Table := 0.U.asTypeOf(MReg_Fill_Table)
             MReg_Fill_Table_MReg_Addr := 0.U.asTypeOf(MReg_Fill_Table_MReg_Addr)
             MReg_Fill_Table_Time := 0.U.asTypeOf(MReg_Fill_Table_Time)
+            MReg_Fill_Table_IsTail := VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(false.B))
             Request_M_Iter_Time := 0.U
             MReg_Fill_Table_Head := 0.U
             MReg_Fill_Table_Tail := 0.U
@@ -322,10 +335,12 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
 
             when(Is_FullLoad)
             {
+                val tailTaskMask = UIntToOH(TailByteMask, outsideDataWidthByte + 1).asUInt - 1.U(outsideDataWidthByte.W)
+                val RequestBeatIsTail = HasTail && (CurrentLoaded_BlockTensor_N_Iter === (N_Beat_Count - 1.U))
                 val RequestMatrixRegBankId = (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) % CMatrixRegNBanks.U //访存请求落在哪个MatrixRegBank上
-                val RequestMatrixRegAddr = (CurrentLoaded_BlockTensor_M_Iter / CMatrixRegNBanks.U * LoadMatrixRegTensor_N / Matrix_MN.U) + (CurrentLoaded_BlockTensor_N_Iter / Matrix_MN.U) //该访存请求的第零号数据，落在哪个MatrixRegBank的哪个地址上
+                val RequestMatrixRegAddr = ((CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) / CMatrixRegNBanks.U) * (Tensor_MN.U / Matrix_MN.U) + (CurrentLoaded_BlockTensor_N_Iter << log2Ceil(MAX_Fill_Times)) //该访存请求的第零号数据，落在哪个MatrixRegBank的哪个地址上
                 
-                ReadRequest.bits.RequestVirtualAddr := LoadTensorBlockBaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_C_Stride_M + CurrentLoaded_BlockTensor_N_Iter * C_DataWidth
+                ReadRequest.bits.RequestVirtualAddr := LoadTensorBlockBaseAddr + (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) * ApplicationTensor_C_Stride_M + (CurrentLoaded_BlockTensor_N_Iter << log2Ceil(outsideDataWidthByte))
                 
                 // val CurrentBankID = RequestMatrixRegBankId
                 // val CurrentFIFOIndex = FromMemoryLoaderReadFIFOHead
@@ -336,6 +351,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 ReadRequest.bits.RequestConherent := IsLoadConherent
                 ReadRequest.bits.RequestSourceID := sourceId.bits
                 ReadRequest.bits.RequestType_isWrite := false.B
+                ReadRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
                 ReadRequest.valid := (TotalRequestSize < MaxRequestIter)
 
                 //确定这个访存请求一定会发出
@@ -343,13 +359,14 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                     val TableItem = Wire(new CSourceIdSearch)
                     TableItem.MatrixRegBankId := RequestMatrixRegBankId
                     TableItem.MatrixRegAddr := RequestMatrixRegAddr
+                    TableItem.MatrixRegisTail := RequestBeatIsTail
                     SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
 
                     Request_M_Iter_Time := Request_M_Iter_Time + 1.U//连续的跨bank去访存
                     when(Request_M_Iter_Time === (Matrix_MN - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === LoadMatrixRegTensor_M - 1.U){
                         Request_M_Iter_Time := 0.U
-                        CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataWidth
-                        when(CurrentLoaded_BlockTensor_N_Iter + outsideDataWidthByte.U / C_DataWidth === LoadMatrixRegTensor_N){
+                        CurrentLoaded_BlockTensor_N_Iter := CurrentLoaded_BlockTensor_N_Iter + 1.U
+                        when(CurrentLoaded_BlockTensor_N_Iter + 1.U === N_Beat_Count){
                             CurrentLoaded_BlockTensor_N_Iter := 0.U
                             CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_MN.U
                         }
@@ -397,6 +414,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                     MReg_Fill_Table(MReg_Fill_Table_Insert_Index) := ResponseData
                     MReg_Fill_Table_MReg_Addr(MReg_Fill_Table_Insert_Index) := MatrixRegAddr
                     MReg_Fill_Table_Time(MReg_Fill_Table_Insert_Index) := MAX_Fill_Times.U
+                    MReg_Fill_Table_IsTail(MReg_Fill_Table_Insert_Index) := SoureceIdSearchTable(sourceId).asTypeOf(new CSourceIdSearch).MatrixRegisTail
 
                     Bank_Fill_Search_FIFO(MatrixRegBankId)(FIFOIndex) := MReg_Fill_Table_Insert_Index
                     Bank_Fill_Search_FIFO_Head(MatrixRegBankId) := WrapInc(Bank_Fill_Search_FIFO_Head(MatrixRegBankId), CMemoryLoaderReadFromMemoryFIFODepth)
@@ -419,11 +437,22 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                             Current_Fill_MReg_Time(i) := 1.U
                             val MatrixRegWriteRequest = io.ToMatrixRegIO.WriteRequestToMatrixReg
                             val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*CMatrixRegEntryByteSize).W)))))
+                            val fillSlot = MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex)
+                            val currentIsTail = MReg_Fill_Table_IsTail(CurrentFIFOIndex)
+                            val fullByteMask = Fill(CMatrixRegEntryByteSize, true.B)
+                            val tailByteMaskVec = Wire(Vec(MAX_Fill_Times, UInt(CMatrixRegEntryByteSize.W)))
+                            for (j <- 0 until MAX_Fill_Times) {
+                                val high = (j + 1) * CMatrixRegEntryByteSize - 1
+                                val low = j * CMatrixRegEntryByteSize
+                                tailByteMaskVec(j) := tailTaskMask(high, low)
+                            }
                             FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
-                            MatrixRegWriteRequest.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + (MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
+                            MatrixRegWriteRequest.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + fillSlot
                             MatrixRegWriteRequest.BankAddr(i).valid := true.B
-                            MatrixRegWriteRequest.Data(i).bits := FIFOData(MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex))
+                            MatrixRegWriteRequest.Data(i).bits := FIFOData(fillSlot)
                             MatrixRegWriteRequest.Data(i).valid := true.B
+                            MatrixRegWriteRequest.ByteMask(i).bits := Mux(currentIsTail, tailByteMaskVec(fillSlot), fullByteMask)
+                            MatrixRegWriteRequest.ByteMask(i).valid := true.B
 
                             MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - 1.U
                             when(MReg_Fill_Table_Time(CurrentFIFOIndex) === 1.U){
@@ -860,6 +889,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 WriteRequest.bits.RequestConherent := IsStoreConherent
                 WriteRequest.bits.RequestSourceID := io.StoreLocalMMUIO.ConherentRequsetSourceID.bits
                 WriteRequest.bits.RequestType_isWrite := true.B
+                WriteRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
                 WriteRequest.bits.RequestData := Request_Data.asUInt
                 WriteRequest.valid := true.B
                 //只有fire了才能继续

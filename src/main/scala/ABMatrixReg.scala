@@ -14,7 +14,7 @@ import utility.sram.SRAMTemplate
 
 class ABMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val FromDataController = new ABDataControlMatrixRegIO
-    val FromMemoryLoader = new ABMemoryLoaderMatrixRegIO 
+    val FromMemoryLoader = new ABMemoryLoaderMatrixRegIO
 }
 
 class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
@@ -22,7 +22,7 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
         val MatrixRegIO = new ABMatrixRegIO
     })
 
-    
+
     // 读写优先级逻辑：写优先于读
     // 目前在Loader、DataController里面都加了FIFO，能保证一些堵的情况的发生
 
@@ -33,11 +33,12 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
     // MemoryLoader端的信号
     val MemoryLoaderBankAddr = io.MatrixRegIO.FromMemoryLoader.BankAddr
     val MemoryLoaderData = io.MatrixRegIO.FromMemoryLoader.Data
-    
+    val MemoryLoaderByteMask = io.MatrixRegIO.FromMemoryLoader.ByteMask
+
     // 写优先的MatrixReg控制逻辑
     // write_go: 只要有写入请求（正常写或零填充）就为true
     val write_go = MemoryLoaderBankAddr.zip(MemoryLoaderData).map{case (a, b) => a.valid && b.valid}.reduce(_||_)
-    
+
     // read_go: 只有在没有写请求时才允许读，实现写优先
     val read_go = io.MatrixRegIO.FromDataController.BankAddr.valid && 
                   !MemoryLoaderBankAddr.map(_.valid).reduce(_||_) && 
@@ -53,13 +54,11 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
     // 实例化多个SRAM作为多个bank
     val sram_banks = (0 until ABMatrixRegNBanks) map { i =>
 
-        // 使用SRAMTemplate替代SyncReadMem
-        // singlePort=true: 单端口SRAM，支持读写冲突处理
-        // latency=1: 读延迟为1拍
+        // Use byte-wide ways so SRAMTemplate waymask becomes byte write enable.
         val bank = Module(new SRAMTemplate(
-            gen = UInt((ABMatrixRegEntryByteSize*8).W),
+            gen = UInt(8.W),
             set = ABMatrixRegBankNEntries,
-            way = 1,
+            way = ABMatrixRegEntryByteSize,
             singlePort = true,
             latency = 1,
             hasMbist = false,
@@ -89,7 +88,8 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
         // 写数据逻辑
         val s0_bank_write_addr = MemoryLoaderBankAddr(i).bits
         val s0_bank_write_data = MemoryLoaderData(i).bits
-        val s0_bank_write_valid = MemoryLoaderBankAddr(i).valid && MemoryLoaderData(i).valid
+        val s0_bank_write_mask = MemoryLoaderByteMask(i).bits
+        val s0_bank_write_valid = MemoryLoaderBankAddr(i).valid && MemoryLoaderData(i).valid && MemoryLoaderByteMask(i).valid
         
         // 最终的写入控制
         val s0_final_write_valid = write_go && s0_bank_write_valid
@@ -99,8 +99,8 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
         when(write_go && s0_bank_write_valid){
             if (YJPDebugEnable)
             {
-                printf("[ABMatrixReg_Write(%d)]Bank(%d): s0_bank_write_addr = %d, s0_bank_write_data = %x\n",
-                       scp_id.U, i.U, s0_bank_write_addr, s0_bank_write_data)
+                printf("[ABMatrixReg_Write(%d)]Bank(%d): s0_bank_write_addr = %d, s0_bank_write_data = %x, mask = %x\n",
+                       scp_id.U, i.U, s0_bank_write_addr, s0_bank_write_data, s0_bank_write_mask)
             }
         }
 
@@ -110,15 +110,14 @@ class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
         bank.io.r.req.valid := bank_read_valid
         bank.io.r.req.bits.setIdx := s0_bank_read_addr
         // 读响应在下一拍返回（latency=1）
-        s1_bank_read_data := bank.io.r.resp.data(0)
+        s1_bank_read_data := bank.io.r.resp.data.asUInt
         
         // 连接SRAMTemplate的写接口
-        // 使用apply方法设置写请求，way=1时waymask为None
         bank.io.w.req.valid := s0_final_write_valid
         bank.io.w.req.bits.setIdx := s0_final_write_addr
-        bank.io.w.req.bits.data(0) := s0_final_write_data
+        bank.io.w.req.bits.waymask.get := s0_bank_write_mask
+        bank.io.w.req.bits.data := s0_final_write_data.asTypeOf(Vec(ABMatrixRegEntryByteSize, UInt(8.W)))
 
         bank
     }
 }
-

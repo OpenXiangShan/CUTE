@@ -84,6 +84,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     io.LastLevelCacheTLIO.Request.valid := false.B
     io.LastLevelCacheTLIO.Request.bits := DontCare
     io.LastLevelCacheTLIO.Response.ready := false.B
+    val selectedRequestMask = WireDefault(Fill(MMUMaskWidth, 1.U(1.W)))
 
     when(io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid && HasRequest)
     {
@@ -93,6 +94,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.ALocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
                 io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.ALocalMMUIO.Request.bits.RequestVirtualAddr
                 io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := false.B
+                selectedRequestMask := io.ALocalMMUIO.Request.bits.RequestMask
                 sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.AFirst
                 io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
             }
@@ -111,6 +113,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.BLocalMMUIO.ConherentRequsetSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID
                 io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.BLocalMMUIO.Request.bits.RequestVirtualAddr
                 io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := false.B
+                selectedRequestMask := io.BLocalMMUIO.Request.bits.RequestMask
                 sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.BFirst
                 io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := false.B
             }
@@ -130,6 +133,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.CLoadLocalMMUIO.Request.bits.RequestVirtualAddr
                 io.LastLevelCacheTLIO.Request.bits.RequestData := io.CLoadLocalMMUIO.Request.bits.RequestData
                 io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.CLoadLocalMMUIO.Request.bits.RequestType_isWrite
+                selectedRequestMask := io.CLoadLocalMMUIO.Request.bits.RequestMask
                 sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.CLoadFirst
                 io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := true.B
             }
@@ -139,12 +143,13 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.LastLevelCacheTLIO.Request.bits.RequestPhysicalAddr := io.CStoreLocalMMUIO.Request.bits.RequestVirtualAddr
                 io.LastLevelCacheTLIO.Request.bits.RequestData := io.CStoreLocalMMUIO.Request.bits.RequestData
                 io.LastLevelCacheTLIO.Request.bits.RequestType_isWrite := io.CStoreLocalMMUIO.Request.bits.RequestType_isWrite
+                selectedRequestMask := io.CStoreLocalMMUIO.Request.bits.RequestMask
                 sourceid2port(io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits) := LocalMMUTaskType.CStoreFirst
                 io.LastLevelCacheTLIO.Request.bits.MatrixIsAcc := true.B
             }
         }
 
-        io.LastLevelCacheTLIO.Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.LastLevelCacheTLIO.Request.bits.RequestMask := selectedRequestMask
         io.LastLevelCacheTLIO.Request.bits.RequestConherent := true.B
         io.LastLevelCacheTLIO.Request.bits.RequestSourceID := io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits
         io.LastLevelCacheTLIO.Request.valid := true.B

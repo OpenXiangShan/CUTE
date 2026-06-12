@@ -71,6 +71,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         for (i <- 0 until CMatrixRegNBanks) {
           difftestAmuFinish.bankValid(i) := io.FromMatrixRegIO.WriteBankAddr(i).valid
           difftestAmuFinish.bankAddr(i) := io.FromMatrixRegIO.WriteBankAddr(i).bits
+          difftestAmuFinish.bankMask(i) := Fill(CMatrixRegEntryByteSize, true.B)
           for (w <- 0 until eventWordsPerBank) {
             if (w < cMRegWordsPerBank) {
               val lo = w * 64

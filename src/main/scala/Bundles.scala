@@ -93,7 +93,7 @@ object Bundles {
     val mtilem   = Mtilex()  // 36 : 28
     val mtilen   = Mtilex()  // 27 : 19
     val mtilek   = Mtilex()  // 18 : 10
-    
+
     // the type of source matrices
     // - lower 2 bits stands for the element width:
     //   - 0: e8, 1: e16, 2: e32, 3: e4
@@ -134,7 +134,7 @@ object Bundles {
     val baseAddr  = UInt(48.W)        // 116 : 69
     // the stride of the matrix
     val stride    = UInt(48.W)        // 68 : 21
-    
+
     // the number of rows of the matrix
     val row       = Mtilex()          // 20 : 12
     // the number of columns of the matrix

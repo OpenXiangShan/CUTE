@@ -597,6 +597,7 @@ case class CuteParams(
     def DiffAmuFinishWordsPerBank = Math.max(ABMatrixRegEntryBitSize, CMatrixRegEntryBitSize) / 64
     def ABMatrixRegNBanks = Matrix_MN //note that this is strongly tied to Matrix_MN and is generally an integer multiple of Matrix_MN
     def CMatrixRegNBanks = Matrix_MN //convenient for reorder
+    def Trans_Load_Size = outsideDataWidthByte / ABMatrixRegNBanks
     def ABMatrixReg_Total_Bandwidth = ABMatrixRegNBanks * ABMatrixRegEntryByteSize  //total bandwidth of ABMatrixReg
     def CMatrixReg_Total_Bandwidth = CMatrixRegNBanks * CMatrixRegEntryByteSize  //total bandwidth of CMatrixReg
     def ABMatrixReg_Total_Bandwidth_Bit = ABMatrixRegNBanks * ABMatrixRegEntryByteSize * 8  //total bandwidth of ABMatrixReg
@@ -616,6 +617,7 @@ case class CuteParams(
 
     // require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
     require(outsideDataWidthByte <= Tensor_K, "outsideDataWidthByte must be less than or equal to Tensor_K, or a load will exceed the subtensor in micro load")
+    require(outsideDataWidthByte % ABMatrixRegNBanks == 0, "outsideDataWidthByte must be divisible by ABMatrixRegNBanks for transpose load")
 
 }
 
@@ -715,6 +717,7 @@ trait CUTEImplParameters{
     def DiffAmuFinishWordsPerBank = cuteParams.DiffAmuFinishWordsPerBank
     def ABMatrixRegNBanks = cuteParams.ABMatrixRegNBanks
     def CMatrixRegNBanks = cuteParams.CMatrixRegNBanks
+    def Trans_Load_Size = cuteParams.Trans_Load_Size
     def ABMatrixReg_Total_Bandwidth = cuteParams.ABMatrixReg_Total_Bandwidth
     def CMatrixReg_Total_Bandwidth = cuteParams.CMatrixReg_Total_Bandwidth
     def ABMatrixReg_Total_Bandwidth_Bit = cuteParams.ABMatrixReg_Total_Bandwidth_Bit
@@ -946,11 +949,20 @@ class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
     // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))//may be gone already
     val ApplicationTensor_A_Stride_M    = (UInt(MMUAddrWidth.W))//address offset increment for the next M
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    val HasTail                         = Bool()
+    val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+    val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
 class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationScale_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockScale_A_BaseVaddr         = (UInt(MMUAddrWidth.W))  // main active field
+    val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
+}
+
+class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
+    val ApplicationScale_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
+    val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // main active field
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
@@ -965,6 +977,7 @@ class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
     val Conherent                           = (Bool())      //whether coherence is needed
+    val Is_Transpose                        = (Bool())      //whether transpose is needed
 
     val MicroTaskReady                      = Flipped(Bool())//can configure the next task
     val MicroTaskValid                      = (Bool())       //current task configuration is valid
@@ -999,6 +1012,7 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
 
     val Conherent                           = (Bool())      //whether coherence is needed
+    val Is_Transpose                        = (Bool())      //whether transpose is needed
 
     val MicroTaskReady                      = Flipped(Bool())//can configure the next task
     val MicroTaskValid                      = (Bool())       //current task configuration is valid
@@ -1029,19 +1043,20 @@ class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
     val BlockTensor_B_BaseVaddr         = (UInt(MMUAddrWidth.W))
     val ApplicationTensor_B_Stride_N    = (UInt(MMUAddrWidth.W))//address offset increment for the next N
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    val HasTail                         = Bool()
+    val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+    val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
-class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationScale_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
-    val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // main active field
-    val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
-}
 
 class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_C_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockTensor_C_BaseVaddr         = (UInt(MMUAddrWidth.W))
     val ApplicationTensor_C_Stride_M    = (UInt(MMUAddrWidth.W))//address offset increment for the next M
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    val HasTail                         = Bool()
+    val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+    val N_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
 class ApplicationTensor_D_Info()(implicit p: Parameters) extends CuteBundle{
@@ -1133,6 +1148,7 @@ class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val BankAddr = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntries).W))))
     //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
     val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))
+    val ByteMask = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryByteSize.W))))
 }
 
 class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
@@ -1165,6 +1181,7 @@ class CMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val WriteRequestToMatrixReg = (new Bundle{
         val BankAddr = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W)))))
         val Data = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(CMatrixRegEntryBitSize.W)))))
+        val ByteMask = Flipped(Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryByteSize.W))))
     })
     val LoadReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     val StoreReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
@@ -1183,6 +1200,7 @@ class LocalMMUIO(implicit p: Parameters) extends CuteBundle{
         val RequestData = UInt(MMUDataWidth.W)
         val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
         val RequestType_isWrite = Bool()
+        val RequestMask = UInt(MMUMaskWidth.W) //MMU byte mask
     }))
     //transaction ID of the TL link to which the read request is dispatched
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))
@@ -1350,6 +1368,13 @@ class FReducePEDataType {
 case object  ElementDataType extends Field[UInt]{
     val DataTypeBitWidth = 4
     val DataTypeUndef   = 0.U(DataTypeBitWidth.W)
+    val DataTypeI8I8I32 = MteComputeType.I8I8I32
+    val DataTypeI8U8I32 = MteComputeType.I8U8I32
+    val DataTypeU8I8I32 = MteComputeType.U8I8I32
+    val DataTypeU8U8I32 = MteComputeType.U8U8I32
+    val DataTypeF16F16F32 = MteComputeType.F16F16F32
+    val DataTypeBF16BF16F32 = MteComputeType.BF16BF16F32
+    val DataTypeTF32TF32F32 = MteComputeType.TF32TF32F32
     val DataTypeWidth32 = 4.U(DataTypeBitWidth.W)
     val DataTypeWidth16 = 2.U(DataTypeBitWidth.W)
     val DataTypeWidth8  = 1.U(DataTypeBitWidth.W)
