@@ -79,11 +79,11 @@ object Bundles {
   }
 
   class AmuMmaIO extends Bundle {
-    // rounding mode (xmfrm/xmxrm)
+    // rounding mode (mfrm/mxrm)
     val rm       = UInt(3.W) // 52 : 50
     // dest matrix register index
     val md       = UInt(4.W) // 49 : 46
-    // whether saturate (xmsaten)
+    // whether saturate (msaten)
     val sat      = Bool()    // 45
     // src matrix register indices
     val ms1      = UInt(4.W) // 44 : 41
@@ -152,7 +152,7 @@ object Bundles {
   }
 
   class AmuReleaseIO extends Bundle {
-    val tokenRd = UInt(5.W)
+    val msyncRd = UInt(5.W)
   }
 
   object AmuReleaseIO {
@@ -162,7 +162,7 @@ object Bundles {
   }
 
   class AmuArithIO extends Bundle {
-    // Only support mzero1r currently
+    // Only support mzero currently
     
     // dest matrix register index
     val md     = UInt(4.W) // 12 : 9
