@@ -3,6 +3,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
+import utility.sram.SRAMTemplate
 // import boom.exu.ygjk._
 
 class ABScaleMatrixRegIO(implicit p: Parameters) extends CuteBundle{
@@ -42,7 +43,15 @@ class ABScaleMatrixReg(implicit p: Parameters) extends CuteModule{
     //实例化多个sram为多个bank
     val debug_s1_bank_addr = RegNext(ScaleControllerBankAddr)
 
-    val bank = SyncReadMem(ABScaleBankNEntries, Bits(width = (ABScaleNSlices * ScaleWidth * ReduceGroupSize).W))
+    val bank = Module(new SRAMTemplate(
+        gen = UInt((ABScaleNSlices * ScaleWidth * ReduceGroupSize).W),
+        set = ABScaleBankNEntries,
+        way = 1,
+        singlePort = true,
+        latency = 1,
+        hasMbist = false,
+        hasSramCtl = false
+    ))
     bank.suggestName("CUTE-AB-Scale-MatrixReg-SRAM")
     
     //第0周期的数据
@@ -67,10 +76,14 @@ class ABScaleMatrixReg(implicit p: Parameters) extends CuteModule{
     //写数据
     val s0_bank_write_valid = ScaleLoaderBankAddr.valid && ScaleLoaderData.valid
 
-    val Bank_Is_write = write_go && s0_bank_write_valid
-    val Bank_Enable = (write_go && s0_bank_write_valid) || read_go
-    val Bank_addr = Mux(read_go, ScaleControllerBankAddr, ScaleLoaderBankAddr.bits)
-    val Bank_wdata = ScaleLoaderData.bits
-    s1_bank_read_data := bank.readWrite(Bank_addr, Bank_wdata.asUInt, Bank_Enable, Bank_Is_write)
+    //单口SRAM：读路径
+    bank.io.r.req.valid := read_go
+    bank.io.r.req.bits.setIdx := ScaleControllerBankAddr
+    s1_bank_read_data := bank.io.r.resp.data(0)
+
+    //单口SRAM：写路径（写优先）
+    bank.io.w.req.valid := write_go && s0_bank_write_valid
+    bank.io.w.req.bits.setIdx := ScaleLoaderBankAddr.bits
+    bank.io.w.req.bits.data(0) := ScaleLoaderData.bits.asUInt
 
 }
