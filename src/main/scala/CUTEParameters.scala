@@ -34,6 +34,103 @@ object WrapDec
   }
 }
 
+object ResponseChannelHelper {
+  sealed trait LoaderMode {
+    def isLegacy: Boolean
+    def responseChannelCount: Int
+    def renderToken: String
+  }
+
+  case object LegacyLoaderMode extends LoaderMode {
+    override val isLegacy: Boolean = true
+    override val responseChannelCount: Int = 1
+    override val renderToken: String = "L"
+  }
+
+  final case class ParameterizedLoaderMode(responseChannelCount: Int) extends LoaderMode {
+    require(
+      Seq(1, 2, 4, 8).contains(responseChannelCount),
+      s"parameterized loader response channel count ($responseChannelCount) must be one of 1/2/4/8"
+    )
+
+    override val isLegacy: Boolean = false
+    override val renderToken: String = responseChannelCount.toString
+  }
+
+  final case class LoaderBridgeChannelConfig(
+    a: LoaderMode,
+    b: LoaderMode,
+    cLoad: LoaderMode,
+    cStore: LoaderMode
+  ) {
+    def render: String = s"A${a.renderToken}B${b.renderToken}CL${cLoad.renderToken}CS${cStore.renderToken}"
+  }
+
+  private val LoaderBridgeChannelConfigPattern = "^A(L|1|2|4|8)B(L|1|2|4|8)CL(L|1|2|4|8)CS(L|1|2|4|8)$".r
+
+  def parseLoaderMode(token: String): LoaderMode = token match {
+    case "L" => LegacyLoaderMode
+    case "1" => ParameterizedLoaderMode(1)
+    case "2" => ParameterizedLoaderMode(2)
+    case "4" => ParameterizedLoaderMode(4)
+    case "8" => ParameterizedLoaderMode(8)
+    case other =>
+      require(requirement = false, s"unsupported loader mode token '$other', expected one of L/1/2/4/8")
+      LegacyLoaderMode
+  }
+
+  def parseLoaderBridgeChannelConfig(config: String): LoaderBridgeChannelConfig = {
+    val normalized = config.trim.toUpperCase
+    normalized match {
+      case LoaderBridgeChannelConfigPattern(a, b, cLoad, cStore) =>
+        LoaderBridgeChannelConfig(
+          a = parseLoaderMode(a),
+          b = parseLoaderMode(b),
+          cLoad = parseLoaderMode(cLoad),
+          cStore = parseLoaderMode(cStore)
+        )
+      case _ =>
+        require(
+          requirement = false,
+          s"invalid LoaderBridgeChannelConfig '$config', expected format like A1B1CL1CS8 or ALBLCLLCSL"
+        )
+        LoaderBridgeChannelConfig(LegacyLoaderMode, LegacyLoaderMode, LegacyLoaderMode, LegacyLoaderMode)
+    }
+  }
+
+  def banksPerGroup(respChannelCount: Int, bankCount: Int = 8): Int = {
+    require(respChannelCount >= 1 && isPow2(respChannelCount), s"respChannelCount ($respChannelCount) must be a power of 2 and >= 1")
+    require(bankCount >= respChannelCount, s"bankCount ($bankCount) must be >= respChannelCount ($respChannelCount)")
+    require(bankCount % respChannelCount == 0, s"bankCount ($bankCount) must be divisible by respChannelCount ($respChannelCount)")
+    bankCount / respChannelCount
+  }
+
+  def groupIdOfBank(bankId: Int, respChannelCount: Int, bankCount: Int = 8): Int = {
+    require(bankId >= 0 && bankId < bankCount, s"bankId ($bankId) must be within [0, $bankCount)")
+    bankId / banksPerGroup(respChannelCount, bankCount)
+  }
+
+  def groupIdOfBank(bankId: UInt, respChannelCount: Int, bankCount: Int): UInt = {
+    val perGroup = banksPerGroup(respChannelCount, bankCount)
+    if (respChannelCount == 1) {
+      0.U(1.W)
+    } else {
+      (bankId / perGroup.U)(log2Ceil(respChannelCount) - 1, 0)
+    }
+  }
+
+  def groupBankBase(groupId: Int, respChannelCount: Int, bankCount: Int = 8): Int = {
+    require(groupId >= 0 && groupId < respChannelCount, s"groupId ($groupId) must be within [0, $respChannelCount)")
+    groupId * banksPerGroup(respChannelCount, bankCount)
+  }
+
+  def banksInGroup(groupId: Int, respChannelCount: Int, bankCount: Int = 8): Seq[Int] = {
+    val base = groupBankBase(groupId, respChannelCount, bankCount)
+    val perGroup = banksPerGroup(respChannelCount, bankCount)
+    base until (base + perGroup)
+  }
+}
+
 
 class DebugInfoIO()(implicit p: Parameters) extends CuteBundle{
     val DebugTimeStampe = UInt(64.W)
@@ -526,10 +623,23 @@ case class CuteParams(
 
     val FPEparams: CuteFPEParams = CuteFPEParams.baseparams, //FPE parameters
 
-    val MatrixExtension: MatrixIsaParams = MatrixIsaParams()
-) {
+    val MatrixExtension: MatrixIsaParams = MatrixIsaParams(),
 
-    //all parameters must be powers of 2
+    // User-facing loader response mode selector.
+    // L means legacy single-channel loader; 1/2/4/8 mean parameterized bridge width.
+    val LoaderBridgeChannelConfig: String = "ALBLCLLCSL"
+) {
+    val parsedLoaderBridgeChannelConfig = ResponseChannelHelper.parseLoaderBridgeChannelConfig(LoaderBridgeChannelConfig)
+    val AMLChannelMode = parsedLoaderBridgeChannelConfig.a
+    val BMLChannelMode = parsedLoaderBridgeChannelConfig.b
+    val CLoadChannelMode = parsedLoaderBridgeChannelConfig.cLoad
+    val CStoreChannelMode = parsedLoaderBridgeChannelConfig.cStore
+
+    require(
+      CLoadChannelMode.isLegacy == CStoreChannelMode.isLegacy,
+      s"mixed legacy/parameterized C loader modes are not supported now: ${parsedLoaderBridgeChannelConfig.render}"
+    )
+
     // require(ReduceWidthByte == 64, "FP8/4 now only support 512 bit reduce width")
     require(outsideDataWidth == 512 || outsideDataWidth == 256, "currently only support 512/256 bit outsideDataWidth")
     require(ReduceWidthByte == 64 || ReduceWidthByte == 32, "currently only support 512/256 bit ReduceWidth")
@@ -753,6 +863,21 @@ trait HasCuteParams {
     def ReduceGroupSize = cuteParams.ReduceGroupSize
     def EnableDifftest = cuteParams.EnableDifftest
     def L2NBanks = cuteParams.L2NBanks
+    def LoaderBridgeChannelConfig = cuteParams.LoaderBridgeChannelConfig
+    def parsedLoaderBridgeChannelConfig = cuteParams.parsedLoaderBridgeChannelConfig
+    def AMLChannelMode = cuteParams.AMLChannelMode
+    def BMLChannelMode = cuteParams.BMLChannelMode
+    def CLoadChannelMode = cuteParams.CLoadChannelMode
+    def CStoreChannelMode = cuteParams.CStoreChannelMode
+    def AMLUseLegacyLoader = AMLChannelMode.isLegacy
+    def BMLUseLegacyLoader = BMLChannelMode.isLegacy
+    def CLoadUseLegacyLoader = CLoadChannelMode.isLegacy
+    def CStoreUseLegacyLoader = CStoreChannelMode.isLegacy
+    def AMLResponseChannelCount = AMLChannelMode.responseChannelCount
+    def BMLResponseChannelCount = BMLChannelMode.responseChannelCount
+    def CLoadBridgeResponseChannelCount = CLoadChannelMode.responseChannelCount
+    def CStoreBridgeResponseChannelCount = CStoreChannelMode.responseChannelCount
+    def CMLUseMultiChannelLoader = !CLoadUseLegacyLoader
 
     def MinGroupSize = FPEparams.MinGroupSize //minimum compute group size of FPE
     def MinDataTypeWidth = FPEparams.MinDataTypeWidth //minimum data type width of FPE
@@ -1003,12 +1128,6 @@ class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
-class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationScale_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
-    val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // main active field
-    val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
-}
-
 class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val ApplicationTensor_A = new ApplicationTensor_A_Info
@@ -1091,6 +1210,11 @@ class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
     val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
+class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
+    val ApplicationScale_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
+    val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // main active field
+    val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
+}
 
 class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_C_BaseVaddr   = (UInt(MMUAddrWidth.W))
@@ -1233,52 +1357,47 @@ class CMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // val Chosen = Input(Bool())
 }
 
+class MMURequestIO(implicit p: Parameters) extends CuteBundle{
+    val RequestAddr = UInt(MMUAddrWidth.W)
+    val RequestConherent = Bool()
+    val RequestData = UInt(MMUDataWidth.W)
+    val RequestSourceID = UInt(64.W)
+    val RequestType_isWrite = Bool()
+    val UseAllocatedSourceID = Bool()
+    val isA = Bool()
+    val MatrixIsAcc = Bool()
+    val RequestMask = UInt(MMUMaskWidth.W)
+}
+
+class MMUResponseIO(implicit p: Parameters) extends CuteBundle{
+    val ReseponseData = UInt(MMUDataWidth.W)
+    val ReseponseConherent = Bool()
+    val ReseponseSourceID = UInt(64.W)
+}
+
 //LocalMMU interface
 class LocalMMUIO(implicit p: Parameters) extends CuteBundle{
 
     //issued memory request
-    val Request = Flipped(DecoupledIO(new Bundle{
-        val RequestVirtualAddr = UInt(MMUAddrWidth.W)
-        val RequestConherent = Bool()
-        val RequestData = UInt(MMUDataWidth.W)
-        val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
-        val RequestType_isWrite = Bool()
-        val RequestMask = UInt(MMUMaskWidth.W) //MMU byte mask
-    }))
+    val Request = Flipped(Vec(ABMatrixRegNBanks, DecoupledIO(new MMURequestIO)))
     //transaction ID of the TL link to which the read request is dispatched
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))
     val nonConherentRequsetSourceID = Valid(UInt(MemorysourceMaxNumBitSize.W))
 
     //the MemoryLoader is guaranteed to receive the response back!
-    val Response = DecoupledIO(new Bundle{
-        val ReseponseData = UInt(MMUDataWidth.W)
-        val ReseponseConherent = Bool()
-        val ReseponseSourceID = UInt(SoureceMaxNumBitSize.W)
-    })
+    val Response = Vec(ABMatrixRegNBanks, DecoupledIO(new MMUResponseIO))
 }
 
 class MMU2TLIO(implicit p: Parameters) extends CuteBundle{
 
     //issued memory request
-    val Request = Flipped(DecoupledIO(new Bundle{
-        val RequestPhysicalAddr = UInt(MMUAddrWidth.W)
-        val RequestConherent = Bool()
-        val RequestData = UInt(MMUDataWidth.W)
-        val RequestSourceID = UInt(SoureceMaxNumBitSize.W)
-        val RequestType_isWrite = Bool()
-        val RequestMask = UInt(MMUMaskWidth.W) //MMU mask
-        val MatrixIsAcc = Bool() // false for A/B matrix (tile matrix register), true for C matrix (accumulation matrix register)
-    }))
+    val Request = Flipped(Vec(ABMatrixRegNBanks, DecoupledIO(new MMURequestIO)))
     //transaction ID of the TL link to which the read request is dispatched
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))
     val nonConherentRequsetSourceID = Valid(UInt(MemorysourceMaxNumBitSize.W))
 
     //the MemoryLoader is guaranteed to receive the response back!
-    val Response = DecoupledIO(new Bundle{
-        val ReseponseData = UInt(MMUDataWidth.W)
-        val ReseponseConherent = Bool()
-        val ReseponseSourceID = UInt(SoureceMaxNumBitSize.W)
-    })
+    val Response = Vec(ABMatrixRegNBanks, DecoupledIO(new MMUResponseIO))
 }
 
 class FReducePEDataType {
@@ -1411,13 +1530,6 @@ class FReducePEDataType {
 case object  ElementDataType extends Field[UInt]{
     val DataTypeBitWidth = 4
     val DataTypeUndef   = 0.U(DataTypeBitWidth.W)
-    val DataTypeI8I8I32 = MteComputeType.I8I8I32
-    val DataTypeI8U8I32 = MteComputeType.I8U8I32
-    val DataTypeU8I8I32 = MteComputeType.U8I8I32
-    val DataTypeU8U8I32 = MteComputeType.U8U8I32
-    val DataTypeF16F16F32 = MteComputeType.F16F16F32
-    val DataTypeBF16BF16F32 = MteComputeType.BF16BF16F32
-    val DataTypeTF32TF32F32 = MteComputeType.TF32TF32F32
     val DataTypeWidth32 = 4.U(DataTypeBitWidth.W)
     val DataTypeWidth16 = 2.U(DataTypeBitWidth.W)
     val DataTypeWidth8  = 1.U(DataTypeBitWidth.W)
