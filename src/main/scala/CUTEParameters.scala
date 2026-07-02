@@ -621,10 +621,16 @@ case class CuteParams(
 
 }
 
-trait CUTEImplParameters{
-    implicit val p: Parameters
-    def cuteParams: CuteParams = p(CuteParamsKey)
+trait CuteParamsBackedCuteFpeParameters extends CuteFpeParameters {
+    def cuteParams: CuteParams
     def cuteMatrixExtension: MatrixIsaParams = cuteParams.MatrixExtension
+    def cuteFpeConfig: CuteFpeConfig = CuteFpeConfig(
+        enableTf32Fp32 = cuteMatrixExtension.enableTf32Fp32,
+        enableFp16Fp32 = cuteMatrixExtension.enableFp16Fp32,
+        enableMxfp4Fp32 = cuteMatrixExtension.enableMxfp4Fp32,
+        enableMxfp8Fp32 = cuteMatrixExtension.enableMxfp8Fp32,
+        enableNvfp4Fp32 = cuteMatrixExtension.enableNvfp4Fp32
+    )
 
     def enableMteInt8: Boolean = cuteMatrixExtension.enableInt8Int32
     def enableMteFp8: Boolean = cuteMatrixExtension.enableFp8Fp32
@@ -768,6 +774,13 @@ trait CUTEImplParameters{
 
     def DEBUG_FP8 = false
     def DEBUG_FP4 = false
+}
+
+case class CuteFpeParametersFromCuteParams(cuteParams: CuteParams) extends CuteParamsBackedCuteFpeParameters
+
+trait CUTEImplParameters extends CuteParamsBackedCuteFpeParameters {
+    implicit val p: Parameters
+    def cuteParams: CuteParams = p(CuteParamsKey)
 }
 
 class CuteModule(implicit val p: Parameters) extends Module with CUTEImplParameters

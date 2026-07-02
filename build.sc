@@ -101,9 +101,59 @@ object difftest extends SbtModule with HasChisel {
   override def millSourcePath = millOuterCtx.millSourcePath / "difftest"
 }
 
+object cuteFpe extends SbtModule with HasChisel {
+
+  override def millSourcePath = millOuterCtx.millSourcePath / "cute-fpe" / "fpe"
+
+  override def sources = T.sources {
+    val sourceRoot = millSourcePath / "src" / "main" / "scala" / "top"
+    Seq(
+      "CuteFpeConfig.scala",
+      "CuteFpeParameters.scala",
+      "CmpTree.scala",
+      "FReducePE.scala",
+      "FReduceTypes.scala",
+      "FVecDecoder.scala",
+      "MACPipes.scala",
+      "PipeBundles.scala"
+    ).map(name => PathRef(sourceRoot / name))
+  }
+
+  override def moduleDeps = super.moduleDeps ++ Seq(
+    rocketchip.cde
+  )
+}
+
+object CUTEBase extends SbtModule with HasChisel {
+
+  override def millSourcePath = millOuterCtx.millSourcePath
+
+  override def sources = T.sources {
+    Seq(PathRef(millSourcePath / "src" / "main" / "scala" / "CUTEParameters.scala"))
+  }
+
+  override def moduleDeps = super.moduleDeps ++ Seq(
+    rocketchip,
+    cuteFpe
+  )
+}
+
 object CUTE extends SbtModule with HasChisel with $file.common.CUTEModule {
 
   override def millSourcePath = millOuterCtx.millSourcePath
+
+  override def sources = T.sources {
+    val sourceRoot = millSourcePath / "src" / "main" / "scala"
+    os.walk(sourceRoot)
+      .filter(p => os.isFile(p) && p.ext == "scala")
+      .filter(p => p.last != "CUTEParameters.scala")
+      .map(PathRef(_))
+  }
+
+  override def moduleDeps = super.moduleDeps ++ Seq(
+    CUTEBase,
+    cuteFpe
+  )
 
   def rocketModule: ScalaModule = rocketchip
 
@@ -121,4 +171,3 @@ object CUTE extends SbtModule with HasChisel with $file.common.CUTEModule {
 
   override def scalacOptions = super.scalacOptions() ++ Agg("-deprecation", "-feature")
 }
-
