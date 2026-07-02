@@ -14,6 +14,7 @@ import coupledL2.{MatrixKey, MatrixField, AmeIndexKey, AmeIndexField}
 
 class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.baseParams) extends Config((site, here, up) => {
     case CuteParamsKey => CoustomCuteParam
+    case CuteFpeParamsKey => CuteFpeParametersFromCuteParams(CoustomCuteParam)
 })
 
 // class RoCC2CUTE(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) with CUTEImplParameters{
