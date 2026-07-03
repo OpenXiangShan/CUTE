@@ -28,7 +28,7 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     dontTouch(io)
 
     //实例化ReducePE
-    val Matrix = VecInit.tabulate(Matrix_MN, Matrix_MN){(x,y) => Module(new FReducePE()).io}
+    val Matrix = VecInit.tabulate(Matrix_MN, Matrix_MN){(x,y) => Module(new FReducePE()(cuteFpeParameters)).io}
 
     // 配置运算类型
     val ComputeType = Reg(UInt(MteComputeType.ComputeTypeBitWidth.W))

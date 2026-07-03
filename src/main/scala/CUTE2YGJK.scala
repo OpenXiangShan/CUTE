@@ -12,10 +12,7 @@ import org.chipsalliance.cde.config._
 // import boom.exu.ygjk.{YGJKParameters}
 import coupledL2.{MatrixKey, MatrixField, AmeIndexKey, AmeIndexField}
 
-class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.baseParams) extends Config((site, here, up) => {
-    case CuteParamsKey => CoustomCuteParam
-    case CuteFpeParamsKey => CuteFpeParametersFromCuteParams(CoustomCuteParam)
-})
+class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.baseParams) extends WithCuteParams(CoustomCuteParam)
 
 // class RoCC2CUTE(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) with CUTEImplParameters{
 //   override lazy val module = new CUTETile(this)

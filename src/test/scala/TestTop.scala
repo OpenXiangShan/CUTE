@@ -105,7 +105,6 @@ object TestTop extends App {
         TaskCtrl_AutoClear = true,
       ),
     )
-    case CuteFpeParamsKey => CuteFpeParametersFromCuteParams(site(CuteParamsKey))
   })
 
   ChiselDB.init(false)

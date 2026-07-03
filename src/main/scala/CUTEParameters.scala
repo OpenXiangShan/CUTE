@@ -41,6 +41,10 @@ class DebugInfoIO()(implicit p: Parameters) extends CuteBundle{
 
 case object CuteParamsKey extends Field[CuteParams]
 
+class WithCuteParams(cuteParams: CuteParams) extends Config((site, here, up) => {
+    case CuteParamsKey => cuteParams
+})
+
 case object MteComputeType extends Field[UInt] {
     val ComputeTypeBitWidth = 4
     val ComputeTypeUndef = 15.U(ComputeTypeBitWidth.W)
@@ -560,6 +564,15 @@ case class CuteParams(
     require((FPEparams.MinDataTypeWidth == 4), "FPEparams.MinDataTypeWidth must be 4")
     require((FPEparams.ScaleElementWidth == 8), "FPEparams.ScaleElementWidth must be 8")
 
+    def cuteFpeConfig: CuteFpeConfig = CuteFpeConfig(
+        enableTf32Fp32 = MatrixExtension.enableTf32Fp32,
+        enableFp16Fp32 = MatrixExtension.enableFp16Fp32,
+        enableMxfp4Fp32 = MatrixExtension.enableMxfp4Fp32,
+        enableMxfp8Fp32 = MatrixExtension.enableMxfp8Fp32,
+        enableNvfp4Fp32 = MatrixExtension.enableNvfp4Fp32
+    )
+    def cuteFpeParams: CuteFpeParameters = CuteFpeParametersFromCuteParams(this)
+
     def outsideDataWidthByte = outsideDataWidth / 8
     def ReduceWidth = ReduceWidthByte * 8
     def ABMLNeedMRegFillTable = ReduceWidthByte < outsideDataWidthByte //when returned memory data cannot be written in one cycle, ABML needs a writeback buffer
@@ -621,16 +634,10 @@ case class CuteParams(
 
 }
 
-trait CuteParamsBackedCuteFpeParameters extends CuteFpeParameters {
+trait HasCuteParams {
     def cuteParams: CuteParams
     def cuteMatrixExtension: MatrixIsaParams = cuteParams.MatrixExtension
-    def cuteFpeConfig: CuteFpeConfig = CuteFpeConfig(
-        enableTf32Fp32 = cuteMatrixExtension.enableTf32Fp32,
-        enableFp16Fp32 = cuteMatrixExtension.enableFp16Fp32,
-        enableMxfp4Fp32 = cuteMatrixExtension.enableMxfp4Fp32,
-        enableMxfp8Fp32 = cuteMatrixExtension.enableMxfp8Fp32,
-        enableNvfp4Fp32 = cuteMatrixExtension.enableNvfp4Fp32
-    )
+    def cuteFpeConfig: CuteFpeConfig = cuteParams.cuteFpeConfig
 
     def enableMteInt8: Boolean = cuteMatrixExtension.enableInt8Int32
     def enableMteFp8: Boolean = cuteMatrixExtension.enableFp8Fp32
@@ -776,11 +783,34 @@ trait CuteParamsBackedCuteFpeParameters extends CuteFpeParameters {
     def DEBUG_FP4 = false
 }
 
-case class CuteFpeParametersFromCuteParams(cuteParams: CuteParams) extends CuteParamsBackedCuteFpeParameters
+case class CuteFpeParametersFromCuteParams(cuteParams: CuteParams) extends CuteFpeParameters {
+    private def fpeParams: CuteFPEParams = cuteParams.FPEparams
 
-trait CUTEImplParameters extends CuteParamsBackedCuteFpeParameters {
+    def cuteFpeConfig: CuteFpeConfig = cuteParams.cuteFpeConfig
+
+    def ReduceWidth: Int = cuteParams.ReduceWidth
+    def ResultWidth: Int = cuteParams.ResultWidth
+    def MinGroupSize: Int = fpeParams.MinGroupSize
+    def MinDataTypeWidth: Int = fpeParams.MinDataTypeWidth
+    def ScaleElementWidth: Int = fpeParams.ScaleElementWidth
+    def cmptreelayers: Int = fpeParams.cmptreelayers
+    def fp8cmptreelayers: Int = fpeParams.fp8cmptreelayers
+
+    def P3AddNum: Int = cuteParams.P3AddNum
+    def P2AddNum: Int = cuteParams.P2AddNum
+    def FP4P0AddNum: Int = fpeParams.FP4P0AddNum
+    def FP4P1AddNum: Int = 16 / FP4P0AddNum
+
+    def DEBUG_FP8: Boolean = false
+    def DEBUG_FP4: Boolean = false
+}
+
+trait CUTEImplParameters extends HasCuteParams {
     implicit val p: Parameters
     def cuteParams: CuteParams = p(CuteParamsKey)
+    def cuteFpeParameters: Parameters = p.alterPartial({
+        case CuteFpeParamsKey => cuteParams.cuteFpeParams
+    })
 }
 
 class CuteModule(implicit val p: Parameters) extends Module with CUTEImplParameters
