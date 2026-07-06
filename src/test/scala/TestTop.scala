@@ -42,13 +42,12 @@ class TestTop()(implicit p: Parameters) extends LazyModule {
     ))
     slaveNode
   }
-  val hbl2_nodes = Seq(createClientNode("hbl2", 32))
-  val slave_nodes = hbl2_nodes
+  val hbl2_node = createClientNode("hbl2", 32)
 
   val cute_tl = LazyModule(new Cute2TL())
 
-  slave_nodes.foreach { node =>
-    node := cute_tl.node
+  cute_tl.node.foreach { clientNode =>
+    hbl2_node := clientNode
   }
 
   lazy val module = new LazyModuleImp(this) {
@@ -64,22 +63,22 @@ class TestTop()(implicit p: Parameters) extends LazyModule {
     // memory access between CUTE and HBL2
     cute_tl.module.io.mmu <> cute.io.mmu2llc
     val tl_data_in = cute_tl.module.io.matrix_data_in
-    tl_data_in.valid := io.matrix_data_in.valid
-    tl_data_in.bits := 0.U.asTypeOf(tl_data_in.bits)
-    tl_data_in.bits.opcode := TLMessages.AccessAckData
-    tl_data_in.bits.source := io.matrix_data_in.bits.sourceId
-    tl_data_in.bits.data := io.matrix_data_in.bits.data.data
-    io.matrix_data_in.ready := tl_data_in.ready
+    for (channel <- 0 until cute.ABMatrixRegNBanks) {
+      tl_data_in(channel).valid := io.matrix_data_in.valid && io.matrix_data_in.bits.channel === channel.U
+      tl_data_in(channel).bits := 0.U.asTypeOf(tl_data_in(channel).bits)
+      tl_data_in(channel).bits.source := io.matrix_data_in.bits.sourceId
+      tl_data_in(channel).bits.data := io.matrix_data_in.bits.data.data
+    }
+    io.matrix_data_in.ready := MuxLookup(io.matrix_data_in.bits.channel, false.B)(
+      (0 until cute.ABMatrixRegNBanks).map(channel => channel.U -> tl_data_in(channel).ready)
+    )
 
     val timer = WireDefault(0.U(64.W))
     val logEnable = WireDefault(false.B)
     val clean = WireDefault(false.B)
     val dump = WireDefault(false.B)
 
-    slave_nodes.zipWithIndex.foreach {
-      case (node, i) =>
-        node.makeIOs()(ValName(s"slave_port_$i"))
-    }
+    hbl2_node.makeIOs()(ValName("slave_port_0"))
 
     dontTouch(timer)
     dontTouch(logEnable)
@@ -101,6 +100,7 @@ object TestTop extends App {
   val config = baseConfig(1).alterPartial({
     case CuteParamsKey => CuteParams.CUTE_8Tops_128SCP.copy(
       Debug = CuteDebugParams.NoDebug,
+      LoaderBridgeChannelConfig = "A1BLCL1CS2",
       v3config = Cutev3extParams(
         TaskCtrl_AutoClear = true,
       ),

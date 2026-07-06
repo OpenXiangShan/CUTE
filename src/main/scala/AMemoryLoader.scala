@@ -278,12 +278,20 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ToMatrixRegIO.Data.map(_.bits := DontCare)
     io.ToMatrixRegIO.ByteMask.map(_.valid := false.B)
     io.ToMatrixRegIO.ByteMask.map(_.bits := Fill(ABMatrixRegEntryByteSize, true.B))
-    io.LocalMMUIO.Request.valid := false.B
-    io.LocalMMUIO.Request.bits := DontCare // It will be set if Request is valid
-    io.LocalMMUIO.Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
-    io.LocalMMUIO.Response.ready := false.B
+
+    // Initialize all LocalMMUIO channels; the legacy AML only drives channel 0.
+    for (i <- 0 until ABMatrixRegNBanks) {
+        io.LocalMMUIO.Request(i).valid := false.B
+        io.LocalMMUIO.Request(i).bits := DontCare
+        io.LocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.LocalMMUIO.Response(i).ready := false.B
+    }
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
+
+    // Legacy AML only uses channel 0 for requests and responses.
+    val Request = io.LocalMMUIO.Request(0)
+    val Response = io.LocalMMUIO.Response(0)
 
     val CurrentMatrixRegId = RegInit(0.U(ABMatrixRegIdWidth.W))
     io.MatrixRegId := CurrentMatrixRegId
@@ -303,6 +311,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
           (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
         difftestAmuFinish.pc := pcReg
+        // DiffAmuFinishEvent packing is parameterized by words-per-bank.
         val eventWordsPerBank = difftestAmuFinish.data.length / ABMatrixRegNBanks
         val abMRegWordsPerBank = ABMatrixRegEntryBitSize / 64
         require(difftestAmuFinish.data.length % ABMatrixRegNBanks == 0, "DiffAmuFinishEvent.data should divide by AB bank count")
@@ -410,8 +419,6 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val transWriteAddrOffset = transWriteAddrCnt * ReduceGroupSize.U
     val transWriteAddrWide = transWriteBaseAddr + transWriteAddrOffset
     val transWriteAddr = transWriteAddrWide(transBaseAddrBits - 1, 0)
-
-    val Request = io.LocalMMUIO.Request
 
     when(state === s_idle){
         ConfigInfo.MicroTaskReady := true.B
@@ -524,11 +531,12 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 val RequestMatrixRegBankId = Mux(Is_Transpose, 0.U, NormalRequestMatrixRegBankId)
                 val RequestMatrixRegAddr = Mux(Is_Transpose, TransposeRequestMatrixRegAddr, NormalRequestMatrixRegAddr)
 
-                Request.bits.RequestVirtualAddr := Tensor_Block_BaseAddr + RequestMatrixRegMIndex * ApplicationTensor_A_Stride_M + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))
+                Request.bits.RequestAddr := Tensor_Block_BaseAddr + RequestMatrixRegMIndex * ApplicationTensor_A_Stride_M + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))
                 val sourceId = Mux(Conherent, io.LocalMMUIO.ConherentRequsetSourceID, io.LocalMMUIO.nonConherentRequsetSourceID)
                 Request.bits.RequestConherent := Conherent
                 Request.bits.RequestSourceID := sourceId.bits
                 Request.bits.RequestType_isWrite := false.B
+                Request.bits.UseAllocatedSourceID := true.B
                 Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
                 Request.valid := Mux(Is_Transpose, transpose_req_enable, TotalRequestSize < MaxRequestIter)
 
@@ -543,7 +551,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                     if (YJPAMLDebugEnable) {
                         printf("[AML_RequestHandshake<%d>] M_Iter:%d, K_Iter:%d, ReqTime:%d, Addr:%x, BankId:%d, RegAddr:%d, SourceId:%d, Tail:%d\n",
                           io.DebugInfo.DebugTimeStampe, CurrentLoaded_BlockTensor_M_Iter, CurrentLoaded_BlockTensor_K_Iter,
-                          Request_M_Iter_Time, Request.bits.RequestVirtualAddr, RequestMatrixRegBankId, RequestMatrixRegAddr, sourceId.bits, RequestBeatIsTail)
+                          Request_M_Iter_Time, Request.bits.RequestAddr, RequestMatrixRegBankId, RequestMatrixRegAddr, sourceId.bits, RequestBeatIsTail)
                     }
 
                     when(Is_Transpose) {
@@ -551,7 +559,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                           io.DebugInfo.DebugTimeStampe, TotalRequestSize, group_req_cnt, group_resp_cnt,
                           group_is_idle.asUInt, CurrentLoaded_BlockTensor_M_Iter, CurrentLoaded_BlockTensor_K_Iter,
                           Request_M_Iter_Time, current_group_size, active_group_size, RequestMatrixRegAddr,
-                          Request.bits.RequestVirtualAddr, sourceId.bits, RequestBeatIsTail.asUInt)
+                          Request.bits.RequestAddr, sourceId.bits, RequestBeatIsTail.asUInt)
 
                         val small_m_reach_group_boundary = Request_M_Iter_Time === (ABMatrixRegEntryByteSize - 1).U
                         val small_m_reach_tensor_boundary = transpose_current_m === (MatrixRegTensor_M - 1.U)
@@ -589,24 +597,24 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                     if (YJPAMLDebugEnable){
                         printf("[AML<%d>]FullLoad Request, M_Iter:%d, K_Iter:%d, ReqTime:%d, Addr:%x, BankId:%d, RegAddr:%d\n",
                           io.DebugInfo.DebugTimeStampe, CurrentLoaded_BlockTensor_M_Iter, CurrentLoaded_BlockTensor_K_Iter,
-                          Request_M_Iter_Time, Request.bits.RequestVirtualAddr, RequestMatrixRegBankId, RequestMatrixRegAddr)
+                          Request_M_Iter_Time, Request.bits.RequestAddr, RequestMatrixRegBankId, RequestMatrixRegAddr)
                     }
                 }
 
                 val current_fill_fifo_full = WireInit(false.B)
-                when(io.LocalMMUIO.Response.valid && !Is_Transpose){
-                    val respSourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+                when(Response.valid && !Is_Transpose){
+                    val respSourceId = Response.bits.ReseponseSourceID
                     val MatrixRegBankId = SoureceIdSearchTable(respSourceId).asTypeOf(new ASourceIdSearch).MatrixRegBankId
                     current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(MatrixRegBankId)
                 }
-                io.LocalMMUIO.Response.ready := Mux(Is_Transpose, !transBusStall, MReg_Fill_Table_Not_Full && !current_fill_fifo_full)
+                Response.ready := Mux(Is_Transpose, !transBusStall, MReg_Fill_Table_Not_Full && !current_fill_fifo_full)
 
-                when(io.LocalMMUIO.Response.fire){
-                    val sourceId = io.LocalMMUIO.Response.bits.ReseponseSourceID
+                when(Response.fire){
+                    val sourceId = Response.bits.ReseponseSourceID
                     val MatrixRegSearch = SoureceIdSearchTable(sourceId).asTypeOf(new ASourceIdSearch)
                     val MatrixRegBankId = MatrixRegSearch.MatrixRegBankId
                     val MatrixRegAddr = MatrixRegSearch.MatrixRegAddr
-                    val ResponseData = io.LocalMMUIO.Response.bits.ReseponseData
+                    val ResponseData = Response.bits.ReseponseData
                     val FIFOIndex = Bank_Fill_Search_FIFO_Head(MatrixRegBankId)
 
                     if (YJPAMLDebugEnable) {
@@ -702,21 +710,23 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                     }
                 }.otherwise {
                     val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(1.W))))
+                    // Generic per-slot tail mask derived from tailTaskMask.
+                    val tailByteMaskPerSlot = VecInit((0 until MAX_Fill_Times).map { j =>
+                        tailTaskMask((j + 1) * ABMatrixRegEntryByteSize - 1, j * ABMatrixRegEntryByteSize)
+                    })
                     for (i <- 0 until ABMatrixRegNBanks){
                         when(Bank_Fill_Search_FIFO_Empty(i) === false.B){
                             val CurrentFIFOIndex = Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Tail(i))
                             val fillSlot = MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex)
-                            val fillSlotOH = UIntToOH(fillSlot, MAX_Fill_Times)
-                            val fillLowHalf = fillSlot(0) === 0.U
                             val currentIsTail = MReg_Fill_Table_IsTail(CurrentFIFOIndex)
                             Current_Fill_MReg_Time(i) := 1.U
                             val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*ABMatrixRegEntryByteSize).W)))))
                             FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
                             io.ToMatrixRegIO.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + fillSlot
                             io.ToMatrixRegIO.BankAddr(i).valid := true.B
-                            io.ToMatrixRegIO.Data(i).bits := Mux(fillLowHalf, FIFOData(0), FIFOData(1))
+                            io.ToMatrixRegIO.Data(i).bits := FIFOData(fillSlot)
                             io.ToMatrixRegIO.Data(i).valid := true.B
-                            io.ToMatrixRegIO.ByteMask(i).bits := Mux(currentIsTail && fillSlotOH(1), tailTaskMask(63, 32), Mux(currentIsTail && fillSlotOH(0), tailTaskMask(31, 0), Fill(ABMatrixRegEntryByteSize, true.B)))
+                            io.ToMatrixRegIO.ByteMask(i).bits := Mux(currentIsTail, tailByteMaskPerSlot(fillSlot), Fill(ABMatrixRegEntryByteSize, true.B))
                             io.ToMatrixRegIO.ByteMask(i).valid := true.B
                             if (YJPAMLDebugEnable) {
                                 printf("[AML_MRegWriteHandshake<%d>] bank:%d, RegAddr:%x, WriteAddr:%x, Data:%x, ByteMask:%x, Time:%d\n", io.DebugInfo.DebugTimeStampe, i.U, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), io.ToMatrixRegIO.BankAddr(i).bits, io.ToMatrixRegIO.Data(i).bits, io.ToMatrixRegIO.ByteMask(i).bits, MReg_Fill_Table_Time(CurrentFIFOIndex))
