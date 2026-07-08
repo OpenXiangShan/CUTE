@@ -222,7 +222,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         Bank_Fill_Search_FIFO_Empty(i) := Bank_Fill_Search_FIFO_Head(i) === Bank_Fill_Search_FIFO_Tail(i)//这个bank不需要写scp
     }
 
-    val transAlignPipes = Seq.tabulate(ABMatrixRegNBanks)(i => Module(new TransAlignPipe(i)))
+    val transAlignPipes = Seq.tabulate(ABMatrixRegNBanks)(i => Module(new TransAlignPipe(i, YJPBMLDebugEnable)))
     val transRouters = Seq.tabulate(ABMatrixRegNBanks)(_ => Module(new OOORouter))
     val transPipeInValid = WireInit(false.B)
     val transPipeInData = WireInit(0.U(outsideDataWidth.W))
@@ -344,11 +344,13 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                     printf("[BML_RequestHandshake<%d>] sourceId:%d, MatrixRegBankId:%d, MatrixRegAddr:%d, RequestAddr:%x, RequestConherent:%d, RequestType_isWrite:%d, Tail:%d\n",io.DebugInfo.DebugTimeStampe,sourceId.bits,TableItem.MatrixRegBankId,TableItem.MatrixRegAddr,Request.bits.RequestAddr,Request.bits.RequestConherent,Request.bits.RequestType_isWrite,RequestBeatIsTail)
                 }
                 when(Is_Transpose) {
-                    printf("[BML_TRANS_REQ<%d>] totalReq:%d groupReq:%d groupResp:%d idle:%d largeN:%d kBeat:%d beat:%d groupSize:%d activeGroupSize:%d regBase:%d addr:%x source:%d tail:%d\n",
-                      io.DebugInfo.DebugTimeStampe, TotalRequestSize, group_req_cnt, group_resp_cnt,
-                      group_is_idle.asUInt, CurrentLoaded_BlockTensor_N_Iter, CurrentLoaded_BlockTensor_K_Iter,
-                      Request_N_Iter_Time, current_group_size, active_group_size, RequestMatrixRegAddr,
-                      Request.bits.RequestAddr, sourceId.bits, RequestBeatIsTail.asUInt)
+                    if (YJPBMLDebugEnable) {
+                        printf("[BML_TRANS_REQ<%d>] totalReq:%d groupReq:%d groupResp:%d idle:%d largeN:%d kBeat:%d beat:%d groupSize:%d activeGroupSize:%d regBase:%d addr:%x source:%d tail:%d\n",
+                          io.DebugInfo.DebugTimeStampe, TotalRequestSize, group_req_cnt, group_resp_cnt,
+                          group_is_idle.asUInt, CurrentLoaded_BlockTensor_N_Iter, CurrentLoaded_BlockTensor_K_Iter,
+                          Request_N_Iter_Time, current_group_size, active_group_size, RequestMatrixRegAddr,
+                          Request.bits.RequestAddr, sourceId.bits, RequestBeatIsTail.asUInt)
+                    }
 
                     val small_n_reach_group_boundary = Request_N_Iter_Time === (ABMatrixRegEntryByteSize - 1).U
                     val small_n_reach_tensor_boundary = transpose_current_n === (MatrixRegTensor_N - 1.U)
@@ -418,11 +420,13 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                     val next_group_resp_cnt = group_resp_cnt + 1.U
                     val drain_trigger = next_group_resp_cnt === active_group_size
 
-                    printf("[BML_TRANS_RESP<%d>] source:%d data:%x tail:%d mask:%x base:%d beatIndex:%d respCnt:%d nextResp:%d activeGroupSize:%d drainTrig:%d writeBase:%d writeCnt:%d\n",
-                      io.DebugInfo.DebugTimeStampe, sourceId, ResponseData, searchEntry.MatrixRegisTail.asUInt,
-                      Mux(searchEntry.MatrixRegisTail, tailTaskMask, fullTaskMask), MatrixRegAddr,
-                      searchEntry.BeatIndex, group_resp_cnt, next_group_resp_cnt, active_group_size,
-                      drain_trigger.asUInt, transWriteBaseAddr, transWriteAddrCnt)
+                    if (YJPBMLDebugEnable) {
+                        printf("[BML_TRANS_RESP<%d>] source:%d data:%x tail:%d mask:%x base:%d beatIndex:%d respCnt:%d nextResp:%d activeGroupSize:%d drainTrig:%d writeBase:%d writeCnt:%d\n",
+                          io.DebugInfo.DebugTimeStampe, sourceId, ResponseData, searchEntry.MatrixRegisTail.asUInt,
+                          Mux(searchEntry.MatrixRegisTail, tailTaskMask, fullTaskMask), MatrixRegAddr,
+                          searchEntry.BeatIndex, group_resp_cnt, next_group_resp_cnt, active_group_size,
+                          drain_trigger.asUInt, transWriteBaseAddr, transWriteAddrCnt)
+                    }
 
                     transPipeInValid := true.B
                     transPipeInData := ResponseData
@@ -502,10 +506,12 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                     }
                 }
                 when(transRouterWriteValid) {
-                    printf("[BML_TRANS_WRITE<%d>] validVec:%b base:%d cnt:%d addr:%d bank0Data:%x bank0Mask:%x totalLoad:%d pipelineEmpty:%d\n",
-                      io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWriteAddrCnt,
-                      transWriteAddr, transRouters(0).io.final_data, transRouters(0).io.final_mask,
-                      TotalLoadSize, transPipelineEmpty.asUInt)
+                    if (YJPBMLDebugEnable) {
+                        printf("[BML_TRANS_WRITE<%d>] validVec:%b base:%d cnt:%d addr:%d bank0Data:%x bank0Mask:%x totalLoad:%d pipelineEmpty:%d\n",
+                          io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWriteAddrCnt,
+                          transWriteAddr, transRouters(0).io.final_data, transRouters(0).io.final_mask,
+                          TotalLoadSize, transPipelineEmpty.asUInt)
+                    }
                     transWriteAddrCnt := Mux(
                         transWriteAddrCnt === (Trans_Load_Size - 1).U,
                         0.U,
@@ -616,10 +622,12 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 }
             }
             when(transRouterWriteValid) {
-                printf("[BML_TRANS_QUIESCE_WRITE<%d>] validVec:%b base:%d cnt:%d addr:%d bank0Data:%x bank0Mask:%x drainCnt:%d pipelineEmpty:%d\n",
-                  io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWriteAddrCnt,
-                  transWriteAddr, transRouters(0).io.final_data, transRouters(0).io.final_mask,
-                  transposeEndDrainCnt, transPipelineEmpty.asUInt)
+                if (YJPBMLDebugEnable) {
+                    printf("[BML_TRANS_QUIESCE_WRITE<%d>] validVec:%b base:%d cnt:%d addr:%d bank0Data:%x bank0Mask:%x drainCnt:%d pipelineEmpty:%d\n",
+                      io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWriteAddrCnt,
+                      transWriteAddr, transRouters(0).io.final_data, transRouters(0).io.final_mask,
+                      transposeEndDrainCnt, transPipelineEmpty.asUInt)
+                }
                 transWriteAddrCnt := Mux(
                     transWriteAddrCnt === (Trans_Load_Size - 1).U,
                     0.U,
