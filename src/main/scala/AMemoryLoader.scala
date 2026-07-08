@@ -22,7 +22,7 @@ class TransDataPacket(implicit p: Parameters) extends CuteBundle {
     val entry_offset = UInt(log2Ceil(ABMatrixRegEntryByteSize).W)
 }
 
-class TransAlignPipe(bankId: Int)(implicit p: Parameters) extends CuteModule {
+class TransAlignPipe(bankId: Int, debugEnable: Boolean)(implicit p: Parameters) extends CuteModule {
     private val transLoadSize = Trans_Load_Size
     private val transLoadSizeBits = log2Ceil(transLoadSize)
     private val entryOffsetBits = log2Ceil(ABMatrixRegEntryByteSize)
@@ -106,7 +106,7 @@ class TransAlignPipe(bankId: Int)(implicit p: Parameters) extends CuteModule {
     val input_accept = state === s_normal && io.in_valid
     val pipe_advance = input_accept || (state === s_drain)
 
-    if (bankId == 0) {
+    if (bankId == 0 && debugEnable) {
         when(input_accept) {
             printf("[AML_TRANS_ALIGN_IN<%d>] beatCnt:%d shift:%d shiftHigh:%d shiftLow:%d entry:%d raw:%x mask:%x bankData:%x coarse:%x drainTrig:%d\n",
               io.debug_time, io.resp_beat_cnt, shift_amt, shift_high_amt, shift_low,
@@ -159,7 +159,7 @@ class TransAlignPipe(bankId: Int)(implicit p: Parameters) extends CuteModule {
     io.out.bits := outPackets
     io.out.valid := out_valid_now && pipe_advance
 
-    if (bankId == 0) {
+    if (bankId == 0 && debugEnable) {
         val outDataUInt = VecInit((0 until transLoadSize).map(i => outPackets(i).data)).asUInt
         val outEntryUInt = VecInit((0 until transLoadSize).map(i => outPackets(i).entry_offset)).asUInt
         when(io.out.valid) {
@@ -389,7 +389,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         Bank_Fill_Search_FIFO_Empty(i) := Bank_Fill_Search_FIFO_Head(i) === Bank_Fill_Search_FIFO_Tail(i)
     }
 
-    val transAlignPipes = Seq.tabulate(ABMatrixRegNBanks)(i => Module(new TransAlignPipe(i)))
+    val transAlignPipes = Seq.tabulate(ABMatrixRegNBanks)(i => Module(new TransAlignPipe(i, YJPAMLDebugEnable)))
     val transRouters = Seq.tabulate(ABMatrixRegNBanks)(_ => Module(new OOORouter))
     val transPipeInValid = WireInit(false.B)
     val transPipeInData = WireInit(0.U(outsideDataWidth.W))
@@ -555,11 +555,13 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                     }
 
                     when(Is_Transpose) {
-                        printf("[AML_TRANS_REQ<%d>] totalReq:%d groupReq:%d groupResp:%d idle:%d largeM:%d kBeat:%d beat:%d groupSize:%d activeGroupSize:%d regBase:%d vaddr:%x source:%d tail:%d\n",
-                          io.DebugInfo.DebugTimeStampe, TotalRequestSize, group_req_cnt, group_resp_cnt,
-                          group_is_idle.asUInt, CurrentLoaded_BlockTensor_M_Iter, CurrentLoaded_BlockTensor_K_Iter,
-                          Request_M_Iter_Time, current_group_size, active_group_size, RequestMatrixRegAddr,
-                          Request.bits.RequestAddr, sourceId.bits, RequestBeatIsTail.asUInt)
+                        if (YJPAMLDebugEnable) {
+                            printf("[AML_TRANS_REQ<%d>] totalReq:%d groupReq:%d groupResp:%d idle:%d largeM:%d kBeat:%d beat:%d groupSize:%d activeGroupSize:%d regBase:%d vaddr:%x source:%d tail:%d\n",
+                              io.DebugInfo.DebugTimeStampe, TotalRequestSize, group_req_cnt, group_resp_cnt,
+                              group_is_idle.asUInt, CurrentLoaded_BlockTensor_M_Iter, CurrentLoaded_BlockTensor_K_Iter,
+                              Request_M_Iter_Time, current_group_size, active_group_size, RequestMatrixRegAddr,
+                              Request.bits.RequestAddr, sourceId.bits, RequestBeatIsTail.asUInt)
+                        }
 
                         val small_m_reach_group_boundary = Request_M_Iter_Time === (ABMatrixRegEntryByteSize - 1).U
                         val small_m_reach_tensor_boundary = transpose_current_m === (MatrixRegTensor_M - 1.U)
@@ -625,11 +627,13 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                         val next_group_resp_cnt = group_resp_cnt + 1.U
                         val drain_trigger = next_group_resp_cnt === active_group_size
 
-                        printf("[AML_TRANS_RESP<%d>] source:%d data:%x tail:%d mask:%x base:%d beatIndex:%d respCnt:%d nextResp:%d activeGroupSize:%d drainTrig:%d writeBase:%d writeCnt:%d\n",
-                          io.DebugInfo.DebugTimeStampe, sourceId, ResponseData, MatrixRegSearch.MatrixRegisTail.asUInt,
-                          Mux(MatrixRegSearch.MatrixRegisTail, tailTaskMask, fullTaskMask), MatrixRegAddr,
-                          MatrixRegSearch.BeatIndex, group_resp_cnt, next_group_resp_cnt, active_group_size,
-                          drain_trigger.asUInt, transWriteBaseAddr, transWriteAddrCnt)
+                        if (YJPAMLDebugEnable) {
+                            printf("[AML_TRANS_RESP<%d>] source:%d data:%x tail:%d mask:%x base:%d beatIndex:%d respCnt:%d nextResp:%d activeGroupSize:%d drainTrig:%d writeBase:%d writeCnt:%d\n",
+                              io.DebugInfo.DebugTimeStampe, sourceId, ResponseData, MatrixRegSearch.MatrixRegisTail.asUInt,
+                              Mux(MatrixRegSearch.MatrixRegisTail, tailTaskMask, fullTaskMask), MatrixRegAddr,
+                              MatrixRegSearch.BeatIndex, group_resp_cnt, next_group_resp_cnt, active_group_size,
+                              drain_trigger.asUInt, transWriteBaseAddr, transWriteAddrCnt)
+                        }
 
                         transPipeInValid := true.B
                         transPipeInData := ResponseData
@@ -681,10 +685,12 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                         }
                     }
                     when(transRouterWriteValid) {
-                        printf("[AML_TRANS_WRITE<%d>] validVec:%b base:%d cnt:%d addr:%d bank0Data:%x bank0Mask:%x totalLoad:%d pipelineEmpty:%d\n",
-                          io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWriteAddrCnt,
-                          transWriteAddr, transRouters(0).io.final_data, transRouters(0).io.final_mask,
-                          TotalLoadSize, transPipelineEmpty.asUInt)
+                        if (YJPAMLDebugEnable) {
+                            printf("[AML_TRANS_WRITE<%d>] validVec:%b base:%d cnt:%d addr:%d bank0Data:%x bank0Mask:%x totalLoad:%d pipelineEmpty:%d\n",
+                              io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWriteAddrCnt,
+                              transWriteAddr, transRouters(0).io.final_data, transRouters(0).io.final_mask,
+                              TotalLoadSize, transPipelineEmpty.asUInt)
+                        }
                         transWriteAddrCnt := Mux(
                             transWriteAddrCnt === (Trans_Load_Size - 1).U,
                             0.U,
@@ -773,10 +779,12 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 }
             }
             when(transRouterWriteValid) {
-                printf("[AML_TRANS_QUIESCE_WRITE<%d>] validVec:%b base:%d cnt:%d addr:%d bank0Data:%x bank0Mask:%x drainCnt:%d pipelineEmpty:%d\n",
-                  io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWriteAddrCnt,
-                  transWriteAddr, transRouters(0).io.final_data, transRouters(0).io.final_mask,
-                  transposeEndDrainCnt, transPipelineEmpty.asUInt)
+                if (YJPAMLDebugEnable) {
+                    printf("[AML_TRANS_QUIESCE_WRITE<%d>] validVec:%b base:%d cnt:%d addr:%d bank0Data:%x bank0Mask:%x drainCnt:%d pipelineEmpty:%d\n",
+                      io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWriteAddrCnt,
+                      transWriteAddr, transRouters(0).io.final_data, transRouters(0).io.final_mask,
+                      transposeEndDrainCnt, transPipelineEmpty.asUInt)
+                }
                 transWriteAddrCnt := Mux(
                     transWriteAddrCnt === (Trans_Load_Size - 1).U,
                     0.U,
