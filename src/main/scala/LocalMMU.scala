@@ -289,7 +289,9 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
         // 握手监控日志：请求侧
         when(io.LastLevelCacheTLIO.Request(i).fire) {
-            printf(cf"[LocalMMU][${logTime}] Ch${i.U} TL Req.fire encodedSourceId=${io.LastLevelCacheTLIO.Request(i).bits.RequestSourceID}, addr=${Hexadecimal(io.LastLevelCacheTLIO.Request(i).bits.RequestAddr)}, isWrite=${io.LastLevelCacheTLIO.Request(i).bits.RequestType_isWrite}, matrixIsAcc=${io.LastLevelCacheTLIO.Request(i).bits.MatrixIsAcc}\n")
+            if (YJPDebugEnable) {
+                printf(cf"[LocalMMU][${logTime}] Ch${i.U} TL Req.fire encodedSourceId=${io.LastLevelCacheTLIO.Request(i).bits.RequestSourceID}, addr=${Hexadecimal(io.LastLevelCacheTLIO.Request(i).bits.RequestAddr)}, isWrite=${io.LastLevelCacheTLIO.Request(i).bits.RequestType_isWrite}, matrixIsAcc=${io.LastLevelCacheTLIO.Request(i).bits.MatrixIsAcc}\n")
+            }
         }
     }
 
@@ -298,7 +300,9 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     def logResponse(channel: Int, tagStr: String, tag: UInt, encodedId: UInt, shiftedOrigId: UInt, loaderSourceId: UInt, data: UInt): Unit = {
         val resp = io.LastLevelCacheTLIO.Response(channel)
          when(resp.fire) {
-            printf(cf"[LocalMMU][${logTime}] Ch${channel.U} -> ${tagStr} Resp.fire encodedSourceId=${encodedId}, tag=${tag}, shiftedOrigId=${shiftedOrigId}, loaderSourceId=${loaderSourceId}, allocatedOrigId=${isAllocatedOrigId(shiftedOrigId)}, data=${Hexadecimal(data)}\n")
+            if (YJPDebugEnable) {
+                printf(cf"[LocalMMU][${logTime}] Ch${channel.U} -> ${tagStr} Resp.fire encodedSourceId=${encodedId}, tag=${tag}, shiftedOrigId=${shiftedOrigId}, loaderSourceId=${loaderSourceId}, allocatedOrigId=${isAllocatedOrigId(shiftedOrigId)}, data=${Hexadecimal(data)}\n")
+            }
         }
     }
 
