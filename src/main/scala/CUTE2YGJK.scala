@@ -10,7 +10,7 @@ import freechips.rocketchip.tilelink._
 // import boom.common._
 import org.chipsalliance.cde.config._
 // import boom.exu.ygjk.{YGJKParameters}
-import xscache.coupledL2.{AmeIndexField, AmeIndexKey, MatrixField, MatrixKey}
+import coupledL2.{MatrixKey, MatrixField, AmeIndexKey, AmeIndexField}
 
 class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.baseParams) extends WithCuteParams(CoustomCuteParam)
 
