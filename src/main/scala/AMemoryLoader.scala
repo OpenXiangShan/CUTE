@@ -22,7 +22,7 @@ class TransDataPacket(implicit p: Parameters) extends CuteBundle {
     val entry_offset = UInt(log2Ceil(ABMatrixRegEntryByteSize).W)
 }
 
-class TransAlignPipe(bankId: Int, debugEnable: Boolean)(implicit p: Parameters) extends CuteModule {
+class TransAlignPipe(bankId: Int, debugEnable: Boolean = false)(implicit p: Parameters) extends CuteModule {
     private val transLoadSize = Trans_Load_Size
     private val transLoadSizeBits = log2Ceil(transLoadSize)
     private val entryOffsetBits = log2Ceil(ABMatrixRegEntryByteSize)
