@@ -23,7 +23,7 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
   private val sourceIdWidth = 64
   private val bankIdWidth = 3
   private val bankIdOffset = 8
-  private val baseDepth = 2
+  private val queueDepth = 2
 
   private def encodeSourceId(bankId: Int, regAddr: Int = 0): BigInt = {
     (BigInt(bankId) << bankIdOffset) | BigInt(regAddr)
@@ -59,11 +59,12 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       inputChannelCount = bankCount,
       respChannelCount = respChannelCount,
       bankCount = bankCount,
-      baseDepth = baseDepth,
+      queueDepth = queueDepth,
       dataWidth = dataWidth,
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
+      hasDataPayload = true,
       debugEnable = false
     )(ResponseChannelBridgeTestConfig.params)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)
@@ -125,11 +126,12 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       inputChannelCount = bankCount,
       respChannelCount = 2,
       bankCount = bankCount,
-      baseDepth = baseDepth,
+      queueDepth = queueDepth,
       dataWidth = dataWidth,
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
+      hasDataPayload = true,
       debugEnable = false
     )(ResponseChannelBridgeTestConfig.params)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)
@@ -178,11 +180,12 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       inputChannelCount = bankCount,
       respChannelCount = 1,
       bankCount = bankCount,
-      baseDepth = baseDepth,
+      queueDepth = queueDepth,
       dataWidth = dataWidth,
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
+      hasDataPayload = true,
       debugEnable = false
     )(ResponseChannelBridgeTestConfig.params)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)

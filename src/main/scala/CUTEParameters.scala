@@ -624,7 +624,15 @@ case class CuteParams(
 
     // User-facing loader response mode selector.
     // L means legacy single-channel loader; 1/2/4/8 mean parameterized bridge width.
-    val LoaderBridgeChannelConfig: String = "A1B2CL8CS4"
+    val LoaderBridgeChannelConfig: String = "ALBLCLLCSL",
+
+    // Physical-design-oriented queue depths for multi-channel loaders / bridge.
+    val ABMultiResponseFifoDepth: Int = 2,
+    val CLoadMultiFillQueueDepth: Int = 2,
+    val ResponseBridgeQueueDepth: Int = 8,
+
+    // When enabled, CStore ack path bypasses the response bridge and only counts total acks.
+    val CStoreDirectAckCountMode: Boolean = true
 ) {
     val parsedLoaderBridgeChannelConfig = ResponseChannelHelper.parseLoaderBridgeChannelConfig(LoaderBridgeChannelConfig)
     val AMLChannelMode = parsedLoaderBridgeChannelConfig.a
@@ -661,6 +669,9 @@ case class CuteParams(
     require((VecTaskInstBufferDepth & (VecTaskInstBufferDepth - 1)) == 0, "VecTaskInstBufferDepth must be power of 2")
     require((VecTaskInstBufferSize & (VecTaskInstBufferSize - 1)) == 0, "VecTaskInstBufferSize must be power of 2")
     require((VecTaskDataBufferDepth & (VecTaskDataBufferDepth - 1)) == 0, "VecTaskDataBufferDepth must be power of 2")
+    require(ABMultiResponseFifoDepth >= 1, "ABMultiResponseFifoDepth must be >= 1")
+    require(CLoadMultiFillQueueDepth >= 1, "CLoadMultiFillQueueDepth must be >= 1")
+    require(ResponseBridgeQueueDepth >= 1, "ResponseBridgeQueueDepth must be >= 1")
     require(Seq(4, 8, 16).contains(TaskCtrlIssueWindowDepth), "TaskCtrlIssueWindowDepth only supports 4/8/16")
     require(Seq(8, 16, 32).contains(MsyncRegs), "MsyncRegs only supports 8/16/32")
     require((FPEparams.MinGroupSize == 16), "FPEparams.MinGroupSize must be 16")
@@ -850,6 +861,10 @@ trait HasCuteParams {
     def VecTaskInstBufferDepth = cuteParams.VecTaskInstBufferDepth
     def VecTaskInstBufferSize = cuteParams.VecTaskInstBufferSize
     def VecTaskDataBufferDepth = cuteParams.VecTaskDataBufferDepth
+    def ABMultiResponseFifoDepth = cuteParams.ABMultiResponseFifoDepth
+    def CLoadMultiFillQueueDepth = cuteParams.CLoadMultiFillQueueDepth
+    def ResponseBridgeQueueDepth = cuteParams.ResponseBridgeQueueDepth
+    def CStoreDirectAckCountMode = cuteParams.CStoreDirectAckCountMode
     def ReduceGroupSize = cuteParams.ReduceGroupSize
     def EnableDifftest = cuteParams.EnableDifftest
     def L2NBanks = cuteParams.L2NBanks

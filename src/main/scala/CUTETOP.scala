@@ -184,9 +184,29 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         loader.nonConherentRequsetSourceID := mmu.nonConherentRequsetSourceID
     }
 
-    def connectLoaderRequestsWithGroupedArbiter(
-        loader: LocalMMUIO,
-        mmu: LocalMMUIO,
+    def connectRequestChannels(
+        loaderReq: Vec[DecoupledIO[MMURequestIO]],
+        loaderCoherentId: Valid[UInt],
+        loaderNonCoherentId: Valid[UInt],
+        mmuReq: Vec[DecoupledIO[MMURequestIO]],
+        mmuCoherentId: Valid[UInt],
+        mmuNonCoherentId: Valid[UInt],
+        channelCount: Int
+    ): Unit = {
+        for (i <- 0 until channelCount) {
+            mmuReq(i) <> loaderReq(i)
+        }
+        loaderCoherentId := mmuCoherentId
+        loaderNonCoherentId := mmuNonCoherentId
+    }
+
+    def connectRequestChannelsWithGroupedArbiter(
+        loaderReq: Vec[DecoupledIO[MMURequestIO]],
+        loaderCoherentId: Valid[UInt],
+        loaderNonCoherentId: Valid[UInt],
+        mmuReq: Vec[DecoupledIO[MMURequestIO]],
+        mmuCoherentId: Valid[UInt],
+        mmuNonCoherentId: Valid[UInt],
         channelCount: Int,
         reqChannelCount: Int,
         contextName: String
@@ -194,12 +214,12 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         require(reqChannelCount >= 1 && reqChannelCount <= channelCount, s"reqChannelCount ($reqChannelCount) must be within [1, $channelCount]")
 
         val nameContext = VerilogNameHelper.sanitize(contextName)
-        loader.ConherentRequsetSourceID := mmu.ConherentRequsetSourceID
-        loader.nonConherentRequsetSourceID := mmu.nonConherentRequsetSourceID
+        loaderCoherentId := mmuCoherentId
+        loaderNonCoherentId := mmuNonCoherentId
 
         if (reqChannelCount == channelCount) {
             for (i <- 0 until channelCount) {
-                mmu.Request(i) <> loader.Request(i)
+                mmuReq(i) <> loaderReq(i)
             }
         } else {
             require(channelCount % reqChannelCount == 0, s"channelCount ($channelCount) must be divisible by reqChannelCount ($reqChannelCount)")
@@ -210,19 +230,39 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
                     .suggestName(s"${nameContext}_req_group${group}_arb")
 
                 for ((bank, idx) <- banks.zipWithIndex) {
-                    arb.io.in(idx) <> loader.Request(bank)
+                    arb.io.in(idx) <> loaderReq(bank)
                 }
 
-                mmu.Request(group).valid := arb.io.out.valid
-                mmu.Request(group).bits := arb.io.out.bits
-                arb.io.out.ready := mmu.Request(group).ready
+                mmuReq(group).valid := arb.io.out.valid
+                mmuReq(group).bits := arb.io.out.bits
+                arb.io.out.ready := mmuReq(group).ready
             }
 
             for (group <- reqChannelCount until channelCount) {
-                mmu.Request(group).valid := false.B
-                mmu.Request(group).bits := DontCare
+                mmuReq(group).valid := false.B
+                mmuReq(group).bits := DontCare
             }
         }
+    }
+
+    def connectLoaderRequestsWithGroupedArbiter(
+        loader: LocalMMUIO,
+        mmu: LocalMMUIO,
+        channelCount: Int,
+        reqChannelCount: Int,
+        contextName: String
+    ): Unit = {
+        connectRequestChannelsWithGroupedArbiter(
+            loader.Request,
+            loader.ConherentRequsetSourceID,
+            loader.nonConherentRequsetSourceID,
+            mmu.Request,
+            mmu.ConherentRequsetSourceID,
+            mmu.nonConherentRequsetSourceID,
+            channelCount,
+            reqChannelCount,
+            contextName
+        )
     }
 
     def connectWithResponseBridge(
@@ -233,7 +273,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         reqChannelCount: Int,
         bankIdWidth: Int,
         bankIdOffset: Int,
-        baseDepth: Int,
+        queueDepth: Int,
+        hasDataPayload: Boolean,
         contextName: String
     ): Unit = {
         val nameContext = VerilogNameHelper.sanitize(contextName)
@@ -243,11 +284,12 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             inputChannelCount = channelCount,
             respChannelCount = respChannelCount,
             bankCount = channelCount,
-            baseDepth = baseDepth,
+            queueDepth = queueDepth,
             dataWidth = outsideDataWidth,
             sourceIdWidth = 64,
             bankIdWidth = bankIdWidth,
             bankIdOffset = bankIdOffset,
+            hasDataPayload = hasDataPayload,
             debugEnable = YJPDebugEnable,
             contextName = nameContext
         )).suggestName(s"${nameContext}_response_bridge")
@@ -394,7 +436,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             ABMatrixRegNBanks,
             log2Ceil(ABMatrixRegNBanks),
             log2Ceil(ABMatrixRegBankNEntries),
-            AMemoryLoaderReadFromMemoryFIFODepth,
+            ResponseBridgeQueueDepth,
+            true,
             amlBridgeContext
         )
     } else {
@@ -435,7 +478,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             ABMatrixRegNBanks,
             log2Ceil(ABMatrixRegNBanks),
             log2Ceil(ABMatrixRegBankNEntries),
-            BMemoryLoaderReadFromMemoryFIFODepth,
+            ResponseBridgeQueueDepth,
+            true,
             bmlBridgeContext
         )
     } else {
@@ -478,20 +522,41 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             CMatrixRegNBanks,
             log2Ceil(CMatrixRegNBanks),
             log2Ceil(CMatrixRegBankNEntries),
-            CMemoryLoaderReadFromMemoryFIFODepth,
+            ResponseBridgeQueueDepth,
+            true,
             cLoadBridgeContext
         )
-        connectWithResponseBridge(
-            CML.io.StoreLocalMMUIO,
-            MMU.io.CStoreLocalMMUIO,
-            CMatrixRegNBanks,
-            CStoreBridgeResponseChannelCount,
-            cStoreRequestChannelCount,
-            log2Ceil(CMatrixRegNBanks),
-            log2Ceil(CMatrixRegBankNEntries),
-            CMemoryLoaderReadFromMemoryFIFODepth,
-            cStoreBridgeContext
-        )
+        if (CStoreDirectAckCountMode) {
+            connectRequestChannelsWithGroupedArbiter(
+                CML.io.StoreLocalMMUIO.Request,
+                CML.io.StoreLocalMMUIO.ConherentRequsetSourceID,
+                CML.io.StoreLocalMMUIO.nonConherentRequsetSourceID,
+                MMU.io.CStoreLocalMMUIO.Request,
+                MMU.io.CStoreLocalMMUIO.ConherentRequsetSourceID,
+                MMU.io.CStoreLocalMMUIO.nonConherentRequsetSourceID,
+                CMatrixRegNBanks,
+                cStoreRequestChannelCount,
+                cStoreBridgeContext
+            )
+            for (i <- 0 until CMatrixRegNBanks) {
+                CML.io.StoreLocalMMUIO.Response(i).valid := MMU.io.CStoreLocalMMUIO.Response(i).valid
+                CML.io.StoreLocalMMUIO.Response(i).bits := MMU.io.CStoreLocalMMUIO.Response(i).bits
+                MMU.io.CStoreLocalMMUIO.Response(i).ready := CML.io.StoreLocalMMUIO.Response(i).ready
+            }
+        } else {
+            connectWithResponseBridge(
+                CML.io.StoreLocalMMUIO,
+                MMU.io.CStoreLocalMMUIO,
+                CMatrixRegNBanks,
+                CStoreBridgeResponseChannelCount,
+                cStoreRequestChannelCount,
+                log2Ceil(CMatrixRegNBanks),
+                log2Ceil(CMatrixRegBankNEntries),
+                ResponseBridgeQueueDepth,
+                false,
+                cStoreBridgeContext
+            )
+        }
     } else {
         connectWithResponseArbiter(
             CML.io.LoadLocalMMUIO,
