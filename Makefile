@@ -8,7 +8,7 @@ endif
 
 init:
 	git submodule update --init
-	cd coupledL2 && make init
+	cd XSAICache && git submodule update --init OpenNCB
 	cd rocket-chip && git submodule update --init hardfloat cde
 
 compile:

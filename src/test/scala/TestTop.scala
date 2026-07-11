@@ -8,13 +8,19 @@ import chisel3.stage.ChiselGeneratorAnnotation
 import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.tile.MaxHartIdBits
 import freechips.rocketchip.tilelink._
-import coupledL2._
 import utility._
+import xscache.coupledL2.MatrixDataBundle
 
 object baseConfig {
   def apply(maxHartIdBits: Int) = {
     new Config((_, _, _) => {
       case MaxHartIdBits => maxHartIdBits
+      case PerfCounterOptionsKey => PerfCounterOptions(
+        enablePerfPrint = false,
+        enablePerfDB = false,
+        perfLevel = XSPerfLevel.NORMAL,
+        perfDBHartID = 0
+      )
     })
   }
 }
@@ -45,10 +51,12 @@ class TestTop()(implicit p: Parameters) extends LazyModule {
   val hbl2_node = createClientNode("hbl2", 32)
 
   val cute_tl = LazyModule(new Cute2TL())
+  val hbl2_xbar = TLXbar()
 
   cute_tl.node.foreach { clientNode =>
-    hbl2_node := clientNode
+    hbl2_xbar :=* clientNode
   }
+  hbl2_node :*= hbl2_xbar
 
   lazy val module = new LazyModuleImp(this) {
     val io = IO(new Bundle {
