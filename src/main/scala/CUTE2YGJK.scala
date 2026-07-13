@@ -82,6 +82,11 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     tlA.valid := mmuReq.valid
     mmuReq.ready := tlA.ready
 
+    assert(
+      !(mmuReq.valid && mmuReqBits.RequestType_isWrite) || mmuReqBits.RequestMask.andR,
+      "HBL2 supports PutFullData only, so Mask must be set to all 1"
+    )
+
     tlABits := Mux1H(Seq(
       (mmuReqBits.RequestType_isWrite === 0.U) -> edge_ch.Get(
         0.U,
@@ -92,8 +97,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
         0.U,
         mmuReqBits.RequestAddr,
         log2Ceil(outsideDataWidthByte).U,
-        mmuReqBits.RequestData,
-        mmuReqBits.RequestMask
+        mmuReqBits.RequestData
       )._2
     ))
 
