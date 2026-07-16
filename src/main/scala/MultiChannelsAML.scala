@@ -527,7 +527,11 @@ class MultiChannelsABMemLoader(
         }
         val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
-        difftestAmuFinish.index := 0.U
+        val diffIndexMap = Map(
+            "AML" -> 0,
+            "BML" -> 1
+        )
+        difftestAmuFinish.index := diffIndexMap.getOrElse(label, 0xdeadabab).U
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
           (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
         difftestAmuFinish.pc := pcReg

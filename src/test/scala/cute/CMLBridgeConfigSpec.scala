@@ -25,6 +25,7 @@ class CMLBridgeConfigSpec extends AnyFlatSpec {
     assert(view.BMLUseLegacyLoader)
     assert(view.CLoadBridgeResponseChannelCount == 1)
     assert(view.CStoreBridgeResponseChannelCount == 2)
+    assert(view.CStoreDiffTestLaneCount == 2)
     assert(view.CMLUseMultiChannelLoader)
   }
 
@@ -36,6 +37,7 @@ class CMLBridgeConfigSpec extends AnyFlatSpec {
 
     assert(view.CLoadBridgeResponseChannelCount == 4)
     assert(view.CStoreBridgeResponseChannelCount == 4)
+    assert(view.CStoreDiffTestLaneCount == 4)
     assert(view.CMLUseMultiChannelLoader)
   }
 
@@ -51,7 +53,25 @@ class CMLBridgeConfigSpec extends AnyFlatSpec {
     assert(view.CStoreUseLegacyLoader)
     assert(view.CLoadBridgeResponseChannelCount == 1)
     assert(view.CStoreBridgeResponseChannelCount == 1)
+    assert(view.CStoreDiffTestLaneCount == 1)
     assert(!view.CMLUseMultiChannelLoader)
+  }
+
+  it should "derive difftest lane count from the C-store channel mode" in {
+    Seq(
+      "ALBLCL1CS1" -> 1,
+      "ALBLCL2CS2" -> 2,
+      "ALBLCL4CS4" -> 4,
+      "ALBLCL8CS8" -> 8
+    ).foreach { case (loaderConfig, expectedLaneCount) =>
+      implicit val p: Parameters = paramsWith(CuteParams.baseParams.copy(
+        LoaderBridgeChannelConfig = loaderConfig
+      ))
+      val view = new ParamView
+
+      assert(view.CStoreDiffTestLaneCount == expectedLaneCount)
+      assert(view.CStoreDiffTestLaneCount == view.CStoreBridgeResponseChannelCount)
+    }
   }
 
   it should "reject unsupported loader config strings" in {

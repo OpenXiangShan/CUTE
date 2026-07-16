@@ -75,8 +75,8 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         bToAConfig.LoadTaskInfo.Is_FullLoad := true.B
         bToAConfig.LoadTaskInfo.Is_ZeroLoad := false.B
         bToAConfig.LoadTaskInfo.Is_RepeatRowLoad := false.B
-        bToAConfig.pc.foreach(_ := 0.U)
-        bToAConfig.coreid.foreach(_ := 0.U)
+        bToAConfig.pc.foreach(_ := io.ConfigInfo.pc.getOrElse(0xDEAD1234.U))
+        bToAConfig.coreid.foreach(_ := io.ConfigInfo.coreid.getOrElse(0xDEAD5678.U))
 
         io.ConfigInfo.MicroTaskReady := bToAConfig.MicroTaskReady
         io.ConfigInfo.MicroTaskEndValid := bToAConfig.MicroTaskEndValid

@@ -624,7 +624,7 @@ case class CuteParams(
 
     // User-facing loader response mode selector.
     // L means legacy single-channel loader; 1/2/4/8 mean parameterized bridge width.
-    val LoaderBridgeChannelConfig: String = "ALBLCLLCSL"
+    val LoaderBridgeChannelConfig: String = "A1B2CL8CS4"
 ) {
     val parsedLoaderBridgeChannelConfig = ResponseChannelHelper.parseLoaderBridgeChannelConfig(LoaderBridgeChannelConfig)
     val AMLChannelMode = parsedLoaderBridgeChannelConfig.a
@@ -867,6 +867,7 @@ trait HasCuteParams {
     def BMLResponseChannelCount = BMLChannelMode.responseChannelCount
     def CLoadBridgeResponseChannelCount = CLoadChannelMode.responseChannelCount
     def CStoreBridgeResponseChannelCount = CStoreChannelMode.responseChannelCount
+    def CStoreDiffTestLaneCount: Int = CStoreBridgeResponseChannelCount
     def CMLUseMultiChannelLoader = !CLoadUseLegacyLoader
 
     def MinGroupSize = FPEparams.MinGroupSize //minimum compute group size of FPE
