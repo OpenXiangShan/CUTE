@@ -6,11 +6,9 @@ import $file.common
 import $file.`rocket-chip`.common
 import $file.`rocket-chip`.cde.common
 import $file.`rocket-chip`.hardfloat.common
-import $file.`coupledL2`.HuanCun.common
-import $file.`coupledL2`.common
+import $file.XSAICache.common
 
 val projectRoot = os.pwd
-val depsRoot = projectRoot / "coupledL2"
 val defaultScalaVersion = "2.13.15"
 def defaultVersions = Map(
   "chisel"        -> ivy"org.chipsalliance::chisel:6.7.0",
@@ -72,23 +70,20 @@ object utility extends SbtModule with HasChisel {
   override def moduleDeps = super.moduleDeps ++ Seq(rocketchip)
 }
 
-object huancun extends SbtModule with HasChisel {
-  override def millSourcePath = millOuterCtx.millSourcePath / "coupledL2" / "HuanCun"
-  override def moduleDeps = super.moduleDeps ++ Seq(
-    rocketchip, utility
-  )
+object openNCB extends SbtModule with HasChisel {
+  override def millSourcePath = millOuterCtx.millSourcePath / "XSAICache" / "OpenNCB"
+
+  override def moduleDeps = super.moduleDeps ++ Seq(rocketchip)
 }
 
-object CoupledL2 extends SbtModule with HasChisel 
-  with coupledL2.common.CoupledL2Module {
+object XSAICache extends SbtModule with HasChisel with $file.XSAICache.common.XSCacheModule {
+  override def millSourcePath = millOuterCtx.millSourcePath / "XSAICache"
 
-  override def millSourcePath = millOuterCtx.millSourcePath / "coupledL2"
+  def openNCBModule: ScalaModule = openNCB
 
   def rocketModule = rocketchip
 
   def utilityModule = utility
-
-  def huancunModule = huancun
 
   object test extends SbtTests with TestModule.ScalaTest {
     override def ivyDeps = super.ivyDeps() ++ Agg(
@@ -159,7 +154,7 @@ object CUTE extends SbtModule with HasChisel with $file.common.CUTEModule {
 
   def utilityModule: ScalaModule = utility
 
-  def coupledL2Module: ScalaModule = CoupledL2
+  def coupledL2Module: ScalaModule = XSAICache
 
   def difftestModule: ScalaModule = difftest
 

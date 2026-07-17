@@ -1,12 +1,12 @@
 [submodule "cute-fpe"]
 	path = cute-fpe
 	url = https://github.com/OpenXiangShan/CUTEFPE.git
-[submodule "coupledL2"]
-	path = coupledL2
-	url = https://github.com/OpenXiangShan/HBL2.git
 [submodule "rocket-chip"]
 	path = rocket-chip
 	url = https://github.com/OpenXiangShan/rocket-chip.git
 [submodule "utility"]
 	path = utility
 	url = https://github.com/OpenXiangShan/Utility.git
+[submodule "XSAICache"]
+	path = XSAICache
+	url = https://github.com/OpenXiangShan/XSAICache
