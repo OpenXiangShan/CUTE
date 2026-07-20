@@ -1429,7 +1429,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   // ===================== Release DiffTest alignment =====================
   if (EnableDifftest) {
-    val releaseFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+    val releaseFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 3, dontCare = true)
     val releaseIssueOwnerSlot = issueSlotIdx
     val releaseIssueOwnerEntry = issueSlot.entry
 
