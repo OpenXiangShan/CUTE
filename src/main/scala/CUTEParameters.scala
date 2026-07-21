@@ -577,12 +577,6 @@ case class CuteParams(
 
     val L2NBanks :Int = 4,
 
-    val ConvolutionApplicationConfigDataWidth :Int = 32, //width of convolution-related configuration information
-    val ConvolutionDIM_Max :Int = 65536, //width of convolution-related configuration information
-    val Convolution_Input_Height_Weight_Dim_Max :Int = 16384,
-    val KernelSizeMax :Int = 16, //maximum kernel size
-    val StrideSizeMax :Int = 4,  //maximum stride size
-
     val ApplicationMaxTensorSize :Int = 65536, //maximum tensor shape a program can handle,
 
     val MMUAddrWidth :Int = 64 , //CUTE MMU address width
@@ -613,6 +607,9 @@ case class CuteParams(
 
     // TaskController issue window depth (compile-time only)
     val TaskCtrlIssueWindowDepth :Int = 8,
+
+    // Number of synchronization registers implemented by the core.
+    val MsyncRegs :Int = 32,
 
     val EnableDifftest: Boolean = false, //whether DiffTest is enabled
 
@@ -647,11 +644,6 @@ case class CuteParams(
     require((outsideDataWidth & (outsideDataWidth - 1)) == 0, "outsideDataWidth must be power of 2")
     require((MemoryDataWidth & (MemoryDataWidth - 1)) == 0, "MemoryDataWidth must be power of 2")
     require((VectorWidth & (VectorWidth - 1)) == 0, "VectorWidth must be power of 2")
-    require((ConvolutionApplicationConfigDataWidth & (ConvolutionApplicationConfigDataWidth - 1)) == 0, "ConvolutionApplicationConfigDataWidth must be power of 2")
-    require((ConvolutionDIM_Max & (ConvolutionDIM_Max - 1)) == 0, "ConvolutionDIM_Max must be power of 2")
-    require((Convolution_Input_Height_Weight_Dim_Max & (Convolution_Input_Height_Weight_Dim_Max - 1)) == 0, "Convolution_Input_Height_Weight_Dim_Max must be power of 2")
-    require((KernelSizeMax & (KernelSizeMax - 1)) == 0, "KernelSizeMax must be power of 2")
-    require((StrideSizeMax & (StrideSizeMax - 1)) == 0, "StrideSizeMax must be power of 2")
     require((ApplicationMaxTensorSize & (ApplicationMaxTensorSize - 1)) == 0, "ApplicationMaxTensorSize must be power of 2")
     // require((MMUAddrWidth & (MMUAddrWidth - 1)) == 0, "MMUAddrWidth must be power of 2" )
     require((LLCSourceMaxNum & (LLCSourceMaxNum - 1)) == 0, "LLCSourceMaxNum must be power of 2")
@@ -670,6 +662,7 @@ case class CuteParams(
     require((VecTaskInstBufferSize & (VecTaskInstBufferSize - 1)) == 0, "VecTaskInstBufferSize must be power of 2")
     require((VecTaskDataBufferDepth & (VecTaskDataBufferDepth - 1)) == 0, "VecTaskDataBufferDepth must be power of 2")
     require(Seq(4, 8, 16).contains(TaskCtrlIssueWindowDepth), "TaskCtrlIssueWindowDepth only supports 4/8/16")
+    require(Seq(8, 16, 32).contains(MsyncRegs), "MsyncRegs only supports 8/16/32")
     require((FPEparams.MinGroupSize == 16), "FPEparams.MinGroupSize must be 16")
     require((FPEparams.MinDataTypeWidth == 4), "FPEparams.MinDataTypeWidth must be 4")
     require((FPEparams.ScaleElementWidth == 8), "FPEparams.ScaleElementWidth must be 8")
@@ -765,6 +758,8 @@ trait HasCuteParams {
 
     def TaskCtrlIssueWindowDepth = cuteParams.TaskCtrlIssueWindowDepth
     def TaskCtrlIssueWindowDepthBitSize = log2Ceil(TaskCtrlIssueWindowDepth)
+    def CuteMsyncRegs = cuteParams.MsyncRegs
+    def CuteMsyncRegIdxWidth = log2Ceil(CuteMsyncRegs)
 
     def DecodedAmuCtrlFIFODepth = TaskCtrlIssueWindowDepth  // Decoded AMU instruction FIFO depth, tied to the issue window
     def DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) // Bit width of the decoded AMU instruction FIFO depth
@@ -797,11 +792,6 @@ trait HasCuteParams {
     def YJPPEDebugEnable          = DebugParams.YJPPEDebugEnable
     def YJPAfterOpsDebugEnable    = DebugParams.YJPAfterOpsDebugEnable
 
-    def ConvolutionApplicationConfigDataWidth = cuteParams.ConvolutionApplicationConfigDataWidth
-    def ConvolutionDIM_Max = cuteParams.ConvolutionDIM_Max
-    def Convolution_Input_Height_Weight_Dim_Max = cuteParams.Convolution_Input_Height_Weight_Dim_Max
-    def KernelSizeMax = cuteParams.KernelSizeMax
-    def StrideSizeMax = cuteParams.StrideSizeMax
     def outsideDataWidth = cuteParams.outsideDataWidth
     def outsideDataWidthByte = cuteParams.outsideDataWidthByte
     def MemoryDataWidth = cuteParams.MemoryDataWidth
@@ -986,14 +976,6 @@ case object StreamStateType extends Field[UInt]{
     val NoReorder = 0.U(StreamStateTypeBitWidth.W)
     val Reorder_DIM_N_First = 1.U(StreamStateTypeBitWidth.W)
     val Reorder_DIM_M_First = 2.U(StreamStateTypeBitWidth.W)
-}
-
-//describes the data-flow access order during computation: N_M for transpose, M_N otherwise
-case object CaculateStreamStateType extends Field[UInt]{
-    val CaculateStreamStateTypeBitWidth = 4
-
-    val M_N = 0.U(CaculateStreamStateTypeBitWidth.W)
-    val N_M = 1.U(CaculateStreamStateTypeBitWidth.W)
 }
 
 class CUTE_uop()(implicit p: Parameters) extends CuteBundle{
@@ -1272,15 +1254,6 @@ class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val computeType                         = Output(UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
-class MRegControlInfo()(implicit p: Parameters) extends CuteBundle{
-    val ADC_MReg_ID = UInt(ABMatrixRegIdWidth.W)
-    val BDC_MReg_ID = UInt(ABMatrixRegIdWidth.W)
-    val CDC_MReg_ID = UInt(CMatrixRegIdWidth.W)
-    val AML_MReg_ID = UInt(ABMatrixRegIdWidth.W)
-    val BML_MReg_ID = UInt(ABMatrixRegIdWidth.W)
-    val CML_MReg_ID = UInt(CMatrixRegIdWidth.W)
-}
-
 //when reading from MatrixReg, it must be clear which bank and which row are accessed, then the data is concatenated and returned
 //which bank and which row to read are computed by the data-control module
 //how data is arranged within banks is filled by the MemoryLoader module
@@ -1536,14 +1509,6 @@ case object  ElementDataType extends Field[UInt]{
     val DataTypeWidth4  = 7.U(DataTypeBitWidth.W)
 }
 
-//work-task template class
-case object  CUTETaskType extends Field[UInt]{
-    val CUTETaskBitWidth = 8
-    val TaskTypeUndef = 0.U(CUTETaskBitWidth.W)
-    val TaskTypeMatrixMul = 1.U(CUTETaskBitWidth.W)
-    val TaskTypeConv = 2.U(CUTETaskBitWidth.W)
-}
-
 case object  CMemoryLoaderTaskType extends Field[UInt]{
     val TypeBitWidth = 4
     val TaskTypeUndef = 0.U(TypeBitWidth.W)
@@ -1562,7 +1527,6 @@ case object  MemoryOrderType extends Field[UInt]{
     val OrderType_Kb_Nb     = 2.U(MemoryOrderTypeBitWidth.W) //ordering in address space, with Kb first and Nb after
 
 }
-
 
 class MatrixRegTaskDecode(MatrixRegTask: UInt) extends Field[UInt]{
 

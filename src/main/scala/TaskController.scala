@@ -247,7 +247,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   class ReleaseEventEntry extends Bundle {
     val eventType = UInt(2.W)
-    val msync = UInt(5.W)
+    val msync = UInt(CuteMsyncRegIdxWidth.W)
     val slotId = UInt(SlotIdxWidth.W)
     val seqId = UInt(SeqIdWidth.W)
   }
