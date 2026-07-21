@@ -36,8 +36,8 @@ class YGJKBuffer extends Bundle with YGJKParameters{
   val id = UInt(6.W)
 }
 
-class MreleaseIO extends Bundle{
-    val msyncRd = Vec(32, Bool())
+class MreleaseIO(implicit p: Parameters) extends CuteBundle {
+  val msyncRd = Vec(CuteMsyncRegs, Bool())
 }
 
 class YGJKControl(implicit p: Parameters) extends CuteBundle{

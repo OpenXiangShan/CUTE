@@ -151,12 +151,12 @@ object Bundles {
     }
   }
 
-  class AmuReleaseIO extends Bundle {
-    val msyncRd = UInt(5.W)
+  class AmuReleaseIO(implicit p: Parameters) extends CuteBundle {
+    val msyncRd = UInt(CuteMsyncRegIdxWidth.W)
   }
 
   object AmuReleaseIO {
-    def apply(): AmuReleaseIO = {
+    def apply()(implicit p: Parameters): AmuReleaseIO = {
       new AmuReleaseIO()
     }
   }
