@@ -239,19 +239,32 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
 
     val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
 
-    class FillBundle extends Bundle {
-        val addr = UInt(log2Ceil(CMatrixRegBankNEntries).W)
-        val data = UInt(outsideDataWidth.W)
-        val isTail = Bool()
+    private val fillQueueMetaWidth = CSourceIdAddrWidth + 1
+    val fillDataQueues = Seq.tabulate(CMatrixRegNBanks) { bank =>
+        Module(new Queue(UInt(outsideDataWidth.W), CLoadMultiFillQueueDepth, pipe = true))
+            .suggestName(s"cml_bank${bank}_fill_data_queue")
     }
-    val fillQueues = Seq.fill(CMatrixRegNBanks){Module(new Queue(new FillBundle, 8, pipe = true))}
-    // init fillQueues input ports
+    val fillMetaQueues = Seq.tabulate(CMatrixRegNBanks) { bank =>
+        Module(new Queue(UInt(fillQueueMetaWidth.W), CLoadMultiFillQueueDepth, pipe = true))
+            .suggestName(s"cml_bank${bank}_fill_meta_queue")
+    }
+    // init fill queue input ports
     for (i <- 0 until CMatrixRegNBanks) {
-        fillQueues(i).io.enq.valid := false.B
-        fillQueues(i).io.enq.bits.addr := 0.U
-        fillQueues(i).io.enq.bits.data := 0.U
-        fillQueues(i).io.enq.bits.isTail := false.B
-        fillQueues(i).io.deq.ready := false.B
+        fillDataQueues(i).io.enq.valid := false.B
+        fillDataQueues(i).io.enq.bits := 0.U
+        fillDataQueues(i).io.deq.ready := false.B
+        fillMetaQueues(i).io.enq.valid := false.B
+        fillMetaQueues(i).io.enq.bits := 0.U
+        fillMetaQueues(i).io.deq.ready := false.B
+
+        assert(
+            fillDataQueues(i).io.enq.ready === fillMetaQueues(i).io.enq.ready,
+            s"CML bank $i fill enqueue queues diverged"
+        )
+        assert(
+            fillDataQueues(i).io.deq.valid === fillMetaQueues(i).io.deq.valid,
+            s"CML bank $i fill dequeue queues diverged"
+        )
     }
 
     val MAX_Fill_Times = outsideDataWidthByte/CMatrixRegEntryByteSize
@@ -376,19 +389,20 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
 
 
                 // OmegaRouter 已保证 channel bank 上的 response 属于 bank bank，
-                // 因此直接使用 fillQueues(bank) 是正确的。
+                // 因此直接使用 per-bank fill queues 是正确的。
                 val resp = io.LoadLocalMMUIO.Response(bank)
                 val respSourceID = decodeCSourceId(resp.bits.ReseponseSourceID)
                 val MatrixRegBankId = respSourceID.MatrixRegBankId
                 val MatrixRegAddr = respSourceID.MatrixRegAddr
                 val ResponseData = resp.bits.ReseponseData
 
-                val fillq = fillQueues(bank).io
-                resp.ready := fillq.enq.ready
-                fillq.enq.valid := resp.valid
-                fillq.enq.bits.addr := MatrixRegAddr
-                fillq.enq.bits.data := ResponseData
-                fillq.enq.bits.isTail := respSourceID.MatrixRegisTail
+                val fillDataQ = fillDataQueues(bank).io
+                val fillMetaQ = fillMetaQueues(bank).io
+                resp.ready := fillDataQ.enq.ready && fillMetaQ.enq.ready
+                fillDataQ.enq.valid := resp.valid
+                fillDataQ.enq.bits := ResponseData
+                fillMetaQ.enq.valid := resp.valid
+                fillMetaQ.enq.bits := Cat(respSourceID.MatrixRegisTail, MatrixRegAddr)
 
                 when(resp.fire){
                     assert(MatrixRegBankId === bank.U,
@@ -401,23 +415,27 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
             }
 
             //检查每个bank是否有数据需要回填
-            HasScarhpadWrite := fillQueues.map(_.io.deq.valid).reduce(_ || _)
+            HasScarhpadWrite := fillDataQueues.map(_.io.deq.valid).reduce(_ || _)
 
             val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(1.W))))
             for (i <- 0 until CMatrixRegNBanks){
                 val fillTimes = RegInit(MAX_Fill_Times.U)
-                val fillq = fillQueues(i).io
+                val fillDataQ = fillDataQueues(i).io
+                val fillMetaQ = fillMetaQueues(i).io
                 val allowWrite = io.ToMatrixRegIO.LoadReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex) === true.B
                 when(allowWrite)
                 {
-                    fillq.deq.ready := fillTimes === 1.U
-                    when(fillq.deq.valid){
+                    fillDataQ.deq.ready := fillTimes === 1.U
+                    fillMetaQ.deq.ready := fillTimes === 1.U
+                    when(fillDataQ.deq.valid){
                         Current_Fill_MReg_Time(i) := 1.U
                         val MatrixRegWriteRequest = io.ToMatrixRegIO.WriteRequestToMatrixReg
                         val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*CMatrixRegEntryByteSize).W)))))
-                        val addr = fillq.deq.bits.addr + (MAX_Fill_Times.U - fillTimes)
+                        val meta = fillMetaQ.deq.bits
+                        val baseAddr = meta(CSourceIdAddrWidth - 1, 0)
+                        val addr = baseAddr + (MAX_Fill_Times.U - fillTimes)
                         val fillSlot = MAX_Fill_Times.U - fillTimes
-                        val currentIsTail = fillq.deq.bits.isTail
+                        val currentIsTail = meta(fillQueueMetaWidth - 1)
                         val fullByteMask = Fill(CMatrixRegEntryByteSize, true.B)
                         val tailByteMaskVec = Wire(Vec(MAX_Fill_Times, UInt(CMatrixRegEntryByteSize.W)))
                         for (j <- 0 until MAX_Fill_Times) {
@@ -425,7 +443,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                             val low = j * CMatrixRegEntryByteSize
                             tailByteMaskVec(j) := tailTaskMask(high, low)
                         }
-                        FIFOData := fillq.deq.bits.data.asTypeOf(FIFOData)
+                        FIFOData := fillDataQ.deq.bits.asTypeOf(FIFOData)
                         MatrixRegWriteRequest.BankAddr(i).bits := addr
                         MatrixRegWriteRequest.BankAddr(i).valid := true.B
                         MatrixRegWriteRequest.Data(i).bits := FIFOData(fillSlot)
@@ -560,6 +578,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     N_Get_IteratorMax := (StoreMatrixRegTensor_N / Matrix_MN.U)
 
     val transpose_scp_addr = WireInit(0.U(log2Ceil(CMatrixRegBankNEntries).W))
+    val DirectAckResponseCount = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
 
     class BankStore(bank: Int) {
         /**
@@ -730,6 +749,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         memorystore_state := s_store_working
 
         BankStores.foreach(_.init())
+        DirectAckResponseCount := 0.U
 
         Max_Load_MReg_Time := StoreMatrixRegTensor_M * StoreMatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U
 
@@ -768,7 +788,12 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         }
     }.elsewhen(memorystore_state === s_store_end){
         val WriteResponseCountSum = BankStores.map(_.WriteResponseCounter).reduce(_ + _)
-        when(WriteResponseCountSum === Max_Store_Memory_Time) {
+        val StoreAckDone = Mux(
+            CStoreDirectAckCountMode.B,
+            DirectAckResponseCount === Max_Store_Memory_Time,
+            WriteResponseCountSum === Max_Store_Memory_Time
+        )
+        when(StoreAckDone) {
             io.ConfigInfo.StoreMicroTaskEndValid := true.B
         }
         when(io.ConfigInfo.StoreMicroTaskEndReady && io.ConfigInfo.StoreMicroTaskEndValid){
@@ -783,8 +808,39 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     }
 
     when(memorystore_state === s_store_working || memorystore_state === s_store_end){
-        for (bank <- 0 until Matrix_MN) {
-            BankStores(bank).onResponse()
+        if (CStoreDirectAckCountMode) {
+            val ackValids = io.StoreLocalMMUIO.Response.map(_.valid)
+            val ackReadies = Wire(Vec(Matrix_MN, Bool()))
+            val directAckFireVec = Wire(Vec(Matrix_MN, Bool()))
+            val anyAckValid = ackValids.reduce(_ || _)
+            val ackCanAccept = DirectAckResponseCount =/= Max_Store_Memory_Time
+            for (bank <- 0 until Matrix_MN) {
+                ackReadies(bank) := ackCanAccept
+                io.StoreLocalMMUIO.Response(bank).ready := ackReadies(bank)
+                directAckFireVec(bank) := io.StoreLocalMMUIO.Response(bank).fire
+            }
+            val firedAckCount = PopCount(directAckFireVec)
+            when(firedAckCount =/= 0.U) {
+                DirectAckResponseCount := DirectAckResponseCount + firedAckCount
+                if (YJPCMLDebugEnable) {
+                    printf(
+                        cf"[CMemoryLoader_Store<${io.DebugInfo.DebugTimeStampe}>][DirectAck] " +
+                        cf"ackFireVec=${directAckFireVec.asUInt} ackInc=${firedAckCount} " +
+                        cf"totalAck=${DirectAckResponseCount + firedAckCount}/${Max_Store_Memory_Time}\n"
+                    )
+                }
+            }.elsewhen(anyAckValid) {
+                if (YJPCMLDebugEnable) {
+                    printf(
+                        cf"[CMemoryLoader_Store<${io.DebugInfo.DebugTimeStampe}>][DirectAck] " +
+                        cf"ackValidNoFire validVec=${ackValids.asUInt} ready=${ackCanAccept}\n"
+                    )
+                }
+            }
+        } else {
+            for (bank <- 0 until Matrix_MN) {
+                BankStores(bank).onResponse()
+            }
         }
     }
 
