@@ -1,6 +1,7 @@
 package cute
 
 import chisel3._
+import chisel3.util._
 import chiseltest._
 import org.chipsalliance.cde.config.{Config, Parameters}
 import org.scalatest.flatspec.AnyFlatSpec
@@ -11,6 +12,30 @@ object TransposeBytePlaneTestConfig {
   val params: Parameters = new Config((_, _, _) => {
     case CuteParamsKey => CuteParams.CUTE_8Tops_128SCP
   })
+}
+
+class TransposeAddressScaleHarness(implicit p: Parameters) extends CuteModule {
+  private val indexWidth = MatrixRegMaxTensorDimBitSize
+  private val groupBaseWidth = indexWidth + log2Ceil(ABMatrixRegEntryByteSize + 1)
+  private val beatBaseWidth = indexWidth + log2Ceil(Trans_Load_Size + 1) + log2Ceil(ReduceGroupSize + 1)
+
+  val io = IO(new Bundle {
+    val elementBytes = Input(UInt(3.W))
+    val groupIndex = Input(UInt(indexWidth.W))
+    val beatIndex = Input(UInt(indexWidth.W))
+    val elementSlot = Input(UInt(log2Ceil(Trans_Load_Size).W))
+    val groupBase = Output(UInt(groupBaseWidth.W))
+    val beatBase = Output(UInt(beatBaseWidth.W))
+    val writeOffset = Output(UInt((log2Ceil(Trans_Load_Size) + log2Ceil(ReduceGroupSize)).W))
+  })
+
+  io.groupBase := TransposeBytePlane.groupBase(
+    io.groupIndex, io.elementBytes, ABMatrixRegEntryByteSize
+  )
+  io.beatBase := TransposeBytePlane.beatEntryBase(
+    io.beatIndex, io.elementBytes, Trans_Load_Size, ReduceGroupSize
+  )
+  io.writeOffset := TransposeBytePlane.reduceGroupOffset(io.elementSlot, ReduceGroupSize)
 }
 
 class TransposeBytePlaneSpec extends AnyFlatSpec with ChiselScalatestTester {
@@ -144,6 +169,27 @@ class TransposeBytePlaneSpec extends AnyFlatSpec with ChiselScalatestTester {
       assert(entry >= 0 && entry < 32, s"e$elementBytes entry $entry outside the physical bank")
       assert(byteOffset >= 0 && byteOffset < entryBytes, s"e$elementBytes byte offset $byteOffset outside the entry")
     }
+  }
+
+  it should "select constant shifts for transpose group and beat bases" in {
+    test(new TransposeAddressScaleHarness()(TransposeBytePlaneTestConfig.params))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+        for {
+          elementBytes <- Seq(1, 2, 4)
+          groupIndex <- Seq(0, 1, 7, 31)
+          beatIndex <- Seq(0, 1, 3, 7)
+          elementSlot <- 0 until byteSlots
+        } {
+          dut.io.elementBytes.poke(elementBytes.U)
+          dut.io.groupIndex.poke(groupIndex.U)
+          dut.io.beatIndex.poke(beatIndex.U)
+          dut.io.elementSlot.poke(elementSlot.U)
+
+          dut.io.groupBase.expect((groupIndex * (entryBytes / elementBytes)).U)
+          dut.io.beatBase.expect((beatIndex * ((byteSlots / elementBytes) * reduceGroupSize)).U)
+          dut.io.writeOffset.expect((elementSlot * reduceGroupSize).U)
+        }
+      }
   }
 
   it should "cover every physical entry for a 128 by 64-byte raw tile" in {

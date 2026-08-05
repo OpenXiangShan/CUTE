@@ -235,8 +235,6 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val transBusStall = transAlignPipes.map(_.io.bus_stall).reduce(_ || _)
     val transWriteBaseAddr = RegInit(0.U(transBaseAddrBits.W))
     val transposeGroupRows = TransposeBytePlane.groupRows(transposeBytesPerElement, ABMatrixRegEntryByteSize)
-    val transposeElementSlots = TransposeBytePlane.elementSlotsPerResponse(transposeBytesPerElement, Trans_Load_Size)
-    val transposeBeatEntryStride = transposeElementSlots * ReduceGroupSize.U
 
     for (i <- 0 until ABMatrixRegNBanks) {
         transAlignPipes(i).io.in_data := transPipeInData
@@ -257,7 +255,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val transRouterTxnValid = transRouters.map(_.io.txn_valid).reduce(_ || _)
     val transWritePhase = transRouters.head.io.phase
     val transWriteElementSlot = TransposeBytePlane.elementSlot(transWritePhase, transposeBytesPerElement)
-    val transWriteAddrOffset = transWriteElementSlot * ReduceGroupSize.U
+    val transWriteAddrOffset = TransposeBytePlane.reduceGroupOffset(transWriteElementSlot, ReduceGroupSize)
     val transWriteAddrWide = transWriteBaseAddr +& transWriteAddrOffset
     val transWriteAddr = transWriteAddrWide(transBaseAddrBits - 1, 0)
 
@@ -314,7 +312,9 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             //   CurrentLoaded_BlockTensor_N_Iter -> large_N group index
             //   CurrentLoaded_BlockTensor_K_Iter -> K/N-beat index
             //   Request_N_Iter_Time              -> small_N inside current group
-            val transpose_large_n_base = CurrentLoaded_BlockTensor_N_Iter * transposeGroupRows
+            val transpose_large_n_base = TransposeBytePlane.groupBase(
+                CurrentLoaded_BlockTensor_N_Iter, transposeBytesPerElement, ABMatrixRegEntryByteSize
+            )
             val transpose_current_n = transpose_large_n_base + Request_N_Iter_Time
             val transpose_group_in_range = transpose_large_n_base < MatrixRegTensor_N
             val transpose_group_remain = Mux(transpose_group_in_range, MatrixRegTensor_N - transpose_large_n_base, 0.U)
@@ -339,7 +339,9 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             val NormalRequestMatrixRegBankId = RequestMatrixRegNIndex % ABMatrixRegNBanks.U
             val NormalRequestMatrixRegBaseAddr = ((RequestMatrixRegNIndex / ABMatrixRegNBanks.U) * ReduceGroupSize.U)
             val NormalRequestMatrixRegAddr = NormalRequestMatrixRegBaseAddr + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(MAX_Fill_Times))
-            val TransposeRequestMatrixRegAddr = CurrentLoaded_BlockTensor_K_Iter * transposeBeatEntryStride + CurrentLoaded_BlockTensor_N_Iter
+            val TransposeRequestMatrixRegAddr = TransposeBytePlane.beatEntryBase(
+                CurrentLoaded_BlockTensor_K_Iter, transposeBytesPerElement, Trans_Load_Size, ReduceGroupSize
+            ) + CurrentLoaded_BlockTensor_N_Iter
             val RequestMatrixRegBankId = Mux(Is_Transpose, 0.U, NormalRequestMatrixRegBankId)
             val RequestMatrixRegAddr = Mux(Is_Transpose, TransposeRequestMatrixRegAddr, NormalRequestMatrixRegAddr)
 

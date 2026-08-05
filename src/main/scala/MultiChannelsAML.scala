@@ -155,7 +155,7 @@ class MultiChannelsABMemLoader(
     private val transBaseAddrBits = RegAddrWidth
     val transWriteBaseAddr = RegInit(0.U(transBaseAddrBits.W))
     val transWritePhase = transRouters.head.io.phase
-    val transWriteAddrOffset = transWritePhase * ReduceGroupSize.U
+    val transWriteAddrOffset = TransposeBytePlane.reduceGroupOffset(transWritePhase, ReduceGroupSize)
     val transWriteAddrWide = transWriteBaseAddr +& transWriteAddrOffset
     val transWriteAddr = transWriteAddrWide(transBaseAddrBits - 1, 0)
 
@@ -249,7 +249,9 @@ class MultiChannelsABMemLoader(
                 val Request = io.LocalMMUIO.Request(0)
                 val Response = io.LocalMMUIO.Response(0)
 
-                val transpose_large_m_base = CurrentLoaded_BlockTensor_M_Iter * ABMatrixRegEntryByteSize.U
+                // This compatibility path is fixed to e8. Keep the 32-row group
+                // scaling as an elaboration-time constant shift.
+                val transpose_large_m_base = CurrentLoaded_BlockTensor_M_Iter << log2Ceil(ABMatrixRegEntryByteSize)
                 val transpose_current_m = transpose_large_m_base + Request_M_Iter_Time
                 val transpose_group_in_range = transpose_large_m_base < MatrixRegTensor_M
                 val transpose_group_remain = Mux(transpose_group_in_range, MatrixRegTensor_M - transpose_large_m_base, 0.U)
@@ -270,7 +272,8 @@ class MultiChannelsABMemLoader(
                 val transpose_req_enable = (TotalRequestSize < MaxRequestIter) && transpose_group_can_issue
 
                 val RequestBeatIsTail = HasTail && (CurrentLoaded_BlockTensor_K_Iter === (K_Beat_Count - 1.U))
-                val TransposeRequestMatrixRegAddr = CurrentLoaded_BlockTensor_K_Iter * (Trans_Load_Size * ReduceGroupSize).U + CurrentLoaded_BlockTensor_M_Iter
+                val TransposeRequestMatrixRegAddr =
+                    (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(Trans_Load_Size * ReduceGroupSize)) + CurrentLoaded_BlockTensor_M_Iter
                 val sourceId = Cat(RequestBeatIsTail, Request_M_Iter_Time, 0.U(BankIdWidth.W), TransposeRequestMatrixRegAddr(RegAddrWidth - 1, 0))
 
                 Request.bits.RequestAddr := BaseVAddr + transpose_current_m * Stride + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))

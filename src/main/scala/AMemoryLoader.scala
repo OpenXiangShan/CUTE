@@ -41,14 +41,41 @@ object TransposeBytePlane {
         ))
     }
 
-    def elementSlotsPerResponse(bytesPerElement: UInt, byteSlots: Int): UInt = {
-        require(byteSlots % 4 == 0, "transpose response slots must support e32 byte planes")
-        val width = log2Ceil(byteSlots + 1)
-        MuxLookup(bytesPerElement, 0.U(width.W))(Seq(
-            1.U(BytesPerElementWidth.W) -> byteSlots.U(width.W),
-            2.U(BytesPerElementWidth.W) -> (byteSlots / 2).U(width.W),
-            4.U(BytesPerElementWidth.W) -> (byteSlots / 4).U(width.W)
+    private def fixedShift(value: UInt, shift: Int, outputWidth: Int): UInt = {
+        require(shift >= 0, "transpose shift must be non-negative")
+        require(outputWidth >= value.getWidth + shift, "transpose shift result width is too narrow")
+        (value << shift).pad(outputWidth)
+    }
+
+    // Do not turn the E-derived shift amount into a runtime barrel shifter.
+    // The E=1/2/4 cases select three elaboration-time constant shifts instead.
+    private def scaleByElementWidth(value: UInt, bytesPerElement: UInt, e8Shift: Int, outputWidth: Int): UInt = {
+        require(e8Shift >= 2, "transpose e32 scaling requires at least a two-bit e8 shift")
+        MuxLookup(bytesPerElement, 0.U(outputWidth.W))(Seq(
+            1.U(BytesPerElementWidth.W) -> fixedShift(value, e8Shift, outputWidth),
+            2.U(BytesPerElementWidth.W) -> fixedShift(value, e8Shift - 1, outputWidth),
+            4.U(BytesPerElementWidth.W) -> fixedShift(value, e8Shift - 2, outputWidth)
         ))
+    }
+
+    def groupBase(groupIndex: UInt, bytesPerElement: UInt, entryBytes: Int): UInt = {
+        require(isPow2(entryBytes), "transpose entry width must be a power of two")
+        val e8Shift = log2Ceil(entryBytes)
+        val outputWidth = groupIndex.getWidth + log2Ceil(entryBytes + 1)
+        scaleByElementWidth(groupIndex, bytesPerElement, e8Shift, outputWidth)
+    }
+
+    def beatEntryBase(beatIndex: UInt, bytesPerElement: UInt, byteSlots: Int, reduceGroupSize: Int): UInt = {
+        require(isPow2(byteSlots), "transpose response slots must be a power of two")
+        require(isPow2(reduceGroupSize), "transpose reduce group size must be a power of two")
+        val e8Shift = log2Ceil(byteSlots) + log2Ceil(reduceGroupSize)
+        val outputWidth = beatIndex.getWidth + log2Ceil(byteSlots + 1) + log2Ceil(reduceGroupSize + 1)
+        scaleByElementWidth(beatIndex, bytesPerElement, e8Shift, outputWidth)
+    }
+
+    def reduceGroupOffset(elementSlot: UInt, reduceGroupSize: Int): UInt = {
+        require(isPow2(reduceGroupSize), "transpose reduce group size must be a power of two")
+        elementSlot << log2Ceil(reduceGroupSize)
     }
 
     def sourceByteIndex(bank: Int, slot: Int, bytesPerElement: Int, bankCount: Int): Int = {
@@ -513,8 +540,6 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val transBusStall = transAlignPipes.map(_.io.bus_stall).reduce(_ || _)
     val transWriteBaseAddr = RegInit(0.U(transBaseAddrBits.W))
     val transposeGroupRows = TransposeBytePlane.groupRows(transposeBytesPerElement, ABMatrixRegEntryByteSize)
-    val transposeElementSlots = TransposeBytePlane.elementSlotsPerResponse(transposeBytesPerElement, Trans_Load_Size)
-    val transposeBeatEntryStride = transposeElementSlots * ReduceGroupSize.U
 
     for (i <- 0 until ABMatrixRegNBanks) {
         transAlignPipes(i).io.in_data := transPipeInData
@@ -535,7 +560,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val transRouterTxnValid = transRouters.map(_.io.txn_valid).reduce(_ || _)
     val transWritePhase = transRouters.head.io.phase
     val transWriteElementSlot = TransposeBytePlane.elementSlot(transWritePhase, transposeBytesPerElement)
-    val transWriteAddrOffset = transWriteElementSlot * ReduceGroupSize.U
+    val transWriteAddrOffset = TransposeBytePlane.reduceGroupOffset(transWriteElementSlot, ReduceGroupSize)
     val transWriteAddrWide = transWriteBaseAddr +& transWriteAddrOffset
     val transWriteAddr = transWriteAddrWide(transBaseAddrBits - 1, 0)
 
@@ -634,7 +659,9 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 //   CurrentLoaded_BlockTensor_M_Iter -> large_M group index
                 //   CurrentLoaded_BlockTensor_K_Iter -> K/M-beat index
                 //   Request_M_Iter_Time              -> small_M inside current group
-                val transpose_large_m_base = CurrentLoaded_BlockTensor_M_Iter * transposeGroupRows
+                val transpose_large_m_base = TransposeBytePlane.groupBase(
+                    CurrentLoaded_BlockTensor_M_Iter, transposeBytesPerElement, ABMatrixRegEntryByteSize
+                )
                 val transpose_current_m = transpose_large_m_base + Request_M_Iter_Time
                 val transpose_group_in_range = transpose_large_m_base < MatrixRegTensor_M
                 val transpose_group_remain = Mux(transpose_group_in_range, MatrixRegTensor_M - transpose_large_m_base, 0.U)
@@ -659,7 +686,9 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 val NormalRequestMatrixRegBankId = RequestMatrixRegMIndex % ABMatrixRegNBanks.U
                 val NormalRequestMatrixRegBaseAddr = ((RequestMatrixRegMIndex / ABMatrixRegNBanks.U) * ReduceGroupSize.U)
                 val NormalRequestMatrixRegAddr = NormalRequestMatrixRegBaseAddr + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(MAX_Fill_Times))
-                val TransposeRequestMatrixRegAddr = CurrentLoaded_BlockTensor_K_Iter * transposeBeatEntryStride + CurrentLoaded_BlockTensor_M_Iter
+                val TransposeRequestMatrixRegAddr = TransposeBytePlane.beatEntryBase(
+                    CurrentLoaded_BlockTensor_K_Iter, transposeBytesPerElement, Trans_Load_Size, ReduceGroupSize
+                ) + CurrentLoaded_BlockTensor_M_Iter
                 val RequestMatrixRegBankId = Mux(Is_Transpose, 0.U, NormalRequestMatrixRegBankId)
                 val RequestMatrixRegAddr = Mux(Is_Transpose, TransposeRequestMatrixRegAddr, NormalRequestMatrixRegAddr)
 
