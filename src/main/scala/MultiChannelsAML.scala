@@ -150,19 +150,27 @@ class MultiChannelsABMemLoader(
     val transPipelineEmpty = transAlignEmpty && transRouterEmpty
     val transRouterValidVec = VecInit(transRouters.map(_.io.valid)).asUInt
     val transRouterWriteValid = transRouters.map(_.io.valid).reduce(_ || _)
+    val transRouterTxnValid = transRouters.map(_.io.txn_valid).reduce(_ || _)
 
     private val transBaseAddrBits = RegAddrWidth
     val transWriteBaseAddr = RegInit(0.U(transBaseAddrBits.W))
-    val transWriteAddrCnt = RegInit(0.U(log2Ceil(Trans_Load_Size).W))
-    val transWriteAddrOffset = transWriteAddrCnt * ReduceGroupSize.U
-    val transWriteAddrWide = transWriteBaseAddr + transWriteAddrOffset
+    val transWritePhase = transRouters.head.io.phase
+    val transWriteAddrOffset = transWritePhase * ReduceGroupSize.U
+    val transWriteAddrWide = transWriteBaseAddr +& transWriteAddrOffset
     val transWriteAddr = transWriteAddrWide(transBaseAddrBits - 1, 0)
+
+    when(Is_Transpose && transRouterTxnValid) {
+        assert(transWriteAddrWide < ABMatrixRegBankNEntries.U,
+            s"[$label] transpose write address must stay within an AB MatrixReg bank")
+    }
 
     for (i <- 0 until ABMatrixRegNBanks) {
         transAlignPipes(i).io.in_data := transPipeInData
         transAlignPipes(i).io.in_mask := transPipeInMask
         transAlignPipes(i).io.resp_beat_cnt := transPipeRespBeatCnt
         transAlignPipes(i).io.entry_offset := transPipeEntryOffset
+        // The multi-channel loader retains the legacy e8 transpose contract.
+        transAlignPipes(i).io.bytes_per_element := 1.U
         transAlignPipes(i).io.debug_time := io.DebugInfo.DebugTimeStampe
         transAlignPipes(i).io.is_drain_trigger := transPipeDrainTrigger
         transAlignPipes(i).io.in_valid := transPipeInValid
@@ -198,7 +206,6 @@ class MultiChannelsABMemLoader(
         group_size_reg := 0.U
         transposeEndDrainCnt := 0.U
         transWriteBaseAddr := 0.U
-        transWriteAddrCnt := 0.U
         MaxRequestIter := MatrixRegTensor_M * K_Beat_Count
     }
 
@@ -319,7 +326,6 @@ class MultiChannelsABMemLoader(
 
                     when(group_resp_cnt === 0.U) {
                         transWriteBaseAddr := respRegAddr
-                        transWriteAddrCnt := 0.U
                     }
 
                     when(next_group_resp_cnt === active_group_size) {
@@ -349,13 +355,8 @@ class MultiChannelsABMemLoader(
                     }
                 }
                 when(transRouterWriteValid) {
-                    transWriteAddrCnt := Mux(
-                        transWriteAddrCnt === (Trans_Load_Size - 1).U,
-                        0.U,
-                        transWriteAddrCnt + 1.U
-                    )
                     if (YJPAMLDebugEnable) {
-                        log(cf"TransposeWriteTick validVec=$transRouterValidVec base=$transWriteBaseAddr cnt=$transWriteAddrCnt")
+                        log(cf"TransposeWriteTick validVec=$transRouterValidVec base=$transWriteBaseAddr phase=$transWritePhase")
                     }
                 }
                 val Current_Load_Fill_Size = transRouterWriteValid.asUInt
@@ -442,13 +443,6 @@ class MultiChannelsABMemLoader(
             io.ToMatrixRegIO.Data(i).valid := routerValid
             io.ToMatrixRegIO.ByteMask(i).bits := transRouters(i).io.final_mask
             io.ToMatrixRegIO.ByteMask(i).valid := routerValid
-        }
-        when(transRouterWriteValid) {
-            transWriteAddrCnt := Mux(
-                transWriteAddrCnt === (Trans_Load_Size - 1).U,
-                0.U,
-                transWriteAddrCnt + 1.U
-            )
         }
         when(transposeEndDrainCnt === 0.U) {
             memoryload_state := s_load_end
