@@ -265,9 +265,9 @@ class MultiChannelsABMemLoader(
                 val group_is_idle = group_has_no_requests && transPipelineEmpty
                 val active_group_size = Mux(group_has_no_requests, current_group_size, group_size_reg)
                 val transpose_group_can_issue = Mux(
-                    group_is_idle,
-                    current_group_size =/= 0.U,
-                    group_req_cnt < active_group_size
+                    group_has_no_requests,
+                    group_is_idle && (current_group_size =/= 0.U),
+                    group_req_cnt < group_size_reg
                 )
                 val transpose_req_enable = (TotalRequestSize < MaxRequestIter) && transpose_group_can_issue
 
