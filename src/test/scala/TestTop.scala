@@ -9,7 +9,7 @@ import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.tile.MaxHartIdBits
 import freechips.rocketchip.tilelink._
 import utility._
-import xscache.coupledL2.MatrixDataBundle
+import xscache.coupledL2.{MatrixDataBundle, AmeIndexKey, AmeIndexField, DSBlock, MatrixKey}
 
 object baseConfig {
   def apply(maxHartIdBits: Int) = {
@@ -37,11 +37,14 @@ class TestTop()(implicit p: Parameters) extends LazyModule {
           TLSlaveParameters.v1(
             address = Seq(AddressSet(0, 0xffffffffffffL)),
             executable = true,
-            supportsGet = TransferSizes(1, 32),
-            supportsPutFull = TransferSizes(1, 32),
-            supportsPutPartial = TransferSizes(1, 32)
+            supportsGet = TransferSizes(1, 64),
+            supportsPutFull = TransferSizes(1, 64),
+            supportsPutPartial = TransferSizes(1, 64),
+            fifoId = Some(0)
           )
         ),
+        responseFields = Seq(AmeIndexField()),
+        requestKeys = Seq(MatrixKey, AmeIndexKey),
         beatBytes = 32,
         minLatency = 2
       )
@@ -54,7 +57,7 @@ class TestTop()(implicit p: Parameters) extends LazyModule {
   val hbl2_xbar = TLXbar()
 
   cute_tl.node.foreach { clientNode =>
-    hbl2_xbar :=* clientNode
+    hbl2_xbar :=* TLFragmenter(32, 64) := TLWidthWidget(64) := clientNode
   }
   hbl2_node :*= hbl2_xbar
 
@@ -62,11 +65,13 @@ class TestTop()(implicit p: Parameters) extends LazyModule {
     val io = IO(new Bundle {
       val ctrl2top = Flipped(new YGJKControl)
       val matrix_data_in = Flipped(DecoupledIO(new MatrixDataBundle()))
+      val verification_task_busy = Output(Bool())
     })
     
     val cute = Module(new CUTEV2Top())
     // Signals to top level
     io.ctrl2top <> cute.io.ctrl2top
+    io.verification_task_busy := cute.io.perf.backendEvents(0).orR
 
     // memory access between CUTE and HBL2
     cute_tl.module.io.mmu <> cute.io.mmu2llc
@@ -105,12 +110,24 @@ private[cute] object TestTopFirtoolOptions {
 }
 
 object TestTop extends App {
-  val config = baseConfig(1).alterPartial({
+  // Keep this profile aligned with the CUTE instance used by XSAI.
+  val config = baseConfig(6).alterPartial({
     case CuteParamsKey => CuteParams.CUTE_8Tops_128SCP.copy(
+      L2NBanks = 8,
       Debug = CuteDebugParams.NoDebug,
       LoaderBridgeChannelConfig = "A1BLCL1CS2",
+      EnableDifftest = false,
       v3config = Cutev3extParams(
         TaskCtrl_AutoClear = true,
+      ),
+      MatrixExtension = MatrixIsaParams(
+        enableInt8Int32 = true,
+        enableFp8Fp32 = true,
+        enableFp8Fp16 = true,
+        enableFp8Bf16 = true,
+        enableFp16Fp16 = true,
+        enableFp16Fp32 = true,
+        enableBf16Fp32 = true,
       ),
     )
   })

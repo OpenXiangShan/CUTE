@@ -8,7 +8,18 @@ import $file.`rocket-chip`.cde.common
 import $file.`rocket-chip`.hardfloat.common
 import $file.XSAICache.common
 
-val projectRoot = os.pwd
+val projectRoot = os.Path(sys.env("MILL_WORKSPACE_ROOT"))
+val localDifftestRoot = projectRoot / "difftest"
+val siblingDifftestRoot = projectRoot / os.up / "difftest"
+val difftestRoot = Seq(localDifftestRoot, siblingDifftestRoot)
+  .find(path => os.exists(path / "src" / "main" / "scala"))
+  .getOrElse(localDifftestRoot)
+val difftestSourceFiles =
+  if (os.exists(difftestRoot / "src" / "main" / "scala")) {
+    os.walk(difftestRoot / "src" / "main" / "scala")
+      .filter(os.isFile)
+      .filter(_.ext == "scala")
+  } else Seq.empty
 val defaultScalaVersion = "2.13.15"
 def defaultVersions = Map(
   "chisel"        -> ivy"org.chipsalliance::chisel:6.7.0",
@@ -93,7 +104,11 @@ object XSAICache extends SbtModule with HasChisel with $file.XSAICache.common.XS
 }
 
 object difftest extends SbtModule with HasChisel {
-  override def millSourcePath = millOuterCtx.millSourcePath / "difftest"
+  override def millSourcePath = difftestRoot
+
+  override def sources = T.sources {
+    difftestSourceFiles.map(PathRef(_))
+  }
 }
 
 object cuteFpe extends SbtModule with HasChisel {
