@@ -65,31 +65,49 @@ class MultiChannelsABMemLoader(
 
     val currentM = Seq.tabulate(ABMatrixRegNBanks)(i => RegInit(i.U(MatrixRegMaxTensorDimBitSize.W)))
     val currentK = Seq.fill(ABMatrixRegNBanks)(RegInit(0.U(MatrixRegMaxTensorDimBitSize.W)))
+    private val bankRespMetaWidth = RegAddrWidth + 1
+    class LoaderReadReq extends Bundle {
+        val addr = UInt(MMUAddrWidth.W)
+        val coherent = Bool()
+        val sourceId = UInt(64.W)
+        val mask = UInt(MMUMaskWidth.W)
+    }
 
     class BankRespFifo(bankIdx: Int) {
-        class Entry extends Bundle {
-            val data = UInt(outsideDataWidth.W)
-            val baseAddr = UInt(log2Ceil(ABMatrixRegBankNEntries).W)
-            val isTail = Bool()
-        }
+        val dataQ = Module(
+            new Queue(UInt(outsideDataWidth.W), ABMultiResponseFifoDepth, pipe = true, flow = true)
+        )
+            .suggestName(s"${nameContext}_bank${bankIdx}_resp_data_fifo")
+        val metaQ = Module(
+            new Queue(UInt(bankRespMetaWidth.W), ABMultiResponseFifoDepth, pipe = true, flow = true)
+        )
+            .suggestName(s"${nameContext}_bank${bankIdx}_resp_meta_fifo")
 
-        val q = Module(new Queue(new Entry, 128, pipe=true, flow=true))
-            .suggestName(s"${nameContext}_bank${bankIdx}_resp_fifo")
-
-        val processing = RegInit(false.B)
         val curRemain = RegInit(MAX_Fill_Times.U((log2Ceil(MAX_Fill_Times) + 1).W))
 
-        q.io.enq.valid := false.B
-        q.io.enq.bits := 0.U.asTypeOf(q.io.enq.bits)
-        q.io.deq.ready := false.B
+        dataQ.io.enq.valid := false.B
+        dataQ.io.enq.bits := 0.U
+        dataQ.io.deq.ready := false.B
+        metaQ.io.enq.valid := false.B
+        metaQ.io.enq.bits := 0.U
+        metaQ.io.deq.ready := false.B
 
-        def readyForResp: Bool = q.io.enq.ready
+        assert(
+            dataQ.io.enq.ready === metaQ.io.enq.ready,
+            s"[$label] bank $bankIdx response enqueue queues diverged"
+        )
+        assert(
+            dataQ.io.deq.valid === metaQ.io.deq.valid,
+            s"[$label] bank $bankIdx response dequeue queues diverged"
+        )
+
+        def readyForResp: Bool = dataQ.io.enq.ready && metaQ.io.enq.ready
 
         def enqFromResp(sourceId: UInt, respData: UInt, isTail: Bool): Unit = {
-            q.io.enq.valid := true.B
-            q.io.enq.bits.data := respData
-            q.io.enq.bits.baseAddr := sourceId(RegAddrWidth - 1, 0)
-            q.io.enq.bits.isTail := isTail
+            dataQ.io.enq.valid := true.B
+            dataQ.io.enq.bits := respData
+            metaQ.io.enq.valid := true.B
+            metaQ.io.enq.bits := Cat(isTail, sourceId(RegAddrWidth - 1, 0))
             log(cf"Response[$bankIdx] enqueue sourceId=$sourceId isTail=$isTail")
         }
 
@@ -97,15 +115,18 @@ class MultiChannelsABMemLoader(
             val haveWritten = WireInit(false.B)
             val sliceIdx = MAX_Fill_Times.U - curRemain
             val slices = Wire(Vec(MAX_Fill_Times, UInt((8 * ABMatrixRegEntryByteSize).W)))
-            slices := q.io.deq.bits.data.asTypeOf(slices)
+            val meta = metaQ.io.deq.bits
+            val baseAddr = meta(RegAddrWidth - 1, 0)
+            val isTail = meta(bankRespMetaWidth - 1)
+            slices := dataQ.io.deq.bits.asTypeOf(slices)
 
-            when (q.io.deq.valid) {
-                toMReg.BankAddr(bankIdx).bits := q.io.deq.bits.baseAddr + sliceIdx
+            when (dataQ.io.deq.valid) {
+                toMReg.BankAddr(bankIdx).bits := baseAddr + sliceIdx
                 toMReg.BankAddr(bankIdx).valid := true.B
                 toMReg.Data(bankIdx).bits := slices(sliceIdx)
                 toMReg.Data(bankIdx).valid := true.B
                 toMReg.ByteMask(bankIdx).valid := true.B
-                toMReg.ByteMask(bankIdx).bits := Mux(q.io.deq.bits.isTail, tailMask(sliceIdx), Fill(ABMatrixRegEntryByteSize, true.B))
+                toMReg.ByteMask(bankIdx).bits := Mux(isTail, tailMask(sliceIdx), Fill(ABMatrixRegEntryByteSize, true.B))
                 haveWritten := true.B
                 when (curRemain > 1.U) {
                     curRemain := curRemain - 1.U
@@ -115,7 +136,8 @@ class MultiChannelsABMemLoader(
             }
 
             when (curRemain === 1.U) {
-                q.io.deq.ready := true.B
+                dataQ.io.deq.ready := true.B
+                metaQ.io.deq.ready := true.B
             }
 
             haveWritten
@@ -125,7 +147,7 @@ class MultiChannelsABMemLoader(
     val bankFifos = Seq.tabulate(ABMatrixRegNBanks)(i => new BankRespFifo(i))
     private val normalReqQueueDepth = 2
     val normalReqQueues = Seq.tabulate(ABMatrixRegNBanks) { bankIdx =>
-        Module(new Queue(new MMURequestIO, normalReqQueueDepth, pipe = false, flow = false))
+        Module(new Queue(new LoaderReadReq, normalReqQueueDepth, pipe = false, flow = false))
             .suggestName(s"${nameContext}_bank${bankIdx}_req_queue")
     }
     val normalReqQueueOccupancy = Seq.fill(ABMatrixRegNBanks)(
@@ -380,15 +402,21 @@ class MultiChannelsABMemLoader(
                     val sourceId = Cat(requestBeatIsTail, i.U(BankIdWidth.W), regAddr(RegAddrWidth - 1, 0))
 
                     reqQueue.io.enq.valid := issueFire
-                    reqQueue.io.enq.bits.RequestAddr := BaseVAddr + mIter * Stride + (kIter << log2Ceil(outsideDataWidthByte))
-                    reqQueue.io.enq.bits.RequestConherent := Conherent
-                    reqQueue.io.enq.bits.RequestType_isWrite := false.B
-                    reqQueue.io.enq.bits.UseAllocatedSourceID := false.B
-                    reqQueue.io.enq.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
-                    reqQueue.io.enq.bits.RequestSourceID := sourceId
+                    reqQueue.io.enq.bits.addr := BaseVAddr + mIter * Stride + (kIter << log2Ceil(outsideDataWidthByte))
+                    reqQueue.io.enq.bits.coherent := Conherent
+                    reqQueue.io.enq.bits.mask := Fill(MMUMaskWidth, 1.U(1.W))
+                    reqQueue.io.enq.bits.sourceId := sourceId
 
                     request.valid := reqQueue.io.deq.valid
-                    request.bits := reqQueue.io.deq.bits
+                    request.bits.RequestAddr := reqQueue.io.deq.bits.addr
+                    request.bits.RequestConherent := reqQueue.io.deq.bits.coherent
+                    request.bits.RequestData := 0.U
+                    request.bits.RequestSourceID := reqQueue.io.deq.bits.sourceId
+                    request.bits.RequestType_isWrite := false.B
+                    request.bits.UseAllocatedSourceID := false.B
+                    request.bits.isA := false.B
+                    request.bits.MatrixIsAcc := false.B
+                    request.bits.RequestMask := reqQueue.io.deq.bits.mask
                     reqQueue.io.deq.ready := request.ready
 
                     val requestDeqFire = request.valid && request.ready
@@ -403,7 +431,7 @@ class MultiChannelsABMemLoader(
                             currentK(i) := kIter + 1.U
                         }
                         if (YJPAMLDebugEnable) {
-                            log(cf"NormalReq bank=$i m=$mIter k=$kIter addr=${reqQueue.io.enq.bits.RequestAddr}%x reg=$regAddr tail=$requestBeatIsTail")
+                            log(cf"NormalReq bank=$i m=$mIter k=$kIter addr=${reqQueue.io.enq.bits.addr}%x reg=$regAddr tail=$requestBeatIsTail")
                         }
                     }
 
@@ -527,7 +555,11 @@ class MultiChannelsABMemLoader(
         }
         val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
-        difftestAmuFinish.index := 0.U
+        val diffIndexMap = Map(
+            "AML" -> 0,
+            "BML" -> 1
+        )
+        difftestAmuFinish.index := diffIndexMap.getOrElse(label, 0xdeadabab).U
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
           (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
         difftestAmuFinish.pc := pcReg

@@ -8,23 +8,23 @@ class ResponseChannelBridge(
   val inputChannelCount: Int,
   val respChannelCount: Int,
   val bankCount: Int,
-  val baseDepth: Int,
+  val queueDepth: Int,
   val dataWidth: Int,
   val sourceIdWidth: Int,
   val bankIdWidth: Int,
   val bankIdOffset: Int = 0,
+  val hasDataPayload: Boolean = true,
   val debugEnable: Boolean = false,
   val contextName: String = "Generic"
 )(implicit p: Parameters) extends CuteModule {
   require(inputChannelCount >= 1, s"inputChannelCount ($inputChannelCount) must be >= 1")
   require(respChannelCount >= 1, s"respChannelCount ($respChannelCount) must be >= 1")
   require(bankCount >= respChannelCount, s"bankCount ($bankCount) must be >= respChannelCount ($respChannelCount)")
-  require(baseDepth >= 1, s"baseDepth ($baseDepth) must be >= 1")
+  require(queueDepth >= 1, s"queueDepth ($queueDepth) must be >= 1")
 
   private val nameContext = VerilogNameHelper.sanitize(contextName)
-  private val perGroupBankCount = ResponseChannelHelper.banksPerGroup(respChannelCount, bankCount)
-  private val queueDepth = math.max(2, baseDepth * perGroupBankCount)
   private val bankIdxWidth = log2Ceil(bankCount max 2)
+  private val metaWidth = if (hasDataPayload) sourceIdWidth + 1 else sourceIdWidth
 
   override def desiredName: String =
     s"ResponseChannelBridge_${nameContext}_${inputChannelCount}in_${respChannelCount}resp_${bankCount}banks"
@@ -58,26 +58,51 @@ class ResponseChannelBridge(
 
   for (channel <- 0 until inputChannelCount) {
     router.io.in(channel).valid := io.in(channel).valid
-    router.io.in(channel).bits.data := io.in(channel).bits.ReseponseData
+    router.io.in(channel).bits.data := Mux(hasDataPayload.B, io.in(channel).bits.ReseponseData, 0.U)
     router.io.in(channel).bits.sourceId := io.in(channel).bits.ReseponseSourceID
-    router.io.in(channel).bits.coherent := io.in(channel).bits.ReseponseConherent
+    router.io.in(channel).bits.coherent := Mux(hasDataPayload.B, io.in(channel).bits.ReseponseConherent, false.B)
     io.in(channel).ready := router.io.in(channel).ready
   }
 
-  val bankQueues = Seq.tabulate(bankCount) { bank =>
-    Module(new Queue(new RoutedResponse(dataWidth, sourceIdWidth), queueDepth, pipe = true))
-      .suggestName(s"${nameContext}_bank${bank}_resp_queue")
+  val bankDataQueues = Option.when(hasDataPayload) {
+    Seq.tabulate(bankCount) { bank =>
+      Module(new Queue(UInt(dataWidth.W), queueDepth, pipe = true))
+        .suggestName(s"${nameContext}_bank${bank}_resp_data_queue")
+    }
+  }
+  val bankMetaQueues = Seq.tabulate(bankCount) { bank =>
+    Module(new Queue(UInt(metaWidth.W), queueDepth, pipe = true))
+      .suggestName(s"${nameContext}_bank${bank}_resp_meta_queue")
   }
 
   for (bank <- 0 until bankCount) {
-    bankQueues(bank).io.enq.valid := false.B
-    bankQueues(bank).io.enq.bits := 0.U.asTypeOf(bankQueues(bank).io.enq.bits)
+    val metaQueue = bankMetaQueues(bank)
+    val dataQueueOpt = bankDataQueues.map(_(bank))
 
-    io.out(bank).valid := bankQueues(bank).io.deq.valid
-    io.out(bank).bits.ReseponseData := bankQueues(bank).io.deq.bits.data
-    io.out(bank).bits.ReseponseSourceID := bankQueues(bank).io.deq.bits.sourceId
-    io.out(bank).bits.ReseponseConherent := bankQueues(bank).io.deq.bits.coherent
-    bankQueues(bank).io.deq.ready := io.out(bank).ready
+    dataQueueOpt.foreach { dataQueue =>
+      dataQueue.io.enq.valid := false.B
+      dataQueue.io.enq.bits := 0.U
+      dataQueue.io.deq.ready := io.out(bank).ready
+    }
+    metaQueue.io.enq.valid := false.B
+    metaQueue.io.enq.bits := 0.U
+
+    dataQueueOpt.foreach { dataQueue =>
+      assert(
+        dataQueue.io.enq.ready === metaQueue.io.enq.ready,
+        s"ResponseChannelBridge bank $bank enqueue queues diverged"
+      )
+      assert(
+        dataQueue.io.deq.valid === metaQueue.io.deq.valid,
+        s"ResponseChannelBridge bank $bank dequeue queues diverged"
+      )
+    }
+
+    io.out(bank).valid := dataQueueOpt.map(_.io.deq.valid).getOrElse(metaQueue.io.deq.valid)
+    io.out(bank).bits.ReseponseData := dataQueueOpt.map(_.io.deq.bits).getOrElse(0.U)
+    io.out(bank).bits.ReseponseSourceID := metaQueue.io.deq.bits(sourceIdWidth - 1, 0)
+    io.out(bank).bits.ReseponseConherent := Mux(hasDataPayload.B, metaQueue.io.deq.bits(metaWidth - 1), false.B)
+    metaQueue.io.deq.ready := io.out(bank).ready
 
     when(io.out(bank).fire) {
       log(cf"bank[$bank] dequeue sourceId=0x${io.out(bank).bits.ReseponseSourceID}%x")
@@ -90,7 +115,20 @@ class ResponseChannelBridge(
     val groupBanks = ResponseChannelHelper.banksInGroup(group, respChannelCount, bankCount)
     val targetIsInGroup = VecInit(groupBanks.map(bank => targetBank === bank.U)).asUInt.orR
 
-    groupedResp.ready := MuxCase(false.B, groupBanks.map(bank => (targetBank === bank.U) -> bankQueues(bank).io.enq.ready))
+    groupedResp.ready := MuxCase(
+      false.B,
+      groupBanks.map { bank =>
+        val dataReady = bankDataQueues.map(_(bank).io.enq.ready).getOrElse(true.B)
+        val metaReady = bankMetaQueues(bank).io.enq.ready
+        if (hasDataPayload) {
+          assert(
+            dataReady === metaReady,
+            s"ResponseChannelBridge group $group bank $bank enqueue ready diverged"
+          )
+        }
+        (targetBank === bank.U) -> (dataReady && metaReady)
+      }
+    )
 
     when(groupedResp.valid) {
       assert(targetIsInGroup,
@@ -102,10 +140,16 @@ class ResponseChannelBridge(
     }
 
     for (bank <- groupBanks) {
-      bankQueues(bank).io.enq.valid := groupedResp.valid && targetBank === bank.U
-      bankQueues(bank).io.enq.bits := groupedResp.bits
+      val enqueue = groupedResp.valid && targetBank === bank.U
+      bankDataQueues.foreach { queues =>
+        queues(bank).io.enq.valid := enqueue
+        queues(bank).io.enq.bits := groupedResp.bits.data
+      }
+      bankMetaQueues(bank).io.enq.valid := enqueue
+      bankMetaQueues(bank).io.enq.bits :=
+        Mux(hasDataPayload.B, Cat(groupedResp.bits.coherent, groupedResp.bits.sourceId), groupedResp.bits.sourceId)
 
-      when(bankQueues(bank).io.enq.fire) {
+      when(bankMetaQueues(bank).io.enq.fire) {
         log(cf"group[$group] enqueue bank[$bank] sourceId=0x${groupedResp.bits.sourceId}%x")
       }
     }
