@@ -105,6 +105,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val TailByteMask = RegInit(0.U(log2Ceil(outsideDataWidthByte + 1).W))
     val K_Beat_Count = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val dataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
+    val transposeBytesPerElement = RegInit(1.U(3.W))
     val Tensor_B_BaseVaddr = RegInit(0.U(MMUAddrWidth.W))
     val ApplicationTensor_B_Stride_N = RegInit(0.U(MMUAddrWidth.W))
 
@@ -146,6 +147,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             TailByteMask := io.ConfigInfo.ApplicationTensor_B.TailByteMask
             K_Beat_Count := io.ConfigInfo.ApplicationTensor_B.K_Beat_Count
             dataType := io.ConfigInfo.ApplicationTensor_B.dataType
+            transposeBytesPerElement := TransposeBytePlane.bytesPerElement(io.ConfigInfo.ApplicationTensor_B.dataType)
             ApplicationTensor_B_Stride_N := io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_Stride_N //下一个N，需要增加多少地址偏移量
             if(YJPBMLDebugEnable)
             {
@@ -232,13 +234,14 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val transPipeDrainTrigger = WireInit(false.B)
     val transBusStall = transAlignPipes.map(_.io.bus_stall).reduce(_ || _)
     val transWriteBaseAddr = RegInit(0.U(transBaseAddrBits.W))
-    val transWriteAddrCnt = RegInit(0.U(log2Ceil(Trans_Load_Size).W))
+    val transposeGroupRows = TransposeBytePlane.groupRows(transposeBytesPerElement, ABMatrixRegEntryByteSize)
 
     for (i <- 0 until ABMatrixRegNBanks) {
         transAlignPipes(i).io.in_data := transPipeInData
         transAlignPipes(i).io.in_mask := transPipeInMask
         transAlignPipes(i).io.resp_beat_cnt := transPipeRespBeatCnt
         transAlignPipes(i).io.entry_offset := transPipeEntryOffset
+        transAlignPipes(i).io.bytes_per_element := transposeBytesPerElement
         transAlignPipes(i).io.debug_time := io.DebugInfo.DebugTimeStampe
         transAlignPipes(i).io.is_drain_trigger := transPipeDrainTrigger
         transAlignPipes(i).io.in_valid := transPipeInValid
@@ -249,9 +252,17 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val transPipelineEmpty = transAlignEmpty && transRouterEmpty
     val transRouterValidVec = VecInit(transRouters.map(_.io.valid)).asUInt
     val transRouterWriteValid = transRouters.map(_.io.valid).reduce(_ || _)
-    val transWriteAddrOffset = transWriteAddrCnt * ReduceGroupSize.U
-    val transWriteAddrWide = transWriteBaseAddr + transWriteAddrOffset
+    val transRouterTxnValid = transRouters.map(_.io.txn_valid).reduce(_ || _)
+    val transWritePhase = transRouters.head.io.phase
+    val transWriteElementSlot = TransposeBytePlane.elementSlot(transWritePhase, transposeBytesPerElement)
+    val transWriteAddrOffset = TransposeBytePlane.reduceGroupOffset(transWriteElementSlot, ReduceGroupSize)
+    val transWriteAddrWide = transWriteBaseAddr +& transWriteAddrOffset
     val transWriteAddr = transWriteAddrWide(transBaseAddrBits - 1, 0)
+
+    when(Is_Transpose && transRouterTxnValid) {
+        assert(transWriteAddrWide < ABMatrixRegBankNEntries.U,
+            "transpose write address must stay within an AB MatrixReg bank")
+    }
 
     
     // Legacy BML only uses channel 0 for requests
@@ -270,7 +281,6 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             group_size_reg := 0.U
             transposeEndDrainCnt := 0.U
             transWriteBaseAddr := 0.U
-            transWriteAddrCnt := 0.U
             MaxRequestIter := MatrixRegTensor_N * K_Beat_Count //总共要发出的访存请求的次数
             Bank_Fill_Search_FIFO := 0.U.asTypeOf(Bank_Fill_Search_FIFO)
             Bank_Fill_Search_FIFO_Head := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Head)
@@ -284,6 +294,15 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             io.ToMatrixRegIO.active := true.B
             //根据不同的MemoryOrder，执行不同的访存模式
 
+            when(Is_Transpose) {
+                assert(TransposeBytePlane.isSupported(transposeBytesPerElement),
+                    "BML transpose supports only e8/e16/e32 element widths")
+                when(HasTail) {
+                    assert(TransposeBytePlane.tailAligned(TailByteMask, transposeBytesPerElement),
+                        "BML transpose tail must end on a complete element")
+                }
+            }
+
             //先转换成独热码然后进行减一即可计算出掩码
             val tailTaskMask = UIntToOH(TailByteMask, outsideDataWidthByte + 1).asUInt - 1.U(outsideDataWidthByte.W)
             val fullTaskMask = Fill(outsideDataWidthByte, true.B)
@@ -293,15 +312,17 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             //   CurrentLoaded_BlockTensor_N_Iter -> large_N group index
             //   CurrentLoaded_BlockTensor_K_Iter -> K/N-beat index
             //   Request_N_Iter_Time              -> small_N inside current group
-            val transpose_large_n_base = CurrentLoaded_BlockTensor_N_Iter * ABMatrixRegEntryByteSize.U
+            val transpose_large_n_base = TransposeBytePlane.groupBase(
+                CurrentLoaded_BlockTensor_N_Iter, transposeBytesPerElement, ABMatrixRegEntryByteSize
+            )
             val transpose_current_n = transpose_large_n_base + Request_N_Iter_Time
             val transpose_group_in_range = transpose_large_n_base < MatrixRegTensor_N
             val transpose_group_remain = Mux(transpose_group_in_range, MatrixRegTensor_N - transpose_large_n_base, 0.U)
             val current_group_size = Wire(UInt(log2Ceil(ABMatrixRegEntryByteSize + 1).W))
             current_group_size := Mux(
-                transpose_group_remain < ABMatrixRegEntryByteSize.U,
+                transpose_group_remain < transposeGroupRows,
                 transpose_group_remain(current_group_size.getWidth - 1, 0),
-                ABMatrixRegEntryByteSize.U(current_group_size.getWidth.W)
+                transposeGroupRows
             )
             val group_has_no_requests = group_req_cnt === 0.U && group_resp_cnt === 0.U
             val group_is_idle = group_has_no_requests && transPipelineEmpty
@@ -318,7 +339,9 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             val NormalRequestMatrixRegBankId = RequestMatrixRegNIndex % ABMatrixRegNBanks.U
             val NormalRequestMatrixRegBaseAddr = ((RequestMatrixRegNIndex / ABMatrixRegNBanks.U) * ReduceGroupSize.U)
             val NormalRequestMatrixRegAddr = NormalRequestMatrixRegBaseAddr + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(MAX_Fill_Times))
-            val TransposeRequestMatrixRegAddr = CurrentLoaded_BlockTensor_K_Iter * (Trans_Load_Size * ReduceGroupSize).U + CurrentLoaded_BlockTensor_N_Iter
+            val TransposeRequestMatrixRegAddr = TransposeBytePlane.beatEntryBase(
+                CurrentLoaded_BlockTensor_K_Iter, transposeBytesPerElement, Trans_Load_Size, ReduceGroupSize
+            ) + CurrentLoaded_BlockTensor_N_Iter
             val RequestMatrixRegBankId = Mux(Is_Transpose, 0.U, NormalRequestMatrixRegBankId)
             val RequestMatrixRegAddr = Mux(Is_Transpose, TransposeRequestMatrixRegAddr, NormalRequestMatrixRegAddr)
 
@@ -352,7 +375,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                           Request.bits.RequestAddr, sourceId.bits, RequestBeatIsTail.asUInt)
                     }
 
-                    val small_n_reach_group_boundary = Request_N_Iter_Time === (ABMatrixRegEntryByteSize - 1).U
+                    val small_n_reach_group_boundary = Request_N_Iter_Time === (transposeGroupRows - 1.U)
                     val small_n_reach_tensor_boundary = transpose_current_n === (MatrixRegTensor_N - 1.U)
                     val small_n_wrap = small_n_reach_group_boundary || small_n_reach_tensor_boundary
                     val k_wrap = CurrentLoaded_BlockTensor_K_Iter === (K_Beat_Count - 1.U)
@@ -421,11 +444,11 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                     val drain_trigger = next_group_resp_cnt === active_group_size
 
                     if (YJPBMLDebugEnable) {
-                        printf("[BML_TRANS_RESP<%d>] source:%d data:%x tail:%d mask:%x base:%d beatIndex:%d respCnt:%d nextResp:%d activeGroupSize:%d drainTrig:%d writeBase:%d writeCnt:%d\n",
+                        printf("[BML_TRANS_RESP<%d>] source:%d data:%x tail:%d mask:%x base:%d beatIndex:%d respCnt:%d nextResp:%d activeGroupSize:%d drainTrig:%d writeBase:%d\n",
                           io.DebugInfo.DebugTimeStampe, sourceId, ResponseData, searchEntry.MatrixRegisTail.asUInt,
                           Mux(searchEntry.MatrixRegisTail, tailTaskMask, fullTaskMask), MatrixRegAddr,
                           searchEntry.BeatIndex, group_resp_cnt, next_group_resp_cnt, active_group_size,
-                          drain_trigger.asUInt, transWriteBaseAddr, transWriteAddrCnt)
+                          drain_trigger.asUInt, transWriteBaseAddr)
                     }
 
                     transPipeInValid := true.B
@@ -437,7 +460,6 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
 
                     when(group_resp_cnt === 0.U) {
                         transWriteBaseAddr := MatrixRegAddr
-                        transWriteAddrCnt := 0.U
                     }
 
                     when(next_group_resp_cnt === active_group_size) {
@@ -507,16 +529,11 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 }
                 when(transRouterWriteValid) {
                     if (YJPBMLDebugEnable) {
-                        printf("[BML_TRANS_WRITE<%d>] validVec:%b base:%d cnt:%d addr:%d bank0Data:%x bank0Mask:%x totalLoad:%d pipelineEmpty:%d\n",
-                          io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWriteAddrCnt,
+                        printf("[BML_TRANS_WRITE<%d>] validVec:%b base:%d phase:%d q:%d addr:%d bank0Data:%x bank0Mask:%x totalLoad:%d pipelineEmpty:%d\n",
+                          io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWritePhase, transWriteElementSlot,
                           transWriteAddr, transRouters(0).io.final_data, transRouters(0).io.final_mask,
                           TotalLoadSize, transPipelineEmpty.asUInt)
                     }
-                    transWriteAddrCnt := Mux(
-                        transWriteAddrCnt === (Trans_Load_Size - 1).U,
-                        0.U,
-                        transWriteAddrCnt + 1.U
-                    )
                 }
                 val Current_Load_Fill_Size = transRouterWriteValid.asUInt
                 val nextTotalLoadSize = TotalLoadSize + Current_Load_Fill_Size
@@ -623,16 +640,11 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             }
             when(transRouterWriteValid) {
                 if (YJPBMLDebugEnable) {
-                    printf("[BML_TRANS_QUIESCE_WRITE<%d>] validVec:%b base:%d cnt:%d addr:%d bank0Data:%x bank0Mask:%x drainCnt:%d pipelineEmpty:%d\n",
-                      io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWriteAddrCnt,
+                    printf("[BML_TRANS_QUIESCE_WRITE<%d>] validVec:%b base:%d phase:%d q:%d addr:%d bank0Data:%x bank0Mask:%x drainCnt:%d pipelineEmpty:%d\n",
+                      io.DebugInfo.DebugTimeStampe, transRouterValidVec, transWriteBaseAddr, transWritePhase, transWriteElementSlot,
                       transWriteAddr, transRouters(0).io.final_data, transRouters(0).io.final_mask,
                       transposeEndDrainCnt, transPipelineEmpty.asUInt)
                 }
-                transWriteAddrCnt := Mux(
-                    transWriteAddrCnt === (Trans_Load_Size - 1).U,
-                    0.U,
-                    transWriteAddrCnt + 1.U
-                )
             }
             when(transposeEndDrainCnt === 0.U) {
                 memoryload_state := s_load_end
