@@ -856,10 +856,12 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             //只要fifo内的数据有效，就可以写入LLC
             WriteRequest.valid := false.B
             when(!FromMatrixRegReadFIFOEmpty && Reorder_ToLLC_Reg_Ready_Get){
-                val Read_Data_list = WireInit(VecInit(Seq.fill(Matrix_MN)(0.U(Per_GetMatrix_NDim_Width.W))))
-                Read_Data_list := FromMatrixRegReadFIFO(FromMatrixRegReadFIFOTail).asTypeOf(Read_Data_list)
+                val Read_Data_matrix = Wire(Vec(Matrix_MN, Vec(Matrix_MN, UInt(ResultWidth.W))))
+                Read_Data_matrix := FromMatrixRegReadFIFO(FromMatrixRegReadFIFOTail).asTypeOf(Read_Data_matrix)
                 for (i <- 0 until Matrix_MN){
-                    Reorder_ToLLC_Reg(Reorder_ToLLC_Reg_Get_Index)(i)(Fill_LLC_Iter) := Read_Data_list(i)
+                    val Transposed_Block_Row = VecInit((0 until Matrix_MN).map(j => Read_Data_matrix(j)(i))).asUInt
+                    Reorder_ToLLC_Reg(Reorder_ToLLC_Reg_Get_Index)(i)(Fill_LLC_Iter) :=
+                        Mux(IsStoreTranspose, Transposed_Block_Row, Read_Data_matrix(i).asUInt)
                 }
                 //更新相关迭代器
                 Fill_LLC_Iter := WrapInc(Fill_LLC_Iter, Fill_LLC_Max_Iter)
