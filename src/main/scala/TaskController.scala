@@ -159,6 +159,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.BML_MicroTask_Config.ApplicationTensor_B := 0.U.asTypeOf(io.BML_MicroTask_Config.ApplicationTensor_B)
   io.BML_MicroTask_Config.MatrixRegTensor_N := 0.U
   io.BML_MicroTask_Config.MatrixRegTensor_K := 0.U
+  io.BML_MicroTask_Config.PackedB := false.B
   io.BML_MicroTask_Config.Conherent := false.B
   io.BML_MicroTask_Config.Is_Transpose := false.B
   io.BML_MicroTask_Config.MatrixRegId := 0.U
@@ -737,6 +738,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.BML_MicroTask_Config.MatrixRegTensor_N := matrixDim
         io.BML_MicroTask_Config.MatrixRegTensor_K := kVal
         io.BML_MicroTask_Config.MatrixRegId := regIdx
+        io.BML_MicroTask_Config.PackedB := issueLsu.packedB
         io.BML_MicroTask_Config.Conherent := true.B
         io.BML_MicroTask_Config.Is_Transpose := issueLsu.transpose
         io.BML_MicroTask_Config.MicroTaskValid := true.B

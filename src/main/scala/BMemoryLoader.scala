@@ -28,6 +28,10 @@ class BSourceIdSearch(implicit p: Parameters) extends CuteBundle{
 //对于卷积，数据摆放是[khkwoc][ic],对于矩阵乘，数据摆放是[N][K]
 
 class BMemoryLoader(implicit p: Parameters) extends CuteModule{
+    private val PackedLineCount = 32
+    private val PackedRowsPerLine = 4
+    private val PackedPhasesPerLine = 2
+
     val io = IO(new Bundle{
         //先整一个 MatrixReg 的接口的总体设计
         val ToMatrixRegIO = Flipped(new ABMemoryLoaderMatrixRegIO)
@@ -105,6 +109,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val TailByteMask = RegInit(0.U(log2Ceil(outsideDataWidthByte + 1).W))
     val K_Beat_Count = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val dataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
+    val PackedB = RegInit(false.B)
     val transposeBytesPerElement = RegInit(1.U(3.W))
     val Tensor_B_BaseVaddr = RegInit(0.U(MMUAddrWidth.W))
     val ApplicationTensor_B_Stride_N = RegInit(0.U(MMUAddrWidth.W))
@@ -132,6 +137,18 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         //idel状态才可以接受新的配置信息
         ConfigInfo.MicroTaskReady := true.B
         when(ConfigInfo.MicroTaskReady && ConfigInfo.MicroTaskValid){
+            when(io.ConfigInfo.PackedB) {
+                assert(
+                    cuteMatrixExtension.enableInt8Fp2Pack4I32.B &&
+                    io.ConfigInfo.MatrixRegTensor_N === 128.U &&
+                    io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_Stride_N === 16.U &&
+                    io.ConfigInfo.ApplicationTensor_B.K_Beat_Count === 1.U &&
+                    !io.ConfigInfo.Is_Transpose &&
+                    !io.ConfigInfo.ApplicationTensor_B.HasTail &&
+                    io.ConfigInfo.ApplicationTensor_B.dataType === ElementDataType.DataTypeWidth8,
+                    "fp2pack4 B load requires the enabled, non-transposed 128x64 i8 expansion format"
+                )
+            }
             //当前配置的指令有效
             state := s_mm_task
             memoryload_state := s_load_init
@@ -147,6 +164,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             TailByteMask := io.ConfigInfo.ApplicationTensor_B.TailByteMask
             K_Beat_Count := io.ConfigInfo.ApplicationTensor_B.K_Beat_Count
             dataType := io.ConfigInfo.ApplicationTensor_B.dataType
+            PackedB := io.ConfigInfo.PackedB
             transposeBytesPerElement := TransposeBytePlane.bytesPerElement(io.ConfigInfo.ApplicationTensor_B.dataType)
             ApplicationTensor_B_Stride_N := io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_Stride_N //下一个N，需要增加多少地址偏移量
             if(YJPBMLDebugEnable)
@@ -268,6 +286,16 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     // Legacy BML only uses channel 0 for requests
     val Request = io.LocalMMUIO.Request(0)
     val Response = io.LocalMMUIO.Response(0)
+    private def expandPackedRowPhase(lineData: UInt, rowInLine: Int, phase: UInt): UInt = {
+        val phases = VecInit((0 until PackedPhasesPerLine).map { phaseIndex =>
+            Cat((0 until ABMatrixRegEntryByteSize).reverse.map { lane =>
+                val bitOffset = rowInLine * 16 * 8 + phaseIndex * ABMatrixRegEntryByteSize * 2 + lane * 2
+                val raw = lineData(bitOffset + 1, bitOffset)
+                Cat(Fill(6, raw(1)), raw)
+            })
+        })
+        phases(phase(0))
+    }
     switch(memoryload_state) {
         is(s_load_init) {
             memoryload_state := s_load_working
@@ -281,7 +309,11 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             group_size_reg := 0.U
             transposeEndDrainCnt := 0.U
             transWriteBaseAddr := 0.U
-            MaxRequestIter := MatrixRegTensor_N * K_Beat_Count //总共要发出的访存请求的次数
+            MaxRequestIter := Mux(
+                PackedB,
+                PackedLineCount.U,
+                MatrixRegTensor_N * K_Beat_Count
+            ) //总共要发出的访存请求的次数
             Bank_Fill_Search_FIFO := 0.U.asTypeOf(Bank_Fill_Search_FIFO)
             Bank_Fill_Search_FIFO_Head := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Head)
             Bank_Fill_Search_FIFO_Tail := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Tail)
@@ -345,7 +377,12 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             val RequestMatrixRegBankId = Mux(Is_Transpose, 0.U, NormalRequestMatrixRegBankId)
             val RequestMatrixRegAddr = Mux(Is_Transpose, TransposeRequestMatrixRegAddr, NormalRequestMatrixRegAddr)
 
-            Request.bits.RequestAddr := Tensor_Block_BaseAddr + RequestMatrixRegNIndex * ApplicationTensor_B_Stride_N + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))
+            val NormalRequestAddr = Tensor_Block_BaseAddr +
+                RequestMatrixRegNIndex * ApplicationTensor_B_Stride_N +
+                (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))
+            val PackedRequestAddr = Tensor_Block_BaseAddr +
+                (TotalRequestSize << log2Ceil(outsideDataWidthByte))
+            Request.bits.RequestAddr := Mux(PackedB, PackedRequestAddr, NormalRequestAddr)
             
             val sourceId = Mux(Conherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
             Request.bits.RequestConherent := Conherent
@@ -359,7 +396,8 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 //Request.ready表明了LocalMMU会处理这条访存请求，sourceID valid，表明这条访存请求的sourceID是被LocalMMU认可有效才发送到这个模块的
                 val TableItem = Wire(new BSourceIdSearch)
                 TableItem.MatrixRegBankId := RequestMatrixRegBankId
-                TableItem.MatrixRegAddr := RequestMatrixRegAddr
+                // Packed mode reuses this field as the out-of-order response's source-line tag.
+                TableItem.MatrixRegAddr := Mux(PackedB, TotalRequestSize(4, 0), RequestMatrixRegAddr)
                 TableItem.MatrixRegisTail := RequestBeatIsTail
                 TableItem.BeatIndex := Request_N_Iter_Time
                 SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
@@ -410,7 +448,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 }
             }
             val current_fill_fifo_full = WireInit(false.B)
-            when(Response.valid && !Is_Transpose)
+            when(Response.valid && !Is_Transpose && !PackedB)
             {
                 val sourceId = Response.bits.ReseponseSourceID
                 val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new BSourceIdSearch).MatrixRegBankId
@@ -424,7 +462,11 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             } else {
                 true.B
             }
-            Response.ready := Mux(Is_Transpose, !transBusStall, normalRespReady)
+            Response.ready := Mux(
+                Is_Transpose,
+                !transBusStall,
+                Mux(PackedB, MReg_Fill_Table_Not_Full, normalRespReady)
+            )
             when(Response.fire){
                 //Trick注意这个设计，是doublebuffer的，AB只能是doublebuffer，回数一定是不会堵的，而且我们有时间对数据进行压缩解压缩～
                 //如果要做release设计，要么数据位宽翻倍，腾出周期来使得有空泡能给写任务进行，要么就是数据位宽不变，将读写端口变成独立的读和独立的写端口
@@ -469,6 +511,10 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                     }.otherwise {
                         group_resp_cnt := next_group_resp_cnt
                     }
+                }.elsewhen(PackedB) {
+                    MReg_Fill_Table(MReg_Fill_Table_Insert_Index) := ResponseData
+                    MReg_Fill_Table_MReg_Addr(MReg_Fill_Table_Insert_Index) := MatrixRegAddr
+                    MReg_Fill_Table_Time(MReg_Fill_Table_Insert_Index) := PackedPhasesPerLine.U
                 }.otherwise {
                     if (!ABMLNeedMRegFillTable)
                     {
@@ -550,6 +596,51 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                     memoryload_state := s_load_quiesce
                     transposeEndDrainCnt := (transposeEndDrainCycles - 1).U
                     if (YJPBMLDebugEnable) printf("[BML<%d>]TransposeFullLoadEnd\n", io.DebugInfo.DebugTimeStampe)
+                }
+            }.elsewhen(PackedB) {
+                val packedSlotValid = VecInit(MReg_Fill_Table_Time.map(_ =/= 0.U))
+                val packedValid = packedSlotValid.asUInt.orR
+                val packedSlot = PriorityEncoder(packedSlotValid.asUInt)
+                val packedTime = MReg_Fill_Table_Time(packedSlot)
+                val packedPhase = PackedPhasesPerLine.U - packedTime
+                val packedLine = MReg_Fill_Table_MReg_Addr(packedSlot)
+                val packedEntry = ((packedLine >> 1) << 1) + packedPhase
+                val fullEntryMask = Fill(ABMatrixRegEntryByteSize, true.B)
+
+                when(packedValid && !packedLine(0)) {
+                    for (rowInLine <- 0 until PackedRowsPerLine) {
+                        val bank = rowInLine
+                        io.ToMatrixRegIO.BankAddr(bank).bits := packedEntry
+                        io.ToMatrixRegIO.BankAddr(bank).valid := true.B
+                        io.ToMatrixRegIO.Data(bank).bits :=
+                            expandPackedRowPhase(MReg_Fill_Table(packedSlot), rowInLine, packedPhase)
+                        io.ToMatrixRegIO.Data(bank).valid := true.B
+                        io.ToMatrixRegIO.ByteMask(bank).bits := fullEntryMask
+                        io.ToMatrixRegIO.ByteMask(bank).valid := true.B
+                    }
+                }
+
+                when(packedValid && packedLine(0)) {
+                    for (rowInLine <- 0 until PackedRowsPerLine) {
+                        val bank = PackedRowsPerLine + rowInLine
+                        io.ToMatrixRegIO.BankAddr(bank).bits := packedEntry
+                        io.ToMatrixRegIO.BankAddr(bank).valid := true.B
+                        io.ToMatrixRegIO.Data(bank).bits :=
+                            expandPackedRowPhase(MReg_Fill_Table(packedSlot), rowInLine, packedPhase)
+                        io.ToMatrixRegIO.Data(bank).valid := true.B
+                        io.ToMatrixRegIO.ByteMask(bank).bits := fullEntryMask
+                        io.ToMatrixRegIO.ByteMask(bank).valid := true.B
+                    }
+                }
+
+                when(packedValid) {
+                    MReg_Fill_Table_Time(packedSlot) := packedTime - 1.U
+                    TotalLoadSize := TotalLoadSize + 4.U
+                }
+
+                when(TotalRequestSize === PackedLineCount.U &&
+                    TotalLoadSize === (PackedLineCount * PackedRowsPerLine * PackedPhasesPerLine).U) {
+                    memoryload_state := s_load_end
                 }
             }.otherwise {
                 // Fill_Table的回填优先级最高，一旦有回填任务就立即执行

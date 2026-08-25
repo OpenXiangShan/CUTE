@@ -10,7 +10,11 @@ import scala.collection.mutable
 
 object TransposeLoaderIntegrationTestConfig {
   val params: Parameters = new Config((_, _, _) => {
-    case CuteParamsKey => CuteParams.CUTE_8Tops_128SCP
+    case CuteParamsKey => CuteParams.CUTE_8Tops_128SCP.copy(
+      MatrixExtension = CuteParams.CUTE_8Tops_128SCP.MatrixExtension.copy(
+        enableInt8Fp2Pack4I32 = true
+      )
+    )
   })
 }
 
@@ -30,6 +34,8 @@ class TransposeLoaderHarness(isB: Boolean)(implicit p: Parameters) extends CuteM
     val stride = Input(UInt(MMUAddrWidth.W))
     val hasTail = Input(Bool())
     val tailBytes = Input(UInt(log2Ceil(outsideDataWidthByte + 1).W))
+    val transpose = Input(Bool())
+    val packedB = Input(Bool())
     val sourceId = Input(UInt(LLCSourceMaxNumBitSize.W))
 
     val taskReady = Output(Bool())
@@ -66,8 +72,9 @@ class TransposeLoaderHarness(isB: Boolean)(implicit p: Parameters) extends CuteM
     config.MatrixRegTensor_N := io.sourceRows
     config.MatrixRegTensor_K := io.beatsPerRow
     config.MatrixRegId := 0.U
+    config.PackedB := io.packedB
     config.Conherent := true.B
-    config.Is_Transpose := true.B
+    config.Is_Transpose := io.transpose
     config.MicroTaskValid := io.start
     config.MicroTaskEndReady := true.B
     if (EnableDifftest) {
@@ -106,7 +113,7 @@ class TransposeLoaderHarness(isB: Boolean)(implicit p: Parameters) extends CuteM
     config.MatrixRegTensor_K := io.beatsPerRow
     config.MatrixRegId := 0.U
     config.Conherent := true.B
-    config.Is_Transpose := true.B
+    config.Is_Transpose := io.transpose
     config.MicroTaskValid := io.start
     config.MicroTaskEndReady := true.B
     if (EnableDifftest) {
@@ -145,6 +152,36 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
     }
   }
 
+  private def packedCode(row: Int, k: Int): Int = {
+    val byte = k >> 2
+    val rotation = if (byte < 4) {
+      (row >> (2 * byte)) & 3
+    } else {
+      (row + 3 * byte + (row >> (byte & 7))) & 3
+    }
+    ((k & 3) + rotation) & 3
+  }
+
+  private def packedResponseData(line: Int): BigInt = {
+    (0 until 4).foldLeft(BigInt(0)) { (rows, rowInLine) =>
+      val row = line * 4 + rowInLine
+      (0 until 16).foldLeft(rows) { (bytes, byteInRow) =>
+        val packedByte = (0 until 4).foldLeft(0) { (value, lane) =>
+          value | (packedCode(row, byteInRow * 4 + lane) << (lane * 2))
+        }
+        bytes | (BigInt(packedByte) << ((rowInLine * 16 + byteInRow) * 8))
+      }
+    }
+  }
+
+  private def expandedPackedPhase(row: Int, phase: Int): BigInt = {
+    (0 until 32).foldLeft(BigInt(0)) { (value, lane) =>
+      val raw = packedCode(row, phase * 32 + lane)
+      val signed = if ((raw & 2) != 0) raw | 0xfc else raw
+      value | (BigInt(signed) << (lane * 8))
+    }
+  }
+
   private def pokeResponse(dut: TransposeLoaderHarness, meta: Option[RequestMeta]): Unit = {
     dut.io.response.valid.poke(meta.nonEmpty.B)
     dut.io.response.bits.ReseponseConherent.poke(true.B)
@@ -161,6 +198,8 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
     dut.io.stride.poke(0.U)
     dut.io.hasTail.poke(false.B)
     dut.io.tailBytes.poke(0.U)
+    dut.io.transpose.poke(true.B)
+    dut.io.packedB.poke(false.B)
     dut.io.sourceId.poke(0.U)
     dut.io.request.ready.poke(true.B)
     pokeResponse(dut, None)
@@ -172,7 +211,9 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
     sourceRows: Int,
     beatsPerRow: Int,
     stride: Int,
-    tailBytes: Option[Int]
+    tailBytes: Option[Int],
+    transpose: Boolean = true,
+    packedB: Boolean = false
   ): Unit = {
     var waitCycles = 0
     while (!dut.io.taskReady.peek().litToBoolean && waitCycles < 64) {
@@ -188,6 +229,8 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
     dut.io.stride.poke(stride.U)
     dut.io.hasTail.poke(tailBytes.nonEmpty.B)
     dut.io.tailBytes.poke(tailBytes.getOrElse(0).U)
+    dut.io.transpose.poke(transpose.B)
+    dut.io.packedB.poke(packedB.B)
     dut.io.start.poke(true.B)
     dut.clock.step()
     dut.io.start.poke(false.B)
@@ -338,4 +381,212 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
   it should "place BML e8/e16/e32 bytes at the correct bank, entry, and offset" in {
     runAllPrecisions(isB = true)
   }
+
+  it should "preserve the normal i8 BML request and write mapping" in {
+    test(new TransposeLoaderHarness(isB = true)(TransposeLoaderIntegrationTestConfig.params))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+        dut.reset.poke(true.B)
+        dut.clock.step(2)
+        dut.reset.poke(false.B)
+        initHarness(dut)
+
+        startTask(
+          dut,
+          elementBytes = 1,
+          sourceRows = 8,
+          beatsPerRow = 1,
+          stride = responseBytes,
+          tailBytes = None,
+          transpose = false
+        )
+
+        val requests = mutable.ArrayBuffer.empty[RequestMeta]
+        var sourceId = 5
+        var cycles = 0
+        while (requests.size < 8 && cycles < 128) {
+          pokeResponse(dut, None)
+          dut.io.request.ready.poke((cycles % 3 != 1).B)
+          dut.io.sourceId.poke(sourceId.U)
+          if (dut.io.request.valid.peek().litToBoolean && dut.io.request.ready.peek().litToBoolean) {
+            val address = dut.io.request.bits.RequestAddr.peek().litValue.toInt
+            val row = (address - 0x1000) / responseBytes
+            assert(address == 0x1000 + row * responseBytes)
+            assert(row == requests.size)
+            requests += RequestMeta(sourceId, row, 0)
+            sourceId = (sourceId + 11) % 64
+          }
+          dut.clock.step()
+          cycles += 1
+        }
+        assert(requests.size == 8)
+
+        val responseOrder = requests.filter(_.row % 2 == 0).reverse ++
+          requests.filter(_.row % 2 == 1).reverse
+        val pending = mutable.Queue.from(responseOrder)
+        var active = Option.empty[RequestMeta]
+        val writes = mutable.Map.empty[(Int, Int), BigInt]
+        var responseCount = 0
+        var taskEnded = false
+
+        while (!taskEnded && cycles < 512) {
+          if (active.isEmpty && pending.nonEmpty) active = Some(pending.dequeue())
+          pokeResponse(dut, active)
+
+          for (bank <- 0 until bankCount) {
+            if (dut.io.matrix.BankAddr(bank).valid.peek().litToBoolean) {
+              val entry = dut.io.matrix.BankAddr(bank).bits.peek().litValue.toInt
+              val data = dut.io.matrix.Data(bank).bits.peek().litValue
+              assert(!writes.contains((bank, entry)), s"duplicate normal i8 write bank=$bank entry=$entry")
+              writes((bank, entry)) = data
+            }
+          }
+
+          if (active.nonEmpty && dut.io.response.ready.peek().litToBoolean) {
+            responseCount += 1
+            active = None
+          }
+          taskEnded = dut.io.taskEnd.peek().litToBoolean
+          dut.clock.step()
+          cycles += 1
+        }
+
+        assert(taskEnded)
+        assert(responseCount == 8)
+        assert(writes.size == 16)
+        for (row <- 0 until 8; phase <- 0 until 2) {
+          val expected = (0 until entryBytes).foldLeft(BigInt(0)) { (value, byte) =>
+            value | (BigInt(byteValue(row, phase * entryBytes + byte)) << (byte * 8))
+          }
+          assert(writes((row, phase)) == expected,
+            s"normal i8 mapping mismatch row=$row phase=$phase")
+        }
+      }
+  }
+
+  it should "reject fp2pack4 when BML is configured for multiple response channels" in {
+    val error = intercept[IllegalArgumentException] {
+      CuteParams.CUTE_8Tops_128SCP.copy(
+        MatrixExtension = CuteParams.CUTE_8Tops_128SCP.MatrixExtension.copy(
+          enableInt8Fp2Pack4I32 = true
+        ),
+        LoaderBridgeChannelConfig = "ALB1CLLCSL"
+      )
+    }
+    assert(error.getMessage.contains("legacy single-channel BML"))
+  }
+
+  it should "expand a full fp2pack4 B panel under out-of-order responses" in {
+    test(new TransposeLoaderHarness(isB = true)(TransposeLoaderIntegrationTestConfig.params))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+        dut.reset.poke(true.B)
+        dut.clock.step(2)
+        dut.reset.poke(false.B)
+        initHarness(dut)
+
+        startTask(
+          dut,
+          elementBytes = 1,
+          sourceRows = 128,
+          beatsPerRow = 1,
+          stride = 16,
+          tailBytes = None,
+          transpose = false,
+          packedB = true
+        )
+
+        val requests = mutable.ArrayBuffer.empty[RequestMeta]
+        var sourceId = 7
+        var cycles = 0
+        while (requests.size < 32 && cycles < 256) {
+          pokeResponse(dut, None)
+          dut.io.request.ready.poke((cycles % 5 != 1).B)
+          dut.io.sourceId.poke(sourceId.U)
+          if (dut.io.request.valid.peek().litToBoolean && dut.io.request.ready.peek().litToBoolean) {
+            val address = dut.io.request.bits.RequestAddr.peek().litValue.toInt
+            val requestSourceId = dut.io.request.bits.RequestSourceID.peek().litValue.toInt
+            val line = (address - 0x1000) / responseBytes
+            assert(address == 0x1000 + line * responseBytes)
+            assert(line == requests.size)
+            requests += RequestMeta(requestSourceId, line, 0)
+            sourceId = (sourceId + 17) % 64
+          }
+          dut.clock.step()
+          cycles += 1
+        }
+        assert(requests.size == 32, s"expected 32 packed requests, observed ${requests.size}")
+        for (_ <- 0 until 8) {
+          pokeResponse(dut, None)
+          dut.io.request.ready.poke(true.B)
+          dut.io.sourceId.poke(sourceId.U)
+          assert(!dut.io.request.valid.peek().litToBoolean, "packed B issued more than 32 requests")
+          dut.clock.step()
+          cycles += 1
+        }
+
+        val responseOrder = requests.filter(_.row % 2 == 0).reverse ++
+          requests.filter(_.row % 2 == 1).reverse
+        val pending = mutable.Queue.from(responseOrder)
+        var active = Option.empty[RequestMeta]
+        val writes = mutable.Map.empty[(Int, Int), BigInt]
+        var responseCount = 0
+        var writeCount = 0
+        var writePhases = 0
+        var taskEnded = false
+        var sawResponseBackpressure = false
+
+        while (!taskEnded && cycles < 2000) {
+          if (active.isEmpty && pending.nonEmpty) active = Some(pending.dequeue())
+          val injectGap = active.nonEmpty && cycles % 7 == 2
+          dut.io.response.valid.poke((active.nonEmpty && !injectGap).B)
+          dut.io.response.bits.ReseponseConherent.poke(true.B)
+          dut.io.response.bits.ReseponseSourceID.poke(active.map(_.sourceId).getOrElse(0).U)
+          dut.io.response.bits.ReseponseData.poke(active.map(m => packedResponseData(m.row)).getOrElse(BigInt(0)).U)
+
+          var writesThisCycle = 0
+          for (bank <- 0 until bankCount) {
+            val valid = dut.io.matrix.BankAddr(bank).valid.peek().litToBoolean
+            assert(valid == dut.io.matrix.Data(bank).valid.peek().litToBoolean)
+            assert(valid == dut.io.matrix.ByteMask(bank).valid.peek().litToBoolean)
+            if (valid) {
+              val entry = dut.io.matrix.BankAddr(bank).bits.peek().litValue.toInt
+              val data = dut.io.matrix.Data(bank).bits.peek().litValue
+              val mask = dut.io.matrix.ByteMask(bank).bits.peek().litValue
+              assert(mask == (BigInt(1) << entryBytes) - 1)
+              assert(!writes.contains((bank, entry)), s"duplicate packed write bank=$bank entry=$entry")
+              writes((bank, entry)) = data
+              writesThisCycle += 1
+              writeCount += 1
+            }
+          }
+          assert(writesThisCycle % 4 == 0,
+            s"packed writes must be emitted in four-bank phases, got $writesThisCycle writes")
+          writePhases += writesThisCycle / 4
+
+          val responseFire = active.nonEmpty && !injectGap && dut.io.response.ready.peek().litToBoolean
+          if (active.nonEmpty && !injectGap && !dut.io.response.ready.peek().litToBoolean) {
+            sawResponseBackpressure = true
+          }
+          if (responseFire) {
+            responseCount += 1
+            active = None
+          }
+          taskEnded = dut.io.taskEnd.peek().litToBoolean
+          dut.clock.step()
+          cycles += 1
+        }
+
+        assert(taskEnded, "packed B task did not complete")
+        assert(responseCount == 32)
+        assert(writeCount == 256)
+        assert(writePhases == 64)
+        assert(sawResponseBackpressure, "packed response buffer never applied backpressure")
+        for (row <- 0 until 128; phase <- 0 until 2) {
+          val bank = row % bankCount
+          val entry = (row / bankCount) * 2 + phase
+          assert(writes((bank, entry)) == expandedPackedPhase(row, phase),
+            s"packed expansion mismatch row=$row phase=$phase bank=$bank entry=$entry")
+        }
+      }
+  }
+
 }

@@ -176,9 +176,12 @@ case class MatrixIsaParams(
     enableMxfp4Fp32: Boolean = false,
     enableMxfp8Fp32: Boolean = false,
     enableNvfp4Fp32: Boolean = false,
+    enableInt8Fp2Pack4I32: Boolean = false,
 ) {
     assert(enableInt84Int32 == false, "enableInt84Int32 is not supported now")
     assert(enableFp32Fp32 == false, "enableFp32Fp32 is not supported now")
+    assert(!enableInt8Fp2Pack4I32 || enableInt8Int32,
+        "enableInt8Fp2Pack4I32 reuses the int8 compute path")
 
     def enableMatrix: Boolean =
         enableInt4Int32 || enableInt8Int32 || enableInt84Int32 ||
@@ -639,6 +642,11 @@ case class CuteParams(
     val BMLChannelMode = parsedLoaderBridgeChannelConfig.b
     val CLoadChannelMode = parsedLoaderBridgeChannelConfig.cLoad
     val CStoreChannelMode = parsedLoaderBridgeChannelConfig.cStore
+
+    require(
+      !MatrixExtension.enableInt8Fp2Pack4I32 || BMLChannelMode.isLegacy,
+      "fp2pack4 B load is supported only by the legacy single-channel BML"
+    )
 
     require(
       CLoadChannelMode.isLegacy == CStoreChannelMode.isLegacy,
@@ -1170,6 +1178,7 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
+    val PackedB                           = Bool()
 
     val Conherent                           = (Bool())      //whether coherence is needed
     val Is_Transpose                        = (Bool())      //whether transpose is needed
