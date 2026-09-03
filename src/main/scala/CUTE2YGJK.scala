@@ -137,7 +137,11 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     }
 
     tlABits.user.lift(ReqSourceKey).foreach { reqSource =>
-      reqSource := MemReqSource.CPUMatrixData.id.U
+      reqSource := Mux(
+        mmuReqBits.RequestType_isWrite,
+        MemReqSource.CPUStoreData.id.U,
+        MemReqSource.CPULoadData.id.U
+      )
     }
 
     val memoryTrace = WireInit(0.U.asTypeOf(new MemoryTraceEntry))
