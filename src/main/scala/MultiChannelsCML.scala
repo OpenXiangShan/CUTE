@@ -5,6 +5,7 @@ import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
 import freechips.rocketchip.util.SeqToAugmentedSeq
+import xscache.coupledL2.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 //CMemoryLoader，用于加载C矩阵的数据，供给MatrixReg使用
 //从不同的存储介质中加载数据，供给MatrixReg使用
@@ -161,6 +162,9 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
     val Is_RepeatRowLoad = RegInit(false.B)
+    val PrefetchTaskId = RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W))
+    val PrefetchStream = RegInit(MatrixPrefetchStream.none)
+    val StoreTraceTag = RegInit(0.U(MatrixPrefetchTagCodec.width.W))
 
     val C_DataWidth = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
     val D_DataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
@@ -182,6 +186,8 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         Is_ZeroLoad := io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad
         Is_FullLoad := io.ConfigInfo.LoadTaskInfo.Is_FullLoad
         Is_RepeatRowLoad := io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad
+        PrefetchTaskId := io.ConfigInfo.PrefetchTaskId
+        PrefetchStream := io.ConfigInfo.PrefetchStream
         val peDataType = new FReducePEDataType
         C_DataWidth := peDataType.CdataByteWidth(io.ConfigInfo.ApplicationTensor_C.dataType)
         memoryload_state := s_load_init
@@ -202,6 +208,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         StoreMatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_M
         StoreMatrixRegTensor_N := io.ConfigInfo.MatrixRegTensor_N
         D_DataType := io.ConfigInfo.ApplicationTensor_D.dataType
+        StoreTraceTag := io.ConfigInfo.StoreTraceTag
         memorystore_state := s_store_init
         if (YJPCMLDebugEnable) {
             printf("[CMemoryLoader_Start<%d>]Store D Tensor Start, Tensor_Block_BaseAddr: %x, ApplicationTensor_D_Stride_M: %x, IsConherent: %x, Is_Transpose: %x,MatrixRegTensor_M: %x,MatrixRegTensor_N: %x\n", io.DebugInfo.DebugTimeStampe, io.ConfigInfo.ApplicationTensor_D.BlockTensor_D_BaseVaddr, io.ConfigInfo.ApplicationTensor_D.ApplicationTensor_D_Stride_M, io.ConfigInfo.Conherent, io.ConfigInfo.Is_Transpose,io.ConfigInfo.MatrixRegTensor_M,io.ConfigInfo.MatrixRegTensor_N)
@@ -349,24 +356,31 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                 ReadRequest.bits.RequestSourceID := encodeCSourceId(csourceId.MatrixRegBankId, csourceId.MatrixRegAddr, csourceId.MatrixRegisTail)
                 ReadRequest.bits.RequestType_isWrite := false.B
                 ReadRequest.bits.UseAllocatedSourceID := false.B
+                ReadRequest.bits.MatrixPrefetchTag := MatrixPrefetchTagCodec.encode(
+                    true.B,
+                    PrefetchStream,
+                    PrefetchTaskId
+                )
                 ReadRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
 
                 when(ReadRequest.fire){
-                    val cycle = io.DebugInfo.DebugTimeStampe
-                    printf(cf"[CMLWHZ<${cycle}>][channel ${bank}][LoadRequest] " +
-                    cf"Addr ${ReadRequest.bits.RequestAddr}%x, " +
-                    cf"cacheBank ${ReadRequest.bits.RequestAddr(8, 6)}, " +
-                    cf"bank ${csourceId.MatrixRegBankId}, " +
-                    cf"setAddr ${csourceId.MatrixRegAddr}, " +
-                    cf"CurrentLoaded_BlockTensor_M_Iter ${CurrentLoaded_BlockTensor_M_Iter}, " +
-                    cf"CMatrixRegNBanks ${CMatrixRegNBanks}, " +
-                    cf"CurrentLoaded_BlockTensor_N_Iter ${CurrentLoaded_BlockTensor_N_Iter}, " +
-                    cf"MatrixRegTensor_M ${LoadMatrixRegTensor_M}, " +
-                    cf"MatrixRegTensor_N ${LoadMatrixRegTensor_N}, " +
-                    cf"TotalRequestSize ${TotalRequestSize}, " +
-                    cf"MaxRequestIter ${MaxRequestIter}, " +
-                    cf"C_DataWidth ${C_DataWidth}, " +
-                    cf"\n")
+                    if (YJPCMLDebugEnable) {
+                        val cycle = io.DebugInfo.DebugTimeStampe
+                        printf(cf"[CMLWHZ<${cycle}>][channel ${bank}][LoadRequest] " +
+                        cf"Addr ${ReadRequest.bits.RequestAddr}%x, " +
+                        cf"cacheBank ${ReadRequest.bits.RequestAddr(8, 6)}, " +
+                        cf"bank ${csourceId.MatrixRegBankId}, " +
+                        cf"setAddr ${csourceId.MatrixRegAddr}, " +
+                        cf"CurrentLoaded_BlockTensor_M_Iter ${CurrentLoaded_BlockTensor_M_Iter}, " +
+                        cf"CMatrixRegNBanks ${CMatrixRegNBanks}, " +
+                        cf"CurrentLoaded_BlockTensor_N_Iter ${CurrentLoaded_BlockTensor_N_Iter}, " +
+                        cf"MatrixRegTensor_M ${LoadMatrixRegTensor_M}, " +
+                        cf"MatrixRegTensor_N ${LoadMatrixRegTensor_N}, " +
+                        cf"TotalRequestSize ${TotalRequestSize}, " +
+                        cf"MaxRequestIter ${MaxRequestIter}, " +
+                        cf"C_DataWidth ${C_DataWidth}, " +
+                        cf"\n")
+                    }
 
                     N_Iter := N_Iter + 1.U
                     when(N_Iter === (N_Beat_Count - 1.U)){
@@ -698,6 +712,8 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
             WriteRequest.bits.RequestSourceID := encodeCSourceId(bank.U, TotalStoreSize, false.B)
             WriteRequest.bits.RequestType_isWrite := true.B
             WriteRequest.bits.UseAllocatedSourceID := false.B
+            WriteRequest.bits.MatrixPrefetchTag := 0.U
+            WriteRequest.bits.MatrixTraceTag := StoreTraceTag
             WriteRequest.bits.RequestData := StoreQueue.io.deq.bits
             WriteRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
 

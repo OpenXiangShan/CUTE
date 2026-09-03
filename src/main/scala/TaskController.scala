@@ -7,6 +7,12 @@ import freechips.rocketchip.util._
 import cute.Bundles._
 import difftest._
 import utility.ChiselDB
+import xscache.coupledL2.{
+  MatrixPrefetchControl,
+  MatrixPrefetchDesc,
+  MatrixPrefetchStream,
+  MatrixPrefetchTagCodec
+}
 
 /*
  * TaskController scheduling overview:
@@ -31,6 +37,7 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val MTE_MicroTask_Config = new MTEMicroTaskConfigIO
   val DebugTimeStampe = Input(UInt(32.W))
   val perfProbe = Output(new TaskControllerPerfProbe)
+  val matrixPrefetch = Output(new MatrixPrefetchControl)
 }
 
 abstract class BaseTaskController(implicit p: Parameters) extends CuteModule {
@@ -140,6 +147,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.AML_MicroTask_Config.Conherent := false.B
   io.AML_MicroTask_Config.Is_Transpose := false.B
   io.AML_MicroTask_Config.MatrixRegId := 0.U
+  io.AML_MicroTask_Config.PrefetchTaskId := 0.U
+  io.AML_MicroTask_Config.PrefetchStream := MatrixPrefetchStream.none
   io.AML_MicroTask_Config.MicroTaskValid := false.B
   io.AML_MicroTask_Config.MicroTaskEndReady := false.B
   if (EnableDifftest) {
@@ -162,6 +171,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.BML_MicroTask_Config.Conherent := false.B
   io.BML_MicroTask_Config.Is_Transpose := false.B
   io.BML_MicroTask_Config.MatrixRegId := 0.U
+  io.BML_MicroTask_Config.PrefetchTaskId := 0.U
+  io.BML_MicroTask_Config.PrefetchStream := MatrixPrefetchStream.none
   io.BML_MicroTask_Config.MicroTaskValid := false.B
   io.BML_MicroTask_Config.MicroTaskEndReady := false.B
   if (EnableDifftest) {
@@ -186,6 +197,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.CML_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.CML_MicroTask_Config.MatrixRegTensor_N := 0.U
   io.CML_MicroTask_Config.MatrixRegId := 0.U
+  io.CML_MicroTask_Config.PrefetchTaskId := 0.U
+  io.CML_MicroTask_Config.PrefetchStream := MatrixPrefetchStream.none
+  io.CML_MicroTask_Config.StoreTraceTag := 0.U
   io.CML_MicroTask_Config.LoadMicroTaskValid := false.B
   io.CML_MicroTask_Config.LoadMicroTaskEndReady := false.B
   io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
@@ -198,6 +212,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.MTE_MicroTask_Config.MicroTaskValid := false.B
   io.MTE_MicroTask_Config.computeType := MteComputeType.ComputeTypeUndef
   io.perfProbe := 0.U.asTypeOf(new TaskControllerPerfProbe)
+  io.matrixPrefetch := 0.U.asTypeOf(new MatrixPrefetchControl)
 
   // ===================== ChiselDB event definitions =====================
   private val TileDimWidth = Bundles.Mtilex.width
@@ -256,6 +271,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private val computeEventTable = ChiselDB.createTable("CUTEComputeEvent", new ComputeEventEntry, basicDB = true)
   private val storeEventTable = ChiselDB.createTable("CUTEStoreEvent", new StoreEventEntry, basicDB = true)
   private val releaseEventTable = ChiselDB.createTable("CUTEReleaseEvent", new ReleaseEventEntry, basicDB = true)
+  private val matrixPrefetchDescTable =
+    ChiselDB.createTable("CUTEMatrixPrefetchDesc", new MatrixPrefetchDesc, basicDB = true)
+  // C stores are deliberately excluded from the L2 prefetch control path, but
+  // still need an independent descriptor for complete trace reconstruction.
+  private val cStoreDescTable =
+    ChiselDB.createTable("CUTECStoreDesc", new MatrixPrefetchDesc, basicDB = true)
+  private val cStoreDesc = WireInit(0.U.asTypeOf(new MatrixPrefetchDesc))
+  private val cStoreDescEn = WireInit(false.B)
 
   private val loadAllocateEvent = WireInit(0.U.asTypeOf(new LoadEventEntry))
   private val loadAllocateEventEn = WireInit(false.B)
@@ -668,6 +691,82 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     computeType
   }
 
+  private def prefetchStreamForOp(op: TaskCtrlOpKind.Type): UInt = {
+    MuxLookup(op.asUInt, MatrixPrefetchStream.none)(Seq(
+      TaskCtrlOpKind.LoadA.asUInt -> MatrixPrefetchStream.a,
+      TaskCtrlOpKind.LoadB.asUInt -> MatrixPrefetchStream.b,
+      TaskCtrlOpKind.LoadC.asUInt -> MatrixPrefetchStream.cLoad
+    ))
+  }
+
+  val allocPrefetchStream = prefetchStreamForOp(deqOpKind)
+  val allocOuterCount = MuxLookup(deqOpKind.asUInt, 0.U)(Seq(
+    TaskCtrlOpKind.LoadA.asUInt -> Mux(deqLsu.transpose, deqLsu.column, deqLsu.row),
+    TaskCtrlOpKind.LoadB.asUInt -> Mux(deqLsu.transpose, deqLsu.row, deqLsu.column),
+    TaskCtrlOpKind.LoadC.asUInt -> Mux(deqLsu.transpose, deqLsu.column, deqLsu.row)
+  ))
+  val allocInnerDim = MuxLookup(deqOpKind.asUInt, 0.U)(Seq(
+    TaskCtrlOpKind.LoadA.asUInt -> Mux(deqLsu.transpose, deqLsu.row, deqLsu.column),
+    TaskCtrlOpKind.LoadB.asUInt -> Mux(deqLsu.transpose, deqLsu.column, deqLsu.row),
+    TaskCtrlOpKind.LoadC.asUInt -> Mux(deqLsu.transpose, deqLsu.row, deqLsu.column)
+  ))
+  val allocInnerCount = loadBeatCount(allocInnerDim, deqLsu.widths)
+  val allocDesc = WireInit(0.U.asTypeOf(new MatrixPrefetchDesc))
+  allocDesc.taskId := seqIdAlloc
+  allocDesc.stream := allocPrefetchStream
+  allocDesc.baseAddr := deqLsu.baseAddr
+  allocDesc.outerStride := deqLsu.stride
+  allocDesc.outerCount := allocOuterCount
+  allocDesc.innerCount := allocInnerCount
+  allocDesc.rowBytes := loadByteCount(allocInnerDim, deqLsu.widths).pad(32)
+  private val aNormalPrefetchGroupWidth =
+    if (AMLUseLegacyLoader) Matrix_MN else ABMatrixRegNBanks
+  allocDesc.groupWidth := MuxLookup(deqOpKind.asUInt, Matrix_MN.U)(Seq(
+    TaskCtrlOpKind.LoadA.asUInt -> Mux(
+      deqLsu.transpose,
+      ABMatrixRegEntryByteSize.U,
+      aNormalPrefetchGroupWidth.U
+    )
+  ))
+  allocDesc.transpose := deqLsu.transpose
+  if (EnableDifftest) allocDesc.pc := deqEntry.ctrl.pc.get else allocDesc.pc := 0.U
+
+  when(enqueueFire && allocPrefetchStream =/= MatrixPrefetchStream.none) {
+    io.matrixPrefetch.allocate.valid := true.B
+    io.matrixPrefetch.allocate.bits := allocDesc
+  }
+
+  val issuePrefetchStream = prefetchStreamForOp(issueSlot.opKind)
+  when(issueFire && issuePrefetchStream =/= MatrixPrefetchStream.none) {
+    io.matrixPrefetch.activate.valid := true.B
+    io.matrixPrefetch.activate.bits := MatrixPrefetchTagCodec.encode(true.B, issuePrefetchStream, issueSlot.seqId)
+  }
+
+  val retirePrefetchStream = prefetchStreamForOp(headSlot.opKind)
+  when(retireFire && retirePrefetchStream =/= MatrixPrefetchStream.none) {
+    io.matrixPrefetch.retire.valid := true.B
+    io.matrixPrefetch.retire.bits := MatrixPrefetchTagCodec.encode(true.B, retirePrefetchStream, headSlot.seqId)
+  }
+
+  when(issueFire && issueSlot.opKind === TaskCtrlOpKind.Store) {
+    io.matrixPrefetch.cStoreStart.valid := true.B
+    io.matrixPrefetch.cStoreStart.bits := MatrixPrefetchTagCodec.encode(
+      true.B,
+      MatrixPrefetchStream.cStore,
+      issueSlot.seqId
+    )
+  }
+
+  when(cmlStoreDone) {
+    val storeOwner = slots(fuCMLStore.ownerSlot)
+    io.matrixPrefetch.cStoreEnd.valid := true.B
+    io.matrixPrefetch.cStoreEnd.bits := MatrixPrefetchTagCodec.encode(
+      true.B,
+      MatrixPrefetchStream.cStore,
+      storeOwner.seqId
+    )
+  }
+
   when(issueFire) {
     switch(issueSlot.opKind) {
       is(TaskCtrlOpKind.LoadA) {
@@ -688,6 +787,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.AML_MicroTask_Config.MatrixRegTensor_M := matrixDim
         io.AML_MicroTask_Config.MatrixRegTensor_K := kVal
         io.AML_MicroTask_Config.MatrixRegId := regIdx
+        io.AML_MicroTask_Config.PrefetchTaskId := issueSlot.seqId
+        io.AML_MicroTask_Config.PrefetchStream := MatrixPrefetchStream.a
         io.AML_MicroTask_Config.Conherent := true.B
         io.AML_MicroTask_Config.Is_Transpose := issueLsu.transpose
         io.AML_MicroTask_Config.MicroTaskValid := true.B
@@ -737,6 +838,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.BML_MicroTask_Config.MatrixRegTensor_N := matrixDim
         io.BML_MicroTask_Config.MatrixRegTensor_K := kVal
         io.BML_MicroTask_Config.MatrixRegId := regIdx
+        io.BML_MicroTask_Config.PrefetchTaskId := issueSlot.seqId
+        io.BML_MicroTask_Config.PrefetchStream := MatrixPrefetchStream.b
         io.BML_MicroTask_Config.Conherent := true.B
         io.BML_MicroTask_Config.Is_Transpose := issueLsu.transpose
         io.BML_MicroTask_Config.MicroTaskValid := true.B
@@ -790,6 +893,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.CML_MicroTask_Config.MatrixRegTensor_M := matrixDimM
         io.CML_MicroTask_Config.MatrixRegTensor_N := matrixDimN
         io.CML_MicroTask_Config.MatrixRegId := regIdx
+        io.CML_MicroTask_Config.PrefetchTaskId := issueSlot.seqId
+        io.CML_MicroTask_Config.PrefetchStream := MatrixPrefetchStream.cLoad
         io.CML_MicroTask_Config.Is_Transpose := issueLsu.transpose
         io.CML_MicroTask_Config.LoadMicroTaskValid := true.B
         io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
@@ -970,6 +1075,20 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       is(TaskCtrlOpKind.Store) {
         val regIdx = issueLsu.ms(1, 0)
 
+        cStoreDesc.taskId := issueSlot.seqId
+        cStoreDesc.stream := MatrixPrefetchStream.cStore
+        cStoreDesc.baseAddr := issueLsu.baseAddr
+        cStoreDesc.outerStride := issueLsu.stride
+        cStoreDesc.outerCount := issueLsu.row
+        cStoreDesc.innerCount := loadBeatCount(issueLsu.column, issueLsu.widths)
+        cStoreDesc.rowBytes := loadByteCount(issueLsu.column, issueLsu.widths)
+        cStoreDesc.groupWidth := CMatrixRegNBanks.U
+        cStoreDesc.transpose := issueLsu.transpose
+        cStoreDescEn := true.B
+        if (EnableDifftest) {
+          cStoreDesc.pc := issueCtrl.pc.get
+        }
+
         io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_BaseVaddr := issueLsu.baseAddr
         io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_Stride_M := issueLsu.stride
         io.CML_MicroTask_Config.ApplicationTensor_D.BlockTensor_D_BaseVaddr := issueLsu.baseAddr
@@ -979,6 +1098,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.CML_MicroTask_Config.MatrixRegTensor_M := issueLsu.row
         io.CML_MicroTask_Config.MatrixRegTensor_N := issueLsu.column
         io.CML_MicroTask_Config.MatrixRegId := regIdx
+        io.CML_MicroTask_Config.StoreTraceTag := MatrixPrefetchTagCodec.encode(
+          true.B,
+          MatrixPrefetchStream.cStore,
+          issueSlot.seqId
+        )
         io.CML_MicroTask_Config.LoadMicroTaskValid := false.B
         io.CML_MicroTask_Config.StoreMicroTaskValid := true.B
         if (EnableDifftest) {
@@ -1464,6 +1588,20 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   storeEventTable.log(storeFinishEvent, storeFinishEventEn, "StoreFinish", clock, reset)
 
   releaseEventTable.log(releaseIssueEvent, releaseIssueEventEn, "ReleaseIssue", clock, reset)
+  matrixPrefetchDescTable.log(
+    io.matrixPrefetch.allocate.bits,
+    io.matrixPrefetch.allocate.valid,
+    "DescriptorAllocate",
+    clock,
+    reset
+  )
+  cStoreDescTable.log(
+    cStoreDesc,
+    cStoreDescEn,
+    "StoreDescriptor",
+    clock,
+    reset
+  )
 
   val mmaDoneType = decodeMmaComputeType(decodeMma(slots(fuCompute.ownerSlot).entry.ctrl))
   val releaseDone = issueFire && issueSlot.opKind === TaskCtrlOpKind.Release

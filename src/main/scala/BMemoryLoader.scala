@@ -5,6 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
+import xscache.coupledL2.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 //BMemoryLoader，用于加载B矩阵的数据，供给MatrixReg使用
 //从不同的存储介质中加载数据，供给MatrixReg使用
@@ -50,6 +51,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     for (i <- 0 until ABMatrixRegNBanks) {
         io.LocalMMUIO.Request(i).valid := false.B
         io.LocalMMUIO.Request(i).bits := DontCare
+        io.LocalMMUIO.Request(i).bits.MatrixPrefetchTag := 0.U
         io.LocalMMUIO.Response(i).ready := false.B
     }
 
@@ -124,6 +126,8 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     val Conherent = RegInit(true.B) //是否一致性访存的标志位，由TaskController提供
     val Is_Transpose = RegInit(false.B) //是否转置load，由TaskController提供
+    val PrefetchTaskId = RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W))
+    val PrefetchStream = RegInit(MatrixPrefetchStream.none)
 
     
     //如果configinfo有效
@@ -143,6 +147,8 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             Tensor_Block_BaseAddr := io.ConfigInfo.ApplicationTensor_B.BlockTensor_B_BaseVaddr //这个是关键
             Conherent := io.ConfigInfo.Conherent
             Is_Transpose := io.ConfigInfo.Is_Transpose
+            PrefetchTaskId := io.ConfigInfo.PrefetchTaskId
+            PrefetchStream := io.ConfigInfo.PrefetchStream
             HasTail := io.ConfigInfo.ApplicationTensor_B.HasTail
             TailByteMask := io.ConfigInfo.ApplicationTensor_B.TailByteMask
             K_Beat_Count := io.ConfigInfo.ApplicationTensor_B.K_Beat_Count
@@ -352,6 +358,11 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             Request.bits.RequestSourceID := sourceId.bits
             Request.bits.RequestType_isWrite := false.B
             Request.bits.UseAllocatedSourceID := true.B
+            Request.bits.MatrixPrefetchTag := MatrixPrefetchTagCodec.encode(
+              true.B,
+              PrefetchStream,
+              PrefetchTaskId
+            )
             Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
             Request.valid := Mux(Is_Transpose, transpose_req_enable, TotalRequestSize < MaxRequestIter)
 
