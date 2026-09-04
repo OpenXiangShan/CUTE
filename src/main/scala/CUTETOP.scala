@@ -4,6 +4,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
+import xscache.coupledL2.prefetch.MatrixPrefetchControl
 // import boom.exu.ygjk._
 // import scala.collection.parallel.Task
 
@@ -11,6 +12,7 @@ class CUTETopIO()(implicit p: Parameters) extends CuteBundle{
     val mmu2llc = Flipped(new MMU2TLIO)
     val ctrl2top = Flipped(new YGJKControl)
     val perf = Output(new CutePerfToCoreIO)
+    val matrixPrefetch = Output(new MatrixPrefetchControl)
 }
 
 class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends CuteModule {
@@ -68,6 +70,8 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         bToAConfig.MatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_N
         bToAConfig.MatrixRegTensor_K := io.ConfigInfo.MatrixRegTensor_K
         bToAConfig.MatrixRegId := io.ConfigInfo.MatrixRegId
+        bToAConfig.PrefetchTaskId := io.ConfigInfo.PrefetchTaskId
+        bToAConfig.PrefetchStream := io.ConfigInfo.PrefetchStream
         bToAConfig.Conherent := io.ConfigInfo.Conherent
         bToAConfig.Is_Transpose := io.ConfigInfo.Is_Transpose
         bToAConfig.MicroTaskValid := io.ConfigInfo.MicroTaskValid
@@ -332,30 +336,38 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         }
     }
     
-    val cStoreUsesGroupedRequest =
-        CStoreBridgeResponseChannelCount == 2 || CStoreBridgeResponseChannelCount == 4
+    // The parameterized bridge uses the same request and response width.  In
+    // particular, CS1 must arbitrate all C-store banks onto request channel 0;
+    // otherwise the nominal A1B1CL1CS1 baseline still issues C stores through
+    // all eight CUTE-to-L2 channels.
     val cStoreRequestChannelCount =
-        if (cStoreUsesGroupedRequest) CStoreBridgeResponseChannelCount else CMatrixRegNBanks
+        if (CStoreUseLegacyLoader) CMatrixRegNBanks else CStoreBridgeResponseChannelCount
+    val aRequestChannelCount =
+        if (AMLUseLegacyLoader) ABMatrixRegNBanks else AMLResponseChannelCount
+    val bRequestChannelCount =
+        if (BMLUseLegacyLoader) ABMatrixRegNBanks else BMLResponseChannelCount
+    val cLoadRequestChannelCount =
+        if (CLoadUseLegacyLoader) CMatrixRegNBanks else CLoadBridgeResponseChannelCount
 
     val amlBridgeContext = multiOrLegacyBridgeContext(
         "AML",
         AMLUseLegacyLoader,
         ABMatrixRegNBanks,
-        ABMatrixRegNBanks,
+        aRequestChannelCount,
         AMLResponseChannelCount
     )
     val bmlBridgeContext = multiOrLegacyBridgeContext(
         "BML",
         BMLUseLegacyLoader,
         ABMatrixRegNBanks,
-        ABMatrixRegNBanks,
+        bRequestChannelCount,
         BMLResponseChannelCount
     )
     val cLoadBridgeContext = multiOrLegacyBridgeContext(
         "CLoad",
         CLoadUseLegacyLoader,
         CMatrixRegNBanks,
-        CMatrixRegNBanks,
+        cLoadRequestChannelCount,
         CLoadBridgeResponseChannelCount
     )
     val cStoreBridgeContext = multiOrLegacyBridgeContext(
@@ -399,6 +411,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val CML = Module(new CMLWrapper(cmlWrapperContext)).suggestName(s"${cmlWrapperContext}_wrapper")
 
     val TaskCtrl: BaseTaskController = Module(new TaskController)
+    io.matrixPrefetch := TaskCtrl.io.matrixPrefetch
     
     val MTE = Module(new MatrixTE)
 
@@ -433,7 +446,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             MMU.io.ALocalMMUIO,
             ABMatrixRegNBanks,
             AMLResponseChannelCount,
-            ABMatrixRegNBanks,
+            aRequestChannelCount,
             log2Ceil(ABMatrixRegNBanks),
             log2Ceil(ABMatrixRegBankNEntries),
             ResponseBridgeQueueDepth,
@@ -475,7 +488,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             MMU.io.BLocalMMUIO,
             ABMatrixRegNBanks,
             BMLResponseChannelCount,
-            ABMatrixRegNBanks,
+            bRequestChannelCount,
             log2Ceil(ABMatrixRegNBanks),
             log2Ceil(ABMatrixRegBankNEntries),
             ResponseBridgeQueueDepth,
@@ -519,7 +532,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             MMU.io.CLoadLocalMMUIO,
             CMatrixRegNBanks,
             CLoadBridgeResponseChannelCount,
-            CMatrixRegNBanks,
+            cLoadRequestChannelCount,
             log2Ceil(CMatrixRegNBanks),
             log2Ceil(CMatrixRegBankNEntries),
             ResponseBridgeQueueDepth,

@@ -5,6 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
+import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 // AMemoryLoader：加载 A 矩阵数据到 MatrixReg，仅支持矩阵加载（无卷积）
 // 参考 CMemoryLoader 的 FullLoad 实现，按 M、K 维度顺序访存
@@ -423,6 +424,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         io.LocalMMUIO.Request(i).valid := false.B
         io.LocalMMUIO.Request(i).bits := DontCare
         io.LocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.LocalMMUIO.Request(i).bits.MatrixPrefetchTag := 0.U
         io.LocalMMUIO.Response(i).ready := false.B
     }
     io.ConfigInfo.MicroTaskEndValid := false.B
@@ -486,6 +488,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
+    val PrefetchTaskId = RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W))
+    val PrefetchStream = RegInit(MatrixPrefetchStream.none)
 
     val s_idle :: s_mm_task :: Nil = Enum(2)
     val state = RegInit(s_idle)
@@ -583,6 +587,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             K_Beat_Count := ConfigInfo.ApplicationTensor_A.K_Beat_Count
             Is_ZeroLoad := ConfigInfo.LoadTaskInfo.Is_ZeroLoad
             Is_FullLoad := ConfigInfo.LoadTaskInfo.Is_FullLoad
+            PrefetchTaskId := ConfigInfo.PrefetchTaskId
+            PrefetchStream := ConfigInfo.PrefetchStream
             Conherent := ConfigInfo.Conherent
             Is_Transpose := ConfigInfo.Is_Transpose
             transposeBytesPerElement := TransposeBytePlane.bytesPerElement(ConfigInfo.ApplicationTensor_A.dataType)
@@ -698,6 +704,11 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 Request.bits.RequestSourceID := sourceId.bits
                 Request.bits.RequestType_isWrite := false.B
                 Request.bits.UseAllocatedSourceID := true.B
+                Request.bits.MatrixPrefetchTag := MatrixPrefetchTagCodec.encode(
+                  Is_FullLoad && !Is_ZeroLoad,
+                  PrefetchStream,
+                  PrefetchTaskId
+                )
                 Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
                 Request.valid := Mux(Is_Transpose, transpose_req_enable, TotalRequestSize < MaxRequestIter)
 

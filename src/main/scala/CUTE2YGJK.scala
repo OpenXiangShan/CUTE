@@ -10,7 +10,19 @@ import freechips.rocketchip.tilelink._
 // import boom.common._
 import org.chipsalliance.cde.config._
 // import boom.exu.ygjk.{YGJKParameters}
-import xscache.coupledL2.{MatrixKey, MatrixField, AmeIndexKey, AmeIndexField}
+import utility.{ChiselDB, MemReqSource, ReqSourceField, ReqSourceKey}
+import xscache.coupledL2.{
+  AmeIndexField,
+  AmeIndexKey,
+  MatrixField,
+  MatrixKey
+}
+import xscache.coupledL2.prefetch.{
+  MatrixPrefetchStream,
+  MatrixPrefetchTagCodec,
+  MatrixPrefetchTagField,
+  MatrixPrefetchTagKey
+}
 
 class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.baseParams) extends WithCuteParams(CoustomCuteParam)
 
@@ -24,7 +36,12 @@ class Cute2TL(implicit p: Parameters) extends LazyModule with CUTEImplParameters
           name = s"CUTE_$i",
           sourceId = IdRange(0, 1)  // 固定 source ID，信息通过 AmeIndex 传递
         )),
-        requestFields = Seq(MatrixField(2), AmeIndexField()),
+        requestFields = Seq(
+          MatrixField(2),
+          AmeIndexField(),
+          MatrixPrefetchTagField(),
+          ReqSourceField()
+        ),
         responseKeys = Seq(AmeIndexKey)
       ))
     )
@@ -51,6 +68,22 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
 
   val time_stamp = RegInit(0.U(64.W))
   time_stamp := time_stamp + 1.U
+
+  class MemoryTraceEntry extends Bundle {
+    val cycle = UInt(64.W)
+    val channel = UInt(log2Ceil(ABMatrixRegNBanks).W)
+    val address = UInt(MMUAddrWidth.W)
+    val sourceId = UInt(64.W)
+    val isWrite = Bool()
+    val isAcc = Bool()
+    val prefetchTag = UInt(MatrixPrefetchTagCodec.width.W)
+    val prefetchStream = UInt(MatrixPrefetchStream.width.W)
+    val prefetchTaskId = UInt(MatrixPrefetchTagCodec.taskIdWidth.W)
+    val traceTag = UInt(MatrixPrefetchTagCodec.width.W)
+    val traceStream = UInt(MatrixPrefetchStream.width.W)
+    val traceTaskId = UInt(MatrixPrefetchTagCodec.taskIdWidth.W)
+  }
+  val memoryTraceTable = ChiselDB.createTable("CUTEMemoryTrace", new MemoryTraceEntry, basicDB = true)
 
   for (channel <- 0 until ABMatrixRegNBanks) {
     val edge_ch = edges(channel)
@@ -100,6 +133,33 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     tlABits.user.lift(AmeIndexKey).foreach { ameIndex =>
       ameIndex := mmuReqBits.RequestSourceID
     }
+
+    tlABits.user.lift(MatrixPrefetchTagKey).foreach { tag =>
+      tag := mmuReqBits.MatrixPrefetchTag
+    }
+
+    tlABits.user.lift(ReqSourceKey).foreach { reqSource =>
+      reqSource := Mux(
+        mmuReqBits.RequestType_isWrite,
+        MemReqSource.MatrixWrite.id.U,
+        MemReqSource.MatrixRead.id.U
+      )
+    }
+
+    val memoryTrace = WireInit(0.U.asTypeOf(new MemoryTraceEntry))
+    memoryTrace.cycle := time_stamp
+    memoryTrace.channel := channel.U
+    memoryTrace.address := mmuReqBits.RequestAddr
+    memoryTrace.sourceId := mmuReqBits.RequestSourceID
+    memoryTrace.isWrite := mmuReqBits.RequestType_isWrite
+    memoryTrace.isAcc := mmuReqBits.MatrixIsAcc
+    memoryTrace.prefetchTag := mmuReqBits.MatrixPrefetchTag
+    memoryTrace.prefetchStream := MatrixPrefetchTagCodec.stream(mmuReqBits.MatrixPrefetchTag)
+    memoryTrace.prefetchTaskId := MatrixPrefetchTagCodec.taskId(mmuReqBits.MatrixPrefetchTag)
+    memoryTrace.traceTag := mmuReqBits.MatrixTraceTag
+    memoryTrace.traceStream := MatrixPrefetchTagCodec.stream(mmuReqBits.MatrixTraceTag)
+    memoryTrace.traceTaskId := MatrixPrefetchTagCodec.taskId(mmuReqBits.MatrixTraceTag)
+    memoryTraceTable.log(memoryTrace, mmuReq.fire, "MemoryRequest", clock, reset)
 
     // Direct pass-through for AML responses from TL-D channel
     // 从 user 字段获取 AmeIndex（完全忽略 tlDBits.source）

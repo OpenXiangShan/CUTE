@@ -5,6 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
+import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 class MultiChannelsABMemLoader(
     label: String = "AML",
@@ -47,6 +48,8 @@ class MultiChannelsABMemLoader(
 
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
+    val PrefetchTaskId = RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W))
+    val PrefetchStream = RegInit(MatrixPrefetchStream.none)
 
     val MAX_Fill_Times = outsideDataWidthByte / ABMatrixRegEntryByteSize
     val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*outsideDataWidthByte)+1).W))
@@ -71,6 +74,7 @@ class MultiChannelsABMemLoader(
         val coherent = Bool()
         val sourceId = UInt(64.W)
         val mask = UInt(MMUMaskWidth.W)
+        val matrixPrefetchTag = UInt(MatrixPrefetchTagCodec.width.W)
     }
 
     class BankRespFifo(bankIdx: Int) {
@@ -288,6 +292,9 @@ class MultiChannelsABMemLoader(
                 val active_group_size = Mux(group_has_no_requests, current_group_size, group_size_reg)
                 val transpose_group_can_issue = Mux(
                     group_has_no_requests,
+                    // The previous group has retired from TL but may still be
+                    // draining through TransAlign/TransposeRouter.  Do not
+                    // open the next group until that pipeline is empty.
                     group_is_idle && (current_group_size =/= 0.U),
                     group_req_cnt < group_size_reg
                 )
@@ -303,6 +310,11 @@ class MultiChannelsABMemLoader(
                 Request.bits.RequestSourceID := sourceId
                 Request.bits.RequestType_isWrite := false.B
                 Request.bits.UseAllocatedSourceID := false.B
+                Request.bits.MatrixPrefetchTag := MatrixPrefetchTagCodec.encode(
+                    true.B,
+                    PrefetchStream,
+                    PrefetchTaskId
+                )
                 Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
                 Request.valid := transpose_req_enable
 
@@ -410,6 +422,11 @@ class MultiChannelsABMemLoader(
                     reqQueue.io.enq.bits.coherent := Conherent
                     reqQueue.io.enq.bits.mask := Fill(MMUMaskWidth, 1.U(1.W))
                     reqQueue.io.enq.bits.sourceId := sourceId
+                    reqQueue.io.enq.bits.matrixPrefetchTag := MatrixPrefetchTagCodec.encode(
+                        true.B,
+                        PrefetchStream,
+                        PrefetchTaskId
+                    )
 
                     request.valid := reqQueue.io.deq.valid
                     request.bits.RequestAddr := reqQueue.io.deq.bits.addr
@@ -420,6 +437,7 @@ class MultiChannelsABMemLoader(
                     request.bits.UseAllocatedSourceID := false.B
                     request.bits.isA := false.B
                     request.bits.MatrixIsAcc := false.B
+                    request.bits.MatrixPrefetchTag := reqQueue.io.deq.bits.matrixPrefetchTag
                     request.bits.RequestMask := reqQueue.io.deq.bits.mask
                     reqQueue.io.deq.ready := request.ready
 
@@ -512,6 +530,8 @@ class MultiChannelsABMemLoader(
 
             Is_ZeroLoad := ConfigInfo.LoadTaskInfo.Is_ZeroLoad
             Is_FullLoad := ConfigInfo.LoadTaskInfo.Is_FullLoad
+            PrefetchTaskId := ConfigInfo.PrefetchTaskId
+            PrefetchStream := ConfigInfo.PrefetchStream
             Conherent := ConfigInfo.Conherent
 
             if (YJPAMLDebugEnable) {

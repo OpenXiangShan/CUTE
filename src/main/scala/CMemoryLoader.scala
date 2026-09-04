@@ -5,6 +5,7 @@ import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
 import freechips.rocketchip.util.SeqToAugmentedSeq
+import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 //CMemoryLoader，用于加载C矩阵的数据，供给MatrixReg使用
 //从不同的存储介质中加载数据，供给MatrixReg使用
@@ -51,10 +52,14 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         io.LoadLocalMMUIO.Request(i).valid := false.B
         io.LoadLocalMMUIO.Request(i).bits := DontCare
         io.LoadLocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.LoadLocalMMUIO.Request(i).bits.MatrixPrefetchTag := 0.U
+        io.LoadLocalMMUIO.Request(i).bits.MatrixTraceTag := 0.U
         io.LoadLocalMMUIO.Response(i).ready := false.B
         io.StoreLocalMMUIO.Request(i).valid := false.B
         io.StoreLocalMMUIO.Request(i).bits := DontCare
         io.StoreLocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.StoreLocalMMUIO.Request(i).bits.MatrixPrefetchTag := 0.U
+        io.StoreLocalMMUIO.Request(i).bits.MatrixTraceTag := 0.U
         io.StoreLocalMMUIO.Response(i).ready := false.B
     }
 
@@ -156,6 +161,9 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
     val Is_RepeatRowLoad = RegInit(false.B)
+    val PrefetchTaskId = RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W))
+    val PrefetchStream = RegInit(MatrixPrefetchStream.none)
+    val StoreTraceTag = RegInit(0.U(MatrixPrefetchTagCodec.width.W))
 
     val C_DataWidth = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
     val D_DataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
@@ -179,6 +187,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         Is_ZeroLoad := io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad
         Is_FullLoad := io.ConfigInfo.LoadTaskInfo.Is_FullLoad
         Is_RepeatRowLoad := io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad
+        PrefetchTaskId := io.ConfigInfo.PrefetchTaskId
+        PrefetchStream := io.ConfigInfo.PrefetchStream
         val peDataType = new FReducePEDataType
         C_DataWidth := peDataType.CdataByteWidth(io.ConfigInfo.ApplicationTensor_C.dataType)
         memoryload_state := s_load_init
@@ -196,6 +206,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         StoreMatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_M
         StoreMatrixRegTensor_N := io.ConfigInfo.MatrixRegTensor_N
         D_DataType := io.ConfigInfo.ApplicationTensor_D.dataType
+        StoreTraceTag := io.ConfigInfo.StoreTraceTag
         memorystore_state := s_store_init
         if (EnableDifftest) {
           StorePcReg.get := io.ConfigInfo.pc.get
@@ -370,6 +381,11 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 ReadRequest.bits.RequestSourceID := sourceId.bits
                 ReadRequest.bits.RequestType_isWrite := false.B
                 ReadRequest.bits.UseAllocatedSourceID := true.B
+                ReadRequest.bits.MatrixPrefetchTag := MatrixPrefetchTagCodec.encode(
+                  Is_FullLoad && !Is_ZeroLoad && !Is_RepeatRowLoad,
+                  PrefetchStream,
+                  PrefetchTaskId
+                )
                 ReadRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
                 ReadRequest.valid := (TotalRequestSize < MaxRequestIter)
 
@@ -968,6 +984,10 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 WriteRequest.bits.RequestSourceID := io.StoreLocalMMUIO.ConherentRequsetSourceID.bits
                 WriteRequest.bits.RequestType_isWrite := true.B
                 WriteRequest.bits.UseAllocatedSourceID := true.B
+                // Keep the actual L2 tag invalid: C stores must not become
+                // matrix-prefetch demand events. MatrixTraceTag is debug-only.
+                WriteRequest.bits.MatrixPrefetchTag := 0.U
+                WriteRequest.bits.MatrixTraceTag := StoreTraceTag
                 WriteRequest.bits.RequestData := Request_Data.asUInt
                 WriteRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
                 WriteRequest.valid := true.B
