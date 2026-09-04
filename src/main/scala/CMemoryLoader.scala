@@ -5,7 +5,7 @@ import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
 import freechips.rocketchip.util.SeqToAugmentedSeq
-import xscache.coupledL2.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
+import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 //CMemoryLoader，用于加载C矩阵的数据，供给MatrixReg使用
 //从不同的存储介质中加载数据，供给MatrixReg使用

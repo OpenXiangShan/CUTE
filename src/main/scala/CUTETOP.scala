@@ -4,7 +4,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
-import xscache.coupledL2.MatrixPrefetchControl
+import xscache.coupledL2.prefetch.MatrixPrefetchControl
 // import boom.exu.ygjk._
 // import scala.collection.parallel.Task
 

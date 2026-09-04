@@ -5,7 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
-import xscache.coupledL2.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
+import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 // AMemoryLoader：加载 A 矩阵数据到 MatrixReg，仅支持矩阵加载（无卷积）
 // 参考 CMemoryLoader 的 FullLoad 实现，按 M、K 维度顺序访存

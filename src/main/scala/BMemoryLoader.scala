@@ -5,7 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
-import xscache.coupledL2.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
+import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 //BMemoryLoader，用于加载B矩阵的数据，供给MatrixReg使用
 //从不同的存储介质中加载数据，供给MatrixReg使用

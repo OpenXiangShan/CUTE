@@ -15,7 +15,9 @@ import xscache.coupledL2.{
   AmeIndexField,
   AmeIndexKey,
   MatrixField,
-  MatrixKey,
+  MatrixKey
+}
+import xscache.coupledL2.prefetch.{
   MatrixPrefetchStream,
   MatrixPrefetchTagCodec,
   MatrixPrefetchTagField,
@@ -137,7 +139,11 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     }
 
     tlABits.user.lift(ReqSourceKey).foreach { reqSource =>
-      reqSource := MemReqSource.CPUMatrixData.id.U
+      reqSource := Mux(
+        mmuReqBits.RequestType_isWrite,
+        MemReqSource.MatrixWrite.id.U,
+        MemReqSource.MatrixRead.id.U
+      )
     }
 
     val memoryTrace = WireInit(0.U.asTypeOf(new MemoryTraceEntry))

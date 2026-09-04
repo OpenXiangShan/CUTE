@@ -5,7 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
-import xscache.coupledL2.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
+import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 class MultiChannelsABMemLoader(
     label: String = "AML",

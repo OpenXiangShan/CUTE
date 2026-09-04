@@ -7,7 +7,7 @@ import freechips.rocketchip.util._
 import cute.Bundles._
 import difftest._
 import utility.ChiselDB
-import xscache.coupledL2.{
+import xscache.coupledL2.prefetch.{
   MatrixPrefetchControl,
   MatrixPrefetchDesc,
   MatrixPrefetchStream,
