@@ -3,8 +3,7 @@ package cute
 import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
-import xscache.coupledL2.MatrixPrefetchStream
-import xscache.coupledL2.prefetch.MatrixPrefetchAddressGenerator
+import xscache.coupledL2.prefetch.{MatrixPrefetchAddressGenerator, MatrixPrefetchStream}
 
 class MatrixPrefetchAddressGeneratorSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "MatrixPrefetchAddressGenerator"

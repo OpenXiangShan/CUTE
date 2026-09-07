@@ -12,7 +12,7 @@ class CUTETopIO()(implicit p: Parameters) extends CuteBundle{
     val mmu2llc = Flipped(new MMU2TLIO)
     val ctrl2top = Flipped(new YGJKControl)
     val perf = Output(new CutePerfToCoreIO)
-    val matrixPrefetch = Output(new MatrixPrefetchControl)
+    val matrixPrefetch = Option.when(EnableMatrixPrefetch)(Output(new MatrixPrefetchControl))
 }
 
 class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends CuteModule {
@@ -70,8 +70,8 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         bToAConfig.MatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_N
         bToAConfig.MatrixRegTensor_K := io.ConfigInfo.MatrixRegTensor_K
         bToAConfig.MatrixRegId := io.ConfigInfo.MatrixRegId
-        bToAConfig.PrefetchTaskId := io.ConfigInfo.PrefetchTaskId
-        bToAConfig.PrefetchStream := io.ConfigInfo.PrefetchStream
+        bToAConfig.PrefetchTaskId.zip(io.ConfigInfo.PrefetchTaskId).foreach { case (to, from) => to := from }
+        bToAConfig.PrefetchStream.zip(io.ConfigInfo.PrefetchStream).foreach { case (to, from) => to := from }
         bToAConfig.Conherent := io.ConfigInfo.Conherent
         bToAConfig.Is_Transpose := io.ConfigInfo.Is_Transpose
         bToAConfig.MicroTaskValid := io.ConfigInfo.MicroTaskValid
@@ -411,7 +411,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val CML = Module(new CMLWrapper(cmlWrapperContext)).suggestName(s"${cmlWrapperContext}_wrapper")
 
     val TaskCtrl: BaseTaskController = Module(new TaskController)
-    io.matrixPrefetch := TaskCtrl.io.matrixPrefetch
+    io.matrixPrefetch.zip(TaskCtrl.io.matrixPrefetch).foreach { case (to, from) => to := from }
     
     val MTE = Module(new MatrixTE)
 

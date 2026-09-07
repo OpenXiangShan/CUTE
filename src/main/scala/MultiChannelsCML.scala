@@ -162,9 +162,9 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
     val Is_RepeatRowLoad = RegInit(false.B)
-    val PrefetchTaskId = RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W))
-    val PrefetchStream = RegInit(MatrixPrefetchStream.none)
-    val StoreTraceTag = RegInit(0.U(MatrixPrefetchTagCodec.width.W))
+    val PrefetchTaskId = Option.when(EnableMatrixPrefetch)(RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W)))
+    val PrefetchStream = Option.when(EnableMatrixPrefetch)(RegInit(MatrixPrefetchStream.none))
+    val StoreTraceTag = Option.when(EnableMatrixPrefetch)(RegInit(0.U(MatrixPrefetchTagCodec.width.W)))
 
     val C_DataWidth = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
     val D_DataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
@@ -186,8 +186,8 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         Is_ZeroLoad := io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad
         Is_FullLoad := io.ConfigInfo.LoadTaskInfo.Is_FullLoad
         Is_RepeatRowLoad := io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad
-        PrefetchTaskId := io.ConfigInfo.PrefetchTaskId
-        PrefetchStream := io.ConfigInfo.PrefetchStream
+        PrefetchTaskId.zip(io.ConfigInfo.PrefetchTaskId).foreach { case (to, from) => to := from }
+        PrefetchStream.zip(io.ConfigInfo.PrefetchStream).foreach { case (to, from) => to := from }
         val peDataType = new FReducePEDataType
         C_DataWidth := peDataType.CdataByteWidth(io.ConfigInfo.ApplicationTensor_C.dataType)
         memoryload_state := s_load_init
@@ -208,7 +208,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         StoreMatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_M
         StoreMatrixRegTensor_N := io.ConfigInfo.MatrixRegTensor_N
         D_DataType := io.ConfigInfo.ApplicationTensor_D.dataType
-        StoreTraceTag := io.ConfigInfo.StoreTraceTag
+        StoreTraceTag.zip(io.ConfigInfo.StoreTraceTag).foreach { case (to, from) => to := from }
         memorystore_state := s_store_init
         if (YJPCMLDebugEnable) {
             printf("[CMemoryLoader_Start<%d>]Store D Tensor Start, Tensor_Block_BaseAddr: %x, ApplicationTensor_D_Stride_M: %x, IsConherent: %x, Is_Transpose: %x,MatrixRegTensor_M: %x,MatrixRegTensor_N: %x\n", io.DebugInfo.DebugTimeStampe, io.ConfigInfo.ApplicationTensor_D.BlockTensor_D_BaseVaddr, io.ConfigInfo.ApplicationTensor_D.ApplicationTensor_D_Stride_M, io.ConfigInfo.Conherent, io.ConfigInfo.Is_Transpose,io.ConfigInfo.MatrixRegTensor_M,io.ConfigInfo.MatrixRegTensor_N)
@@ -356,11 +356,13 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                 ReadRequest.bits.RequestSourceID := encodeCSourceId(csourceId.MatrixRegBankId, csourceId.MatrixRegAddr, csourceId.MatrixRegisTail)
                 ReadRequest.bits.RequestType_isWrite := false.B
                 ReadRequest.bits.UseAllocatedSourceID := false.B
-                ReadRequest.bits.MatrixPrefetchTag := MatrixPrefetchTagCodec.encode(
+                ReadRequest.bits.MatrixPrefetchTag.foreach { tag =>
+                  tag := MatrixPrefetchTagCodec.encode(
                     true.B,
-                    PrefetchStream,
-                    PrefetchTaskId
-                )
+                    PrefetchStream.get,
+                    PrefetchTaskId.get
+                  )
+                }
                 ReadRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
 
                 when(ReadRequest.fire){
@@ -712,8 +714,8 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
             WriteRequest.bits.RequestSourceID := encodeCSourceId(bank.U, TotalStoreSize, false.B)
             WriteRequest.bits.RequestType_isWrite := true.B
             WriteRequest.bits.UseAllocatedSourceID := false.B
-            WriteRequest.bits.MatrixPrefetchTag := 0.U
-            WriteRequest.bits.MatrixTraceTag := StoreTraceTag
+            WriteRequest.bits.MatrixPrefetchTag.foreach(_ := 0.U)
+            WriteRequest.bits.MatrixTraceTag.zip(StoreTraceTag).foreach { case (to, from) => to := from }
             WriteRequest.bits.RequestData := StoreQueue.io.deq.bits
             WriteRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
 

@@ -48,8 +48,8 @@ class MultiChannelsABMemLoader(
 
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
-    val PrefetchTaskId = RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W))
-    val PrefetchStream = RegInit(MatrixPrefetchStream.none)
+    val PrefetchTaskId = Option.when(EnableMatrixPrefetch)(RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W)))
+    val PrefetchStream = Option.when(EnableMatrixPrefetch)(RegInit(MatrixPrefetchStream.none))
 
     val MAX_Fill_Times = outsideDataWidthByte / ABMatrixRegEntryByteSize
     val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*outsideDataWidthByte)+1).W))
@@ -74,7 +74,7 @@ class MultiChannelsABMemLoader(
         val coherent = Bool()
         val sourceId = UInt(64.W)
         val mask = UInt(MMUMaskWidth.W)
-        val matrixPrefetchTag = UInt(MatrixPrefetchTagCodec.width.W)
+        val matrixPrefetchTag = Option.when(EnableMatrixPrefetch)(UInt(MatrixPrefetchTagCodec.width.W))
     }
 
     class BankRespFifo(bankIdx: Int) {
@@ -310,11 +310,13 @@ class MultiChannelsABMemLoader(
                 Request.bits.RequestSourceID := sourceId
                 Request.bits.RequestType_isWrite := false.B
                 Request.bits.UseAllocatedSourceID := false.B
-                Request.bits.MatrixPrefetchTag := MatrixPrefetchTagCodec.encode(
+                Request.bits.MatrixPrefetchTag.foreach { tag =>
+                  tag := MatrixPrefetchTagCodec.encode(
                     true.B,
-                    PrefetchStream,
-                    PrefetchTaskId
-                )
+                    PrefetchStream.get,
+                    PrefetchTaskId.get
+                  )
+                }
                 Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
                 Request.valid := transpose_req_enable
 
@@ -422,11 +424,13 @@ class MultiChannelsABMemLoader(
                     reqQueue.io.enq.bits.coherent := Conherent
                     reqQueue.io.enq.bits.mask := Fill(MMUMaskWidth, 1.U(1.W))
                     reqQueue.io.enq.bits.sourceId := sourceId
-                    reqQueue.io.enq.bits.matrixPrefetchTag := MatrixPrefetchTagCodec.encode(
+                    reqQueue.io.enq.bits.matrixPrefetchTag.foreach { tag =>
+                      tag := MatrixPrefetchTagCodec.encode(
                         true.B,
-                        PrefetchStream,
-                        PrefetchTaskId
-                    )
+                        PrefetchStream.get,
+                        PrefetchTaskId.get
+                      )
+                    }
 
                     request.valid := reqQueue.io.deq.valid
                     request.bits.RequestAddr := reqQueue.io.deq.bits.addr
@@ -437,7 +441,9 @@ class MultiChannelsABMemLoader(
                     request.bits.UseAllocatedSourceID := false.B
                     request.bits.isA := false.B
                     request.bits.MatrixIsAcc := false.B
-                    request.bits.MatrixPrefetchTag := reqQueue.io.deq.bits.matrixPrefetchTag
+                    request.bits.MatrixPrefetchTag.zip(reqQueue.io.deq.bits.matrixPrefetchTag).foreach {
+                      case (to, from) => to := from
+                    }
                     request.bits.RequestMask := reqQueue.io.deq.bits.mask
                     reqQueue.io.deq.ready := request.ready
 
@@ -530,8 +536,8 @@ class MultiChannelsABMemLoader(
 
             Is_ZeroLoad := ConfigInfo.LoadTaskInfo.Is_ZeroLoad
             Is_FullLoad := ConfigInfo.LoadTaskInfo.Is_FullLoad
-            PrefetchTaskId := ConfigInfo.PrefetchTaskId
-            PrefetchStream := ConfigInfo.PrefetchStream
+            PrefetchTaskId.zip(ConfigInfo.PrefetchTaskId).foreach { case (to, from) => to := from }
+            PrefetchStream.zip(ConfigInfo.PrefetchStream).foreach { case (to, from) => to := from }
             Conherent := ConfigInfo.Conherent
 
             if (YJPAMLDebugEnable) {
