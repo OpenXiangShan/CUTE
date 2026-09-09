@@ -383,7 +383,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 ReadRequest.bits.UseAllocatedSourceID := true.B
                 ReadRequest.bits.MatrixPrefetchTag.foreach { tag =>
                   tag := MatrixPrefetchTagCodec.encode(
-                    Is_FullLoad && !Is_ZeroLoad && !Is_RepeatRowLoad,
+                    true.B,
                     PrefetchStream.get,
                     PrefetchTaskId.get
                   )

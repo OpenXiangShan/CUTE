@@ -706,7 +706,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 Request.bits.UseAllocatedSourceID := true.B
                 Request.bits.MatrixPrefetchTag.foreach { tag =>
                   tag := MatrixPrefetchTagCodec.encode(
-                    Is_FullLoad && !Is_ZeroLoad,
+                    true.B,
                     PrefetchStream.get,
                     PrefetchTaskId.get
                   )

@@ -751,7 +751,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       matrixPrefetch.retire.bits := MatrixPrefetchTagCodec.encode(true.B, retirePrefetchStream, headSlot.seqId)
     }
 
-    when(issueFire && issueSlot.opKind === TaskCtrlOpKind.Store) {
+    when(issueFire && issueSlot.opKind === TaskCtrlOpKind.Store && issueLsu.isacc) {
       matrixPrefetch.cStoreStart.valid := true.B
       matrixPrefetch.cStoreStart.bits := MatrixPrefetchTagCodec.encode(
         true.B,
@@ -760,7 +760,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       )
     }
 
-    when(cmlStoreDone) {
+    when(cmlStoreDone && decodeLsu(slots(fuCMLStore.ownerSlot).entry.ctrl).isacc) {
       val storeOwner = slots(fuCMLStore.ownerSlot)
       matrixPrefetch.cStoreEnd.valid := true.B
       matrixPrefetch.cStoreEnd.bits := MatrixPrefetchTagCodec.encode(
@@ -1079,19 +1079,21 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       is(TaskCtrlOpKind.Store) {
         val regIdx = issueLsu.ms(1, 0)
 
-        cStoreDesc.foreach { desc =>
-          desc.taskId := issueSlot.seqId
-          desc.stream := MatrixPrefetchStream.cStore
-          desc.baseAddr := issueLsu.baseAddr
-          desc.outerStride := issueLsu.stride
-          desc.outerCount := issueLsu.row
-          desc.innerCount := loadBeatCount(issueLsu.column, issueLsu.widths)
-          desc.rowBytes := loadByteCount(issueLsu.column, issueLsu.widths)
-          desc.groupWidth := CMatrixRegNBanks.U
-          desc.transpose := issueLsu.transpose
-          cStoreDescEn.get := true.B
-          if (EnableDifftest) {
-            desc.pc := issueCtrl.pc.get
+        when(issueLsu.isacc) {
+          cStoreDesc.foreach { desc =>
+            desc.taskId := issueSlot.seqId
+            desc.stream := MatrixPrefetchStream.cStore
+            desc.baseAddr := issueLsu.baseAddr
+            desc.outerStride := issueLsu.stride
+            desc.outerCount := issueLsu.row
+            desc.innerCount := loadBeatCount(issueLsu.column, issueLsu.widths)
+            desc.rowBytes := loadByteCount(issueLsu.column, issueLsu.widths)
+            desc.groupWidth := CMatrixRegNBanks.U
+            desc.transpose := issueLsu.transpose
+            cStoreDescEn.get := true.B
+            if (EnableDifftest) {
+              desc.pc := issueCtrl.pc.get
+            }
           }
         }
 
@@ -1104,12 +1106,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.CML_MicroTask_Config.MatrixRegTensor_M := issueLsu.row
         io.CML_MicroTask_Config.MatrixRegTensor_N := issueLsu.column
         io.CML_MicroTask_Config.MatrixRegId := regIdx
-        io.CML_MicroTask_Config.StoreTraceTag.foreach { tag =>
-          tag := MatrixPrefetchTagCodec.encode(
-            true.B,
-            MatrixPrefetchStream.cStore,
-            issueSlot.seqId
-          )
+        when(issueLsu.isacc) {
+          io.CML_MicroTask_Config.StoreTraceTag.foreach { tag =>
+            tag := MatrixPrefetchTagCodec.encode(
+              true.B,
+              MatrixPrefetchStream.cStore,
+              issueSlot.seqId
+            )
+          }
         }
         io.CML_MicroTask_Config.LoadMicroTaskValid := false.B
         io.CML_MicroTask_Config.StoreMicroTaskValid := true.B

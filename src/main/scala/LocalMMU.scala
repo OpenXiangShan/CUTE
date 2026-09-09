@@ -76,10 +76,6 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
     val allocatedBusy = RegInit(VecInit(Seq.fill(LLCSourceMaxNum)(false.B)))
     val allocatedTag = RegInit(VecInit(Seq.fill(LLCSourceMaxNum)(0.U(SourceTagWidth.W))))
-    // C-store loader source IDs encode the matrix-bank and store counter and
-    // can exceed the finite LLC source-ID space.  Keep the original loader ID
-    // beside the allocated LLC ID so the response can be routed back exactly.
-    val allocatedLoaderSourceId = RegInit(VecInit(Seq.fill(LLCSourceMaxNum)(0.U(64.W))))
     val allocatedId = Wire(UInt(LLCSourceMaxNumBitSize.W))
     allocatedId := 0.U
     for (i <- 0 until LLCSourceMaxNum) {
@@ -107,10 +103,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         val bReadValid = bReq.valid && !bReq.bits.RequestType_isWrite && reqCanIssue(bReq)
         val bsReadValid = bsReq.valid && !bsReq.bits.RequestType_isWrite && reqCanIssue(bsReq)
         val cReadValid = cLoadReq.valid && !cLoadReq.bits.RequestType_isWrite && reqCanIssue(cLoadReq)
-        // C stores use an allocated LLC source ID even though the loader's
-        // internal source ID is not marked as allocated (it is not bounded by
-        // LLCSourceMaxNum).  Do not select a store while all LLC IDs are busy.
-        val cWriteValid = cStoreReq.valid && cStoreReq.bits.RequestType_isWrite && !allocFull
+        val cWriteValid = cStoreReq.valid && cStoreReq.bits.RequestType_isWrite && reqCanIssue(cStoreReq)
 
         // 优先级：A读 > AS读 > B读 > BS读 > C读 > C写
         val choseMatrix = Mux(aReadValid,     LocalMMUTaskType.AFirst,
@@ -271,15 +264,13 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
             }
             is(LocalMMUTaskType.CStoreFirst) {
                 // C Store：来源标签 CWriteTag
-                // C-store loader IDs are wider than the LLC source-ID space;
-                // always allocate an LLC ID and remember the loader ID below.
-                val useAllocId = true.B
+                val useAllocId = cStoreReq.bits.UseAllocatedSourceID
                 val reqLoaderOrigId = cStoreReq.bits.RequestSourceID
-                val reqLlcOrigId = markAllocatedOrigId(allocatedId)
+                val reqLlcOrigId = Mux(useAllocId, markAllocatedOrigId(allocatedId), reqLoaderOrigId)
                 val reqSourceId = encodeSourceId(reqLlcOrigId, CWriteTag)
 
-                cStoreReq.ready := llcReq.ready && !allocFull
-                llcReq.valid := cStoreReq.valid && !allocFull
+                cStoreReq.ready := llcReq.ready && (!useAllocId || !allocFull)
+                llcReq.valid := cStoreReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := cStoreReq.bits
                 llcReq.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
                 llcReq.bits.isA := false.B
@@ -288,10 +279,9 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 io.CStoreLocalMMUIO.ConherentRequsetSourceID.bits := allocatedId
                 io.CStoreLocalMMUIO.nonConherentRequsetSourceID := io.LastLevelCacheTLIO.nonConherentRequsetSourceID
 
-                when(llcReq.fire) {
+                when(llcReq.fire && useAllocId) {
                     allocatedBusy(allocatedId) := true.B
                     allocatedTag(allocatedId) := CWriteTag
-                    allocatedLoaderSourceId(allocatedId) := reqLoaderOrigId
                 }
 
                 when(llcReq.fire) {
@@ -421,14 +411,10 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 val c_store_mmu_response = io.CStoreLocalMMUIO.Response(i)
                 c_store_mmu_response.valid := true.B
                 c_store_mmu_response.bits := llc_response.bits
-                val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
-                c_store_mmu_response.bits.ReseponseSourceID := Mux(
-                    isAllocatedOrigId(origId),
-                    allocatedLoaderSourceId(allocIdx),
-                    loaderSourceId
-                )
+                c_store_mmu_response.bits.ReseponseSourceID := loaderSourceId
                 llc_response.ready := c_store_mmu_response.ready
                 when(llc_response.fire) {
+                    val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
                     when(isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
                         allocatedBusy(allocIdx) := false.B
                     }
