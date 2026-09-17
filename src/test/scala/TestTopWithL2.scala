@@ -44,14 +44,49 @@ class TestTopWithL2()(implicit p: Parameters) extends LazyModule with HasCHIMsgP
     clients = Seq(TLMasterParameters.v1(name = "uncache", sourceId = IdRange(0, 16)))
   )))
   l2.mmioBridge.mmioNode := mmioClientNode
-  cuteTl.node.foreach { node => l2UpstreamXbar :=* TLWidthWidget(64) :=* node }
+  // Identity nodes provide top-level observation points after width conversion.
+  // They add no buffering and do not change the TileLink handshake.
+  private val cuteToL2ObserveNodes = cuteTl.node.map { node =>
+    val observe = TLIdentityNode()
+    l2UpstreamXbar :=* observe :=* TLWidthWidget(64) :=* node
+    observe
+  }
 
   lazy val module = new LazyModuleImp(this) {
+    private val observeParams = cuteToL2ObserveNodes.head.edges.out.head.bundle
+    require(cuteToL2ObserveNodes.forall(_.edges.out.head.bundle == observeParams))
+
+    class L2WriteObserve(params: TLBundleParameters) extends Bundle {
+      val valid = Bool()
+      val ready = Bool()
+      val fire = Bool()
+      val isWrite = Bool()
+      val opcode = UInt(4.W)
+      val size = UInt(params.sizeBits.W)
+      val address = UInt(params.addressBits.W)
+      val source = UInt(params.sourceBits.max(1).W)
+      val reqSource = UInt(MemReqSource.reqSourceBits.W)
+      val ameIndex = UInt(64.W)
+      val matrix = UInt(2.W)
+      val mask = UInt((params.dataBits / 8).W)
+      val data = UInt(params.dataBits.W)
+      val corrupt = Bool()
+      val first = Bool()
+      val last = Bool()
+      // Byte lane i corresponds to beatAddress + i, when mask(i) is set.
+      val beatAddress = UInt(params.addressBits.W)
+    }
+
     val io = IO(new Bundle {
       val ctrl2top = Flipped(new YGJKControl)
       val verification_task_busy = Output(Bool())
       val chi = new DecoupledPortIO
       val nodeId = Input(UInt(NODEID_WIDTH.W))
+      // One entry per CUTE bank. These are observation-only signals from the
+      // post-width-conversion A channel heading into the L2 upstream Xbar.
+      // Sample fire && isWrite; all fields other than ready are meaningful only
+      // when valid. address/size describe the whole TileLink transaction.
+      val l2Write = Output(Vec(cuteToL2ObserveNodes.size, new L2WriteObserve(observeParams)))
     })
     val cute = Module(new CUTEV2Top)
     io.ctrl2top <> cute.io.ctrl2top
@@ -67,6 +102,31 @@ class TestTopWithL2()(implicit p: Parameters) extends LazyModule with HasCHIMsgP
     coreTl.d.ready := true.B
     coreTl.e.valid := false.B
     coreTl.e.bits := DontCare
+
+    for ((node, observe) <- cuteToL2ObserveNodes.zip(io.l2Write)) {
+      val (l2Tl, edge) = node.out.head
+      val (first, last, _, byteOffset) = edge.addr_inc(l2Tl.a)
+      observe.valid := l2Tl.a.valid
+      observe.ready := l2Tl.a.ready
+      observe.fire := l2Tl.a.valid && l2Tl.a.ready
+      observe.isWrite := l2Tl.a.bits.opcode === TLMessages.PutFullData ||
+        l2Tl.a.bits.opcode === TLMessages.PutPartialData
+      observe.opcode := l2Tl.a.bits.opcode
+      observe.size := l2Tl.a.bits.size
+      observe.address := l2Tl.a.bits.address
+      observe.source := l2Tl.a.bits.source
+      observe.reqSource := l2Tl.a.bits.user(ReqSourceKey)
+      observe.ameIndex := l2Tl.a.bits.user(AmeIndexKey)
+      observe.matrix := l2Tl.a.bits.user(MatrixKey)
+      observe.mask := l2Tl.a.bits.mask
+      observe.data := l2Tl.a.bits.data
+      observe.corrupt := l2Tl.a.bits.corrupt
+      observe.first := first
+      observe.last := last
+      val beatMask = (BigInt(1) << edge.bundle.addressBits) - edge.manager.beatBytes
+      observe.beatAddress := (l2Tl.a.bits.address & beatMask.U) + byteOffset
+    }
+    dontTouch(io.l2Write)
 
     val l2MatrixData = l2.module.io.matrixDataOut.get
     val cuteMatrixData = cuteTl.module.io.matrix_data_in
