@@ -44,7 +44,7 @@ class TestTopWithL2()(implicit p: Parameters) extends LazyModule with HasCHIMsgP
     clients = Seq(TLMasterParameters.v1(name = "uncache", sourceId = IdRange(0, 16)))
   )))
   l2.mmioBridge.mmioNode := mmioClientNode
-  cuteTl.node.foreach { node => l2UpstreamXbar :=* node }
+  cuteTl.node.foreach { node => l2UpstreamXbar :=* TLWidthWidget(64) :=* node }
 
   lazy val module = new LazyModuleImp(this) {
     val io = IO(new Bundle {
@@ -113,6 +113,7 @@ object TestTopWithL2 extends App {
     case L2ParamKey => L2Param(
       name = "L2_CUTE", ways = 8, sets = 64,
       clientCaches = Seq(L1Param(name = "CUTE", aliasBitsOpt = Some(2))),
+      respField = Seq(AmeIndexField()),
       enablePerf = false, enableRollingDB = false, enableMonitor = false,
       enableTLLog = false, enableCHILog = false, enableMCP2 = false,
       dataCheck = Some("oddparity"), sam = Seq(AddressSet.everything -> 0)
