@@ -78,6 +78,8 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
 
     val LoadPcReg = if (EnableDifftest) Some(RegInit(0.U(64.W))) else None
     val StorePcReg = if (EnableDifftest) Some(RegInit(0.U(64.W))) else None
+    val LoadCoreidReg = if (EnableDifftest) Some(RegInit(0.U(8.W))) else None
+    val StoreCoreidReg = if (EnableDifftest) Some(RegInit(0.U(8.W))) else None
 
     if (EnableDifftest) {
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_C_WORDS_PER_BANK", CMatrixRegEntryBitSize / 64)
@@ -88,7 +90,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         val storeFinishAny = io.ConfigInfo.StoreMicroTaskEndValid && io.ConfigInfo.StoreMicroTaskEndReady
 
         val difftestLoadFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
-        difftestLoadFinish.coreid := io.ConfigInfo.coreid.get
+        difftestLoadFinish.coreid := LoadCoreidReg.get
         difftestLoadFinish.index := 2.U
         difftestLoadFinish.valid := loadWriteAny || loadFinishAny
         difftestLoadFinish.pc := LoadPcReg.get
@@ -115,7 +117,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         difftestLoadFinish.finish := loadFinishAny
 
         val difftestStoreFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
-        difftestStoreFinish.coreid := io.ConfigInfo.coreid.get
+        difftestStoreFinish.coreid := StoreCoreidReg.get
         difftestStoreFinish.index := 5.U
         difftestStoreFinish.valid := storeFinishAny
         difftestStoreFinish.pc := StorePcReg.get
@@ -190,6 +192,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         }
         if (EnableDifftest) {
             LoadPcReg.get := io.ConfigInfo.pc.get
+            LoadCoreidReg.get := io.ConfigInfo.coreid.get
         }
     }
 
@@ -208,6 +211,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         }
         if (EnableDifftest) {
             StorePcReg.get := io.ConfigInfo.pc.get
+            StoreCoreidReg.get := io.ConfigInfo.coreid.get
         }
     }
 

@@ -51,13 +51,15 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     io.MatrixRegId := CurrentMatrixRegId
 
     if (EnableDifftest) {
-      val pcReg = RegInit(0.U(64.W))
-        when (io.ConfigInfo.MicroTaskValid) {
+        val pcReg = RegInit(0.U(64.W))
+        val coreidReg = RegInit(0.U(8.W))
+        when (io.ConfigInfo.MicroTaskValid && io.ConfigInfo.MicroTaskReady) {
           pcReg := io.ConfigInfo.pc.get
+          coreidReg := io.ConfigInfo.coreid.get
         }
         val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         // 默认值初始化
-        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        difftestAmuFinish.coreid := coreidReg
         difftestAmuFinish.index := 3.U
         difftestAmuFinish.valid := (io.FromMatrixRegIO.WriteBankAddr.map(_.valid).reduce(_||_)
           || (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))

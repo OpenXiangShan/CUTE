@@ -441,11 +441,13 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_WORDS_PER_BANK", ABMatrixRegEntryBitSize / 64)
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", ABMatrixRegSize)
         val pcReg = RegInit(0.U(64.W))
-        when (io.ConfigInfo.MicroTaskValid) {
+        val coreidReg = RegInit(0.U(8.W))
+        when (io.ConfigInfo.MicroTaskValid && io.ConfigInfo.MicroTaskReady) {
           pcReg := io.ConfigInfo.pc.get
+          coreidReg := io.ConfigInfo.coreid.get
         }
         val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
-        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        difftestAmuFinish.coreid := coreidReg
         difftestAmuFinish.index := 0.U
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
           (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
