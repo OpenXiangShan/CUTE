@@ -5,11 +5,11 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
-import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 class MultiChannelsABMemLoader(
     label: String = "AML",
-    contextName: String = ""
+    contextName: String = "",
+    emitDifftest: Boolean = true
 )(implicit p: Parameters) extends CuteModule{
     private val nameContext = VerilogNameHelper.sanitize(if (contextName.nonEmpty) contextName else label)
     override def desiredName: String = s"MultiChannelsABMemLoader_${nameContext}"
@@ -30,7 +30,7 @@ class MultiChannelsABMemLoader(
     val s_idle :: s_mm_task :: s_end :: Nil = Enum(3)
     val state = RegInit(s_idle)
 
-    val s_load_idle :: s_load_init :: s_load_working :: s_load_quiesce :: s_load_end :: Nil = Enum(5)
+    val s_load_idle :: s_load_init :: s_load_working :: s_load_end :: Nil = Enum(4)
     val memoryload_state = RegInit(s_load_idle)
 
     val CurrentMatrixRegId = RegInit(0.U(ABMatrixRegIdWidth.W))
@@ -44,12 +44,9 @@ class MultiChannelsABMemLoader(
     val HasTail = RegInit(false.B)
     val TailByteMask = RegInit(0.U(log2Ceil(outsideDataWidthByte + 1).W))
     val K_Beat_Count = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val Is_Transpose = RegInit(false.B)
 
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
-    val PrefetchTaskId = Option.when(EnableMatrixPrefetch)(RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W)))
-    val PrefetchStream = Option.when(EnableMatrixPrefetch)(RegInit(MatrixPrefetchStream.none))
 
     val MAX_Fill_Times = outsideDataWidthByte / ABMatrixRegEntryByteSize
     val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*outsideDataWidthByte)+1).W))
@@ -58,12 +55,8 @@ class MultiChannelsABMemLoader(
     val BankIdWidth = log2Ceil(ABMatrixRegNBanks)
     val RegAddrWidth = log2Ceil(ABMatrixRegBankNEntries)
     val TailBitOffset = BankIdWidth + RegAddrWidth
-    val BeatIndexWidth = log2Ceil(ABMatrixRegEntryByteSize)
-    val TransposeTailBitOffset = RegAddrWidth + BankIdWidth + BeatIndexWidth
     require(TailBitOffset <= 60,
         s"[$label] normal source id tail bit exceeds safe range: $TailBitOffset")
-    require(TransposeTailBitOffset <= 60,
-        s"[$label] transpose source id tail bit exceeds safe range: $TransposeTailBitOffset")
     println(s"[$label] BankIdWidth $BankIdWidth, RegAddrWidth $RegAddrWidth, TailBitOffset $TailBitOffset")
 
     val currentM = Seq.tabulate(ABMatrixRegNBanks)(i => RegInit(i.U(MatrixRegMaxTensorDimBitSize.W)))
@@ -74,7 +67,6 @@ class MultiChannelsABMemLoader(
         val coherent = Bool()
         val sourceId = UInt(64.W)
         val mask = UInt(MMUMaskWidth.W)
-        val matrixPrefetchTag = Option.when(EnableMatrixPrefetch)(UInt(MatrixPrefetchTagCodec.width.W))
     }
 
     class BankRespFifo(bankIdx: Int) {
@@ -158,61 +150,6 @@ class MultiChannelsABMemLoader(
         RegInit(0.U(log2Ceil(normalReqQueueDepth + 1).W))
     )
 
-    val transAlignPipes = Seq.tabulate(ABMatrixRegNBanks) { i =>
-        Module(new TransAlignPipe(i)).suggestName(s"${nameContext}_bank${i}_trans_align_pipe")
-    }
-    val transRouters = Seq.tabulate(ABMatrixRegNBanks) { i =>
-        Module(new OOORouter).suggestName(s"${nameContext}_bank${i}_trans_router")
-    }
-    val transPipeInValid = WireInit(false.B)
-    val transPipeInData = WireInit(0.U(outsideDataWidth.W))
-    val transPipeInMask = WireInit(0.U(outsideDataWidthByte.W))
-    val transPipeRespBeatCnt = WireInit(0.U((BeatIndexWidth + 1).W))
-    val transPipeEntryOffset = WireInit(0.U(BeatIndexWidth.W))
-    val transPipeDrainTrigger = WireInit(false.B)
-    val transBusStall = transAlignPipes.map(_.io.bus_stall).reduce(_ || _)
-    val transAlignEmpty = transAlignPipes.map(_.io.empty).reduce(_ && _)
-    val transRouterEmpty = transRouters.map(_.io.empty).reduce(_ && _)
-    val transPipelineEmpty = transAlignEmpty && transRouterEmpty
-    val transRouterValidVec = VecInit(transRouters.map(_.io.valid)).asUInt
-    val transRouterWriteValid = transRouters.map(_.io.valid).reduce(_ || _)
-    val transRouterTxnValid = transRouters.map(_.io.txn_valid).reduce(_ || _)
-
-    private val transBaseAddrBits = RegAddrWidth
-    val transWriteBaseAddr = RegInit(0.U(transBaseAddrBits.W))
-    val transWritePhase = transRouters.head.io.phase
-    val transWriteAddrOffset = TransposeBytePlane.reduceGroupOffset(transWritePhase, ReduceGroupSize)
-    val transWriteAddrWide = transWriteBaseAddr +& transWriteAddrOffset
-    val transWriteAddr = transWriteAddrWide(transBaseAddrBits - 1, 0)
-
-    when(Is_Transpose && transRouterTxnValid) {
-        assert(transWriteAddrWide < ABMatrixRegBankNEntries.U,
-            s"[$label] transpose write address must stay within an AB MatrixReg bank")
-    }
-
-    for (i <- 0 until ABMatrixRegNBanks) {
-        transAlignPipes(i).io.in_data := transPipeInData
-        transAlignPipes(i).io.in_mask := transPipeInMask
-        transAlignPipes(i).io.resp_beat_cnt := transPipeRespBeatCnt
-        transAlignPipes(i).io.entry_offset := transPipeEntryOffset
-        // The multi-channel loader retains the legacy e8 transpose contract.
-        transAlignPipes(i).io.bytes_per_element := 1.U
-        transAlignPipes(i).io.debug_time := io.DebugInfo.DebugTimeStampe
-        transAlignPipes(i).io.is_drain_trigger := transPipeDrainTrigger
-        transAlignPipes(i).io.in_valid := transPipeInValid
-        transRouters(i).io.in <> transAlignPipes(i).io.out
-    }
-
-    val Request_M_Iter_Time = RegInit(0.U(BeatIndexWidth.W))
-    val CurrentLoaded_BlockTensor_M_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val CurrentLoaded_BlockTensor_K_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val group_req_cnt = RegInit(0.U((BeatIndexWidth + 1).W))
-    val group_resp_cnt = RegInit(0.U((BeatIndexWidth + 1).W))
-    val group_size_reg = RegInit(0.U((BeatIndexWidth + 1).W))
-
-    private val transposeEndDrainCycles = Trans_Load_Size + 2 + 3
-    val transposeEndDrainCnt = RegInit(0.U(log2Ceil(transposeEndDrainCycles + 1).W))
-
     val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)).W))
 
     def stepLoadInit(): Unit = {
@@ -224,27 +161,18 @@ class MultiChannelsABMemLoader(
             currentK(i) := 0.U
             normalReqQueueOccupancy(i) := 0.U
         }
-        Request_M_Iter_Time := 0.U
-        CurrentLoaded_BlockTensor_M_Iter := 0.U
-        CurrentLoaded_BlockTensor_K_Iter := 0.U
-        group_req_cnt := 0.U
-        group_resp_cnt := 0.U
-        group_size_reg := 0.U
-        transposeEndDrainCnt := 0.U
-        transWriteBaseAddr := 0.U
         MaxRequestIter := MatrixRegTensor_M * K_Beat_Count
     }
 
     def stepLoadWorking(): Unit = {
         log(
           cf"working M=$MatrixRegTensor_M K=$MatrixRegTensor_K beat=$K_Beat_Count " +
-          cf"stride=$Stride trans=$Is_Transpose tail=$HasTail totalReq=$TotalRequestSize totalLoad=$TotalLoadSize"
+          cf"stride=$Stride tail=$HasTail totalReq=$TotalRequestSize totalLoad=$TotalLoadSize"
         )
 
         val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(1.W))))
 
         val tailTaskMask = UIntToOH(TailByteMask, outsideDataWidthByte + 1).asUInt - 1.U(outsideDataWidthByte.W)
-        val fullTaskMask = Fill(outsideDataWidthByte, true.B)
         val tailByteMaskPerSlot = VecInit((0 until MAX_Fill_Times).map { j =>
             tailTaskMask((j + 1) * ABMatrixRegEntryByteSize - 1, j * ABMatrixRegEntryByteSize)
         })
@@ -271,239 +199,74 @@ class MultiChannelsABMemLoader(
             assert(PopCount(Cat(Is_ZeroLoad, Is_FullLoad)) === 1.U,
                 "Error! AML Load Task Type: Exactly one of Is_ZeroLoad, Is_FullLoad should be true!")
 
-            when(Is_Transpose) {
-                val Request = io.LocalMMUIO.Request(0)
-                val Response = io.LocalMMUIO.Response(0)
+            for (i <- 0 until ABMatrixRegNBanks) {
+                val reqQueue = normalReqQueues(i)
+                val request = io.LocalMMUIO.Request(i)
+                val mIter = currentM(i)
+                val kIter = currentK(i)
+                val inRange = mIter < MatrixRegTensor_M && kIter < K_Beat_Count
+                val queueHasRoom = normalReqQueueOccupancy(i) < normalReqQueueDepth.U
+                val issueFire = inRange && queueHasRoom
+                val requestBeatIsTail = HasTail && (kIter === (K_Beat_Count - 1.U))
+                val regAddr = (mIter / ABMatrixRegNBanks.U) * ReduceGroupSize.U + (kIter << log2Ceil(MAX_Fill_Times))
+                val sourceId = Cat(requestBeatIsTail, i.U(BankIdWidth.W), regAddr(RegAddrWidth - 1, 0))
 
-                // This compatibility path is fixed to e8. Keep the 32-row group
-                // scaling as an elaboration-time constant shift.
-                val transpose_large_m_base = CurrentLoaded_BlockTensor_M_Iter << log2Ceil(ABMatrixRegEntryByteSize)
-                val transpose_current_m = transpose_large_m_base + Request_M_Iter_Time
-                val transpose_group_in_range = transpose_large_m_base < MatrixRegTensor_M
-                val transpose_group_remain = Mux(transpose_group_in_range, MatrixRegTensor_M - transpose_large_m_base, 0.U)
-                val current_group_size = Wire(UInt((BeatIndexWidth + 1).W))
-                current_group_size := Mux(
-                    transpose_group_remain < ABMatrixRegEntryByteSize.U,
-                    transpose_group_remain(BeatIndexWidth - 1, 0),
-                    ABMatrixRegEntryByteSize.U
-                )
-                val group_has_no_requests = group_req_cnt === 0.U && group_resp_cnt === 0.U
-                val group_is_idle = group_has_no_requests && transPipelineEmpty
-                val active_group_size = Mux(group_has_no_requests, current_group_size, group_size_reg)
-                val transpose_group_can_issue = Mux(
-                    group_has_no_requests,
-                    // The previous group has retired from TL but may still be
-                    // draining through TransAlign/TransposeRouter.  Do not
-                    // open the next group until that pipeline is empty.
-                    group_is_idle && (current_group_size =/= 0.U),
-                    group_req_cnt < group_size_reg
-                )
-                val transpose_req_enable = (TotalRequestSize < MaxRequestIter) && transpose_group_can_issue
+                reqQueue.io.enq.valid := issueFire
+                reqQueue.io.enq.bits.addr := BaseVAddr + mIter * Stride + (kIter << log2Ceil(outsideDataWidthByte))
+                reqQueue.io.enq.bits.coherent := Conherent
+                reqQueue.io.enq.bits.mask := Fill(MMUMaskWidth, 1.U(1.W))
+                reqQueue.io.enq.bits.sourceId := sourceId
 
-                val RequestBeatIsTail = HasTail && (CurrentLoaded_BlockTensor_K_Iter === (K_Beat_Count - 1.U))
-                val TransposeRequestMatrixRegAddr =
-                    (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(Trans_Load_Size * ReduceGroupSize)) + CurrentLoaded_BlockTensor_M_Iter
-                val sourceId = Cat(RequestBeatIsTail, Request_M_Iter_Time, 0.U(BankIdWidth.W), TransposeRequestMatrixRegAddr(RegAddrWidth - 1, 0))
+                request.valid := reqQueue.io.deq.valid
+                request.bits.RequestAddr := reqQueue.io.deq.bits.addr
+                request.bits.RequestConherent := reqQueue.io.deq.bits.coherent
+                request.bits.RequestData := 0.U
+                request.bits.RequestSourceID := reqQueue.io.deq.bits.sourceId
+                request.bits.RequestType_isWrite := false.B
+                request.bits.UseAllocatedSourceID := false.B
+                request.bits.isA := false.B
+                request.bits.MatrixIsAcc := false.B
+                request.bits.RequestMask := reqQueue.io.deq.bits.mask
+                reqQueue.io.deq.ready := request.ready
 
-                Request.bits.RequestAddr := BaseVAddr + transpose_current_m * Stride + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))
-                Request.bits.RequestConherent := Conherent
-                Request.bits.RequestSourceID := sourceId
-                Request.bits.RequestType_isWrite := false.B
-                Request.bits.UseAllocatedSourceID := false.B
-                Request.bits.MatrixPrefetchTag.foreach { tag =>
-                  tag := MatrixPrefetchTagCodec.encode(
-                    true.B,
-                    PrefetchStream.get,
-                    PrefetchTaskId.get
-                  )
-                }
-                Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
-                Request.valid := transpose_req_enable
+                val requestDeqFire = request.valid && request.ready
+                normalReqQueueOccupancy(i) :=
+                    normalReqQueueOccupancy(i) + issueFire.asUInt - requestDeqFire.asUInt
 
-                when(Request.fire) {
-                    when(group_is_idle) {
-                        group_size_reg := current_group_size
-                    }
-                    group_req_cnt := group_req_cnt + 1.U
-
-                    Request_M_Iter_Time := Request_M_Iter_Time + 1.U
-                    val small_m_reach_group_boundary = Request_M_Iter_Time === (ABMatrixRegEntryByteSize - 1).U
-                    val small_m_reach_tensor_boundary = transpose_current_m === (MatrixRegTensor_M - 1.U)
-                    val small_m_wrap = small_m_reach_group_boundary || small_m_reach_tensor_boundary
-                    val k_wrap = CurrentLoaded_BlockTensor_K_Iter === (K_Beat_Count - 1.U)
-                    when(small_m_wrap) {
-                        Request_M_Iter_Time := 0.U
-                        CurrentLoaded_BlockTensor_K_Iter := CurrentLoaded_BlockTensor_K_Iter + 1.U
-                        when(k_wrap) {
-                            CurrentLoaded_BlockTensor_K_Iter := 0.U
-                            CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + 1.U
-                        }
-                    }
-                    when(TotalRequestSize =/= MaxRequestIter) {
-                        TotalRequestSize := TotalRequestSize + 1.U
-                    }
-                    if (YJPAMLDebugEnable) {
-                        log(cf"TransposeReq m=$transpose_current_m k=$CurrentLoaded_BlockTensor_K_Iter group=$group_req_cnt source=$sourceId tail=$RequestBeatIsTail")
-                    }
-                }
-
-                Response.ready := !transBusStall
-                when(Response.fire) {
-                    val respSourceId = Response.bits.ReseponseSourceID
-                    val respRegAddr = respSourceId(RegAddrWidth - 1, 0)
-                    val respBeatIndex = respSourceId(TransposeTailBitOffset - 1, RegAddrWidth + BankIdWidth)
-                    val respIsTail = respSourceId(TransposeTailBitOffset)
-                    val next_group_resp_cnt = group_resp_cnt + 1.U
-                    val drain_trigger = next_group_resp_cnt === active_group_size
-
-                    transPipeInValid := true.B
-                    transPipeInData := Response.bits.ReseponseData
-                    transPipeInMask := Mux(respIsTail, tailTaskMask, fullTaskMask)
-                    transPipeRespBeatCnt := group_resp_cnt
-                    transPipeEntryOffset := respBeatIndex
-                    transPipeDrainTrigger := drain_trigger
-
-                    when(group_resp_cnt === 0.U) {
-                        transWriteBaseAddr := respRegAddr
-                    }
-
-                    when(next_group_resp_cnt === active_group_size) {
-                        group_req_cnt := 0.U
-                        group_resp_cnt := 0.U
-                        group_size_reg := 0.U
+                when(issueFire) {
+                    when(kIter + 1.U === K_Beat_Count) {
+                        currentK(i) := 0.U
+                        currentM(i) := mIter + ABMatrixRegNBanks.U
                     }.otherwise {
-                        group_resp_cnt := next_group_resp_cnt
+                        currentK(i) := kIter + 1.U
                     }
                     if (YJPAMLDebugEnable) {
-                        log(cf"TransposeResp source=$respSourceId beat=$respBeatIndex tail=$respIsTail drain=$drain_trigger")
+                        log(cf"NormalReq bank=$i m=$mIter k=$kIter addr=${reqQueue.io.enq.bits.addr}%x reg=$regAddr tail=$requestBeatIsTail")
                     }
                 }
 
-                for (i <- 0 until ABMatrixRegNBanks) {
-                    val routerValid = transRouters(i).io.valid
-                    io.ToMatrixRegIO.BankAddr(i).bits := transWriteAddr
-                    io.ToMatrixRegIO.BankAddr(i).valid := routerValid
-                    io.ToMatrixRegIO.Data(i).bits := transRouters(i).io.final_data
-                    io.ToMatrixRegIO.Data(i).valid := routerValid
-                    io.ToMatrixRegIO.ByteMask(i).bits := transRouters(i).io.final_mask
-                    io.ToMatrixRegIO.ByteMask(i).valid := routerValid
+                io.LocalMMUIO.Response(i).ready := bankFifos(i).readyForResp
+                when(io.LocalMMUIO.Response(i).fire) {
+                    val respSourceId = io.LocalMMUIO.Response(i).bits.ReseponseSourceID
+                    val respIsTail = respSourceId(TailBitOffset)
+                    bankFifos(i).enqFromResp(respSourceId, io.LocalMMUIO.Response(i).bits.ReseponseData, respIsTail)
                     if (YJPAMLDebugEnable) {
-                        when(routerValid) {
-                            log(cf"TransposeWrite bank=$i addr=$transWriteAddr data=${transRouters(i).io.final_data}%x mask=${transRouters(i).io.final_mask}%x")
-                        }
-                    }
-                }
-                when(transRouterWriteValid) {
-                    if (YJPAMLDebugEnable) {
-                        log(cf"TransposeWriteTick validVec=$transRouterValidVec base=$transWriteBaseAddr phase=$transWritePhase")
-                    }
-                }
-                val Current_Load_Fill_Size = transRouterWriteValid.asUInt
-                TotalLoadSize := TotalLoadSize + Current_Load_Fill_Size
-                val transposeDone = TotalRequestSize === MaxRequestIter && group_req_cnt === 0.U && group_resp_cnt === 0.U && transPipelineEmpty
-                when(transposeDone) {
-                    memoryload_state := s_load_quiesce
-                    transposeEndDrainCnt := (transposeEndDrainCycles - 1).U
-                    if (YJPAMLDebugEnable) log(cf"TransposeWorkingEnd")
-                }
-            }.otherwise {
-                for (i <- 0 until ABMatrixRegNBanks) {
-                    val reqQueue = normalReqQueues(i)
-                    val request = io.LocalMMUIO.Request(i)
-                    val mIter = currentM(i)
-                    val kIter = currentK(i)
-                    val inRange = mIter < MatrixRegTensor_M && kIter < K_Beat_Count
-                    val queueHasRoom = normalReqQueueOccupancy(i) < normalReqQueueDepth.U
-                    val issueFire = inRange && queueHasRoom
-                    val requestBeatIsTail = HasTail && (kIter === (K_Beat_Count - 1.U))
-                    val regAddr = (mIter / ABMatrixRegNBanks.U) * ReduceGroupSize.U + (kIter << log2Ceil(MAX_Fill_Times))
-                    val sourceId = Cat(requestBeatIsTail, i.U(BankIdWidth.W), regAddr(RegAddrWidth - 1, 0))
-
-                    reqQueue.io.enq.valid := issueFire
-                    reqQueue.io.enq.bits.addr := BaseVAddr + mIter * Stride + (kIter << log2Ceil(outsideDataWidthByte))
-                    reqQueue.io.enq.bits.coherent := Conherent
-                    reqQueue.io.enq.bits.mask := Fill(MMUMaskWidth, 1.U(1.W))
-                    reqQueue.io.enq.bits.sourceId := sourceId
-                    reqQueue.io.enq.bits.matrixPrefetchTag.foreach { tag =>
-                      tag := MatrixPrefetchTagCodec.encode(
-                        true.B,
-                        PrefetchStream.get,
-                        PrefetchTaskId.get
-                      )
-                    }
-
-                    request.valid := reqQueue.io.deq.valid
-                    request.bits.RequestAddr := reqQueue.io.deq.bits.addr
-                    request.bits.RequestConherent := reqQueue.io.deq.bits.coherent
-                    request.bits.RequestData := 0.U
-                    request.bits.RequestSourceID := reqQueue.io.deq.bits.sourceId
-                    request.bits.RequestType_isWrite := false.B
-                    request.bits.UseAllocatedSourceID := false.B
-                    request.bits.isA := false.B
-                    request.bits.MatrixIsAcc := false.B
-                    request.bits.MatrixPrefetchTag.zip(reqQueue.io.deq.bits.matrixPrefetchTag).foreach {
-                      case (to, from) => to := from
-                    }
-                    request.bits.RequestMask := reqQueue.io.deq.bits.mask
-                    reqQueue.io.deq.ready := request.ready
-
-                    val requestDeqFire = request.valid && request.ready
-                    normalReqQueueOccupancy(i) :=
-                        normalReqQueueOccupancy(i) + issueFire.asUInt - requestDeqFire.asUInt
-
-                    when(issueFire) {
-                        when(kIter + 1.U === K_Beat_Count) {
-                            currentK(i) := 0.U
-                            currentM(i) := mIter + ABMatrixRegNBanks.U
-                        }.otherwise {
-                            currentK(i) := kIter + 1.U
-                        }
-                        if (YJPAMLDebugEnable) {
-                            log(cf"NormalReq bank=$i m=$mIter k=$kIter addr=${reqQueue.io.enq.bits.addr}%x reg=$regAddr tail=$requestBeatIsTail")
-                        }
-                    }
-
-                    io.LocalMMUIO.Response(i).ready := bankFifos(i).readyForResp
-                    when(io.LocalMMUIO.Response(i).fire) {
-                        val respSourceId = io.LocalMMUIO.Response(i).bits.ReseponseSourceID
-                        val respIsTail = respSourceId(TailBitOffset)
-                        bankFifos(i).enqFromResp(respSourceId, io.LocalMMUIO.Response(i).bits.ReseponseData, respIsTail)
-                        if (YJPAMLDebugEnable) {
-                            log(cf"NormalResp bank=$i source=$respSourceId tail=$respIsTail")
-                        }
-                    }
-
-                    when(bankFifos(i).stepWriteback(io.ToMatrixRegIO, tailByteMaskPerSlot)) {
-                        Current_Fill_MReg_Time(i) := 1.U
+                        log(cf"NormalResp bank=$i source=$respSourceId tail=$respIsTail")
                     }
                 }
 
-                val Load_Size = PopCount(Current_Fill_MReg_Time.asUInt)
-                TotalLoadSize := TotalLoadSize + Load_Size
-                val ExpectedLoadSize = MatrixRegTensor_M * K_Beat_Count * MAX_Fill_Times.U
-                when(TotalLoadSize === ExpectedLoadSize) {
-                    memoryload_state := s_load_end
-                    if (YJPAMLDebugEnable) log(cf"NormalLoadEnd TotalLoadSize=$TotalLoadSize")
+                when(bankFifos(i).stepWriteback(io.ToMatrixRegIO, tailByteMaskPerSlot)) {
+                    Current_Fill_MReg_Time(i) := 1.U
                 }
             }
-        }
-    }
 
-    def stepLoadQuiesce(): Unit = {
-        for (i <- 0 until ABMatrixRegNBanks) {
-            val routerValid = transRouters(i).io.valid
-            io.ToMatrixRegIO.BankAddr(i).bits := transWriteAddr
-            io.ToMatrixRegIO.BankAddr(i).valid := routerValid
-            io.ToMatrixRegIO.Data(i).bits := transRouters(i).io.final_data
-            io.ToMatrixRegIO.Data(i).valid := routerValid
-            io.ToMatrixRegIO.ByteMask(i).bits := transRouters(i).io.final_mask
-            io.ToMatrixRegIO.ByteMask(i).valid := routerValid
-        }
-        when(transposeEndDrainCnt === 0.U) {
-            memoryload_state := s_load_end
-            if (YJPAMLDebugEnable) log(cf"TransposeQuiesceEnd")
-        }.otherwise {
-            transposeEndDrainCnt := transposeEndDrainCnt - 1.U
+            val Load_Size = PopCount(Current_Fill_MReg_Time.asUInt)
+            TotalLoadSize := TotalLoadSize + Load_Size
+            val ExpectedLoadSize = MatrixRegTensor_M * K_Beat_Count * MAX_Fill_Times.U
+            when(TotalLoadSize === ExpectedLoadSize) {
+                memoryload_state := s_load_end
+                if (YJPAMLDebugEnable) log(cf"NormalLoadEnd TotalLoadSize=$TotalLoadSize")
+            }
         }
     }
 
@@ -532,12 +295,10 @@ class MultiChannelsABMemLoader(
             HasTail := ConfigInfo.ApplicationTensor_A.HasTail
             TailByteMask := ConfigInfo.ApplicationTensor_A.TailByteMask
             K_Beat_Count := ConfigInfo.ApplicationTensor_A.K_Beat_Count
-            Is_Transpose := ConfigInfo.Is_Transpose
+            assert(!ConfigInfo.Is_Transpose, s"[$label] transpose is disabled in this baseline")
 
             Is_ZeroLoad := ConfigInfo.LoadTaskInfo.Is_ZeroLoad
             Is_FullLoad := ConfigInfo.LoadTaskInfo.Is_FullLoad
-            PrefetchTaskId.zip(ConfigInfo.PrefetchTaskId).foreach { case (to, from) => to := from }
-            PrefetchStream.zip(ConfigInfo.PrefetchStream).foreach { case (to, from) => to := from }
             Conherent := ConfigInfo.Conherent
 
             if (YJPAMLDebugEnable) {
@@ -569,17 +330,15 @@ class MultiChannelsABMemLoader(
 
     dontTouch(io)
 
-    if (EnableDifftest) {
+    if (EnableDifftest && emitDifftest) {
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_WORDS_PER_BANK", ABMatrixRegEntryBitSize / 64)
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", ABMatrixRegSize)
         val pcReg = RegInit(0.U(64.W))
-        val coreidReg = RegInit(0.U(8.W))
-        when (io.ConfigInfo.MicroTaskValid && io.ConfigInfo.MicroTaskReady) {
+        when (io.ConfigInfo.MicroTaskValid) {
           pcReg := io.ConfigInfo.pc.get
-          coreidReg := io.ConfigInfo.coreid.get
         }
         val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
-        difftestAmuFinish.coreid := coreidReg
+        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
         val diffIndexMap = Map(
             "AML" -> 0,
             "BML" -> 1
@@ -623,9 +382,6 @@ class MultiChannelsABMemLoader(
     }.elsewhen(memoryload_state === s_load_working) {
         io.ToMatrixRegIO.active := true.B
         stepLoadWorking()
-    }.elsewhen(memoryload_state === s_load_quiesce) {
-        io.ToMatrixRegIO.active := true.B
-        stepLoadQuiesce()
     }.elsewhen(memoryload_state === s_load_end) {
         stepLoadEnd()
     }

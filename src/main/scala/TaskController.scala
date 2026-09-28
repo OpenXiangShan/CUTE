@@ -554,7 +554,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       slotCanConsider,
       MuxLookup(slot.opKind.asUInt, true.B)(Seq(
         TaskCtrlOpKind.LoadA.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
-        TaskCtrlOpKind.LoadB.asUInt -> (!fuBML.busy && io.BML_MicroTask_Config.MicroTaskReady),
+        TaskCtrlOpKind.LoadB.asUInt -> Mux(decodeLsu(slot.entry.ctrl).transpose,
+          !fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady,
+          !fuBML.busy && io.BML_MicroTask_Config.MicroTaskReady),
         TaskCtrlOpKind.LoadC.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
         TaskCtrlOpKind.ZeroAcc.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
         TaskCtrlOpKind.ZeroTr.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
@@ -846,16 +848,40 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.BML_MicroTask_Config.PrefetchStream.foreach(_ := MatrixPrefetchStream.b)
         io.BML_MicroTask_Config.Conherent := true.B
         io.BML_MicroTask_Config.Is_Transpose := issueLsu.transpose
-        io.BML_MicroTask_Config.MicroTaskValid := true.B
+        io.BML_MicroTask_Config.MicroTaskValid := !issueLsu.transpose
         if (EnableDifftest) {
           io.BML_MicroTask_Config.pc.get := issueCtrl.pc.get
           io.BML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
         }
 
+        // Both transpose instructions share the AML-hosted engine. Keep
+        // LoadB's architectural dimensions/register semantics; change only
+        // the physical FU that owns dispatch, completion and writeback.
+        when(issueLsu.transpose) {
+          val cfg = io.AML_MicroTask_Config
+          cfg.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := issueLsu.baseAddr
+          cfg.ApplicationTensor_A.ApplicationTensor_A_Stride_M := issueLsu.stride
+          cfg.ApplicationTensor_A.dataType := loadDataType(issueLsu.widths)
+          cfg.ApplicationTensor_A.HasTail := loadHasTail(reduceDim, issueLsu.widths)
+          cfg.ApplicationTensor_A.TailByteMask := loadTailByteMask(reduceDim, issueLsu.widths)
+          cfg.ApplicationTensor_A.K_Beat_Count := kVal
+          cfg.LoadTaskInfo.Is_FullLoad := true.B
+          cfg.MatrixRegTensor_M := matrixDim
+          cfg.MatrixRegTensor_K := kVal
+          cfg.MatrixRegId := regIdx
+          cfg.Conherent := true.B
+          cfg.Is_Transpose := true.B
+          cfg.MicroTaskValid := true.B
+          if (EnableDifftest) {
+            cfg.pc.get := issueCtrl.pc.get
+            cfg.coreid.get := issueCtrl.coreid.get
+          }
+        }
+
         loadAllocateEvent.eventType := 0.U
         loadAllocateEvent.regId := regIdx
         loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
-        loadAllocateEvent.needMask := "b010".U
+        loadAllocateEvent.needMask := Mux(issueLsu.transpose, "b001".U, "b010".U)
         loadAllocateEvent.row := issueLsu.row
         loadAllocateEvent.column := issueLsu.column
         loadAllocateEvent.transpose := issueLsu.transpose
@@ -867,7 +893,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         loadIssueEvent.eventType := 1.U
         loadIssueEvent.regId := regIdx
         loadIssueEvent.fifoIdx := issueSlot.fifoIdx
-        loadIssueEvent.needMask := "b010".U
+        loadIssueEvent.needMask := Mux(issueLsu.transpose, "b001".U, "b010".U)
         loadIssueEvent.row := issueLsu.row
         loadIssueEvent.column := issueLsu.column
         loadIssueEvent.transpose := issueLsu.transpose
@@ -1413,8 +1439,13 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         fuAML.ownerSlot := issueSlotIdx
       }
       is(TaskCtrlOpKind.LoadB) {
-        fuBML.busy := true.B
-        fuBML.ownerSlot := issueSlotIdx
+        when(issueLsu.transpose) {
+          fuAML.busy := true.B
+          fuAML.ownerSlot := issueSlotIdx
+        }.otherwise {
+          fuBML.busy := true.B
+          fuBML.ownerSlot := issueSlotIdx
+        }
       }
       is(TaskCtrlOpKind.LoadC) {
         fuCMLLoad.busy := true.B
