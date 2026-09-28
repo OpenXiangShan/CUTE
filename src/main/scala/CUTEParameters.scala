@@ -9,6 +9,18 @@ import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.prci._
 import freechips.rocketchip.tile._
 
+/**
+  * CUTEBase cannot depend on XSAICache, but its loader configuration needs
+  * the exact wire widths of the matrix-prefetch sideband. Keep this encoding
+  * in lockstep with coupledL2.prefetch.MatrixPrefetchStream/MatrixPrefetchTagCodec:
+  * valid[19] | stream[18:16] | taskId[15:0].
+  */
+object CuteMatrixTraceTag {
+  val streamWidth = 3
+  val taskIdWidth = 16
+  val width = 1 + streamWidth + taskIdWidth
+}
+
 object WrapInc
 {
   // "n" is the number of increments, so we wrap at n-1.
@@ -613,6 +625,9 @@ case class CuteParams(
 
     val EnableDifftest: Boolean = false, //whether DiffTest is enabled
 
+    // Statically elaborate matrix-prefetch descriptors, control signals, and request tags.
+    val EnableMatrixPrefetch: Boolean = false,
+
     val Debug : CuteDebugParams = CuteDebugParams.NoDebug, //debug parameters
     val MMUParams: CuteMMUParams = CuteMMUParams.baseParams, //MMU parameters
     
@@ -867,6 +882,7 @@ trait HasCuteParams {
     def CStoreDirectAckCountMode = cuteParams.CStoreDirectAckCountMode
     def ReduceGroupSize = cuteParams.ReduceGroupSize
     def EnableDifftest = cuteParams.EnableDifftest
+    def EnableMatrixPrefetch = cuteParams.EnableMatrixPrefetch
     def L2NBanks = cuteParams.L2NBanks
     def LoaderBridgeChannelConfig = cuteParams.LoaderBridgeChannelConfig
     def parsedLoaderBridgeChannelConfig = cuteParams.parsedLoaderBridgeChannelConfig
@@ -1135,6 +1151,8 @@ class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
+    val PrefetchTaskId                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.taskIdWidth.W))
+    val PrefetchStream                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.streamWidth.W))
 
     val Conherent                           = (Bool())      //whether coherence is needed
     val Is_Transpose                        = (Bool())      //whether transpose is needed
@@ -1170,6 +1188,8 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
+    val PrefetchTaskId                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.taskIdWidth.W))
+    val PrefetchStream                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.streamWidth.W))
 
     val Conherent                           = (Bool())      //whether coherence is needed
     val Is_Transpose                        = (Bool())      //whether transpose is needed
@@ -1250,6 +1270,11 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
+    val PrefetchTaskId                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.taskIdWidth.W))
+    val PrefetchStream                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.streamWidth.W))
+    // C-store writebacks do not train L2 prefetching. Keep a separate
+    // trace-only tag so ChiselDB can still identify their issuing task.
+    val StoreTraceTag                     = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.width.W))
 
     val LoadMicroTaskReady                  = Flipped(Bool())//can configure the next load task
     val LoadMicroTaskValid                  = (Bool())       //current load-task configuration is valid
@@ -1355,6 +1380,10 @@ class MMURequestIO(implicit p: Parameters) extends CuteBundle{
     val UseAllocatedSourceID = Bool()
     val isA = Bool()
     val MatrixIsAcc = Bool()
+    val MatrixPrefetchTag = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.width.W))
+    // Debug-only sideband. CUTE2TL records this in ChiselDB but never maps it
+    // to a TileLink user field.
+    val MatrixTraceTag = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.width.W))
     val RequestMask = UInt(MMUMaskWidth.W)
 }
 

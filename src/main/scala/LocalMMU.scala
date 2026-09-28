@@ -127,6 +127,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 aReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := aReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := aReq.bits
+                llcReq.bits.MatrixTraceTag.foreach(_ := 0.U)
                 llcReq.bits.MatrixIsAcc := false.B // A matrix is tile matrix register
                 llcReq.bits.isA := true.B
                 llcReq.bits.RequestSourceID := reqSourceId
@@ -155,6 +156,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 asReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := asReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := asReq.bits
+                llcReq.bits.MatrixTraceTag.foreach(_ := 0.U)
                 llcReq.bits.MatrixIsAcc := false.B
                 llcReq.bits.isA := false.B
                 llcReq.bits.RequestSourceID := reqSourceId
@@ -183,6 +185,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 bReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := bReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := bReq.bits
+                llcReq.bits.MatrixTraceTag.foreach(_ := 0.U)
                 llcReq.bits.MatrixIsAcc := false.B // B matrix is tile matrix register
                 llcReq.bits.isA := false.B
                 llcReq.bits.RequestSourceID := reqSourceId
@@ -211,6 +214,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 bsReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := bsReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := bsReq.bits
+                llcReq.bits.MatrixTraceTag.foreach(_ := 0.U)
                 llcReq.bits.MatrixIsAcc := false.B
                 llcReq.bits.isA := false.B
                 llcReq.bits.RequestSourceID := reqSourceId
@@ -239,6 +243,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 cLoadReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := cLoadReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := cLoadReq.bits
+                llcReq.bits.MatrixTraceTag.foreach(_ := 0.U)
                 llcReq.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
                 llcReq.bits.isA := false.B
                 llcReq.bits.RequestSourceID := reqSourceId

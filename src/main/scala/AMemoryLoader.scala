@@ -5,6 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import org.chipsalliance.cde.config._
+import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 // Loads matrix A into MatrixReg without convolution support.
 // Follows CMemoryLoader's FullLoad traversal order across M and K.
@@ -37,6 +38,7 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
         io.LocalMMUIO.Request(i).valid := false.B
         io.LocalMMUIO.Request(i).bits := DontCare
         io.LocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.LocalMMUIO.Request(i).bits.MatrixPrefetchTag.foreach(_ := 0.U)
         io.LocalMMUIO.Response(i).ready := false.B
     }
     io.ConfigInfo.MicroTaskEndValid := false.B
@@ -55,11 +57,13 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_WORDS_PER_BANK", ABMatrixRegEntryBitSize / 64)
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", ABMatrixRegSize)
         val pcReg = RegInit(0.U(64.W))
-        when (io.ConfigInfo.MicroTaskValid) {
+        val coreidReg = RegInit(0.U(8.W))
+        when (io.ConfigInfo.MicroTaskValid && io.ConfigInfo.MicroTaskReady) {
           pcReg := io.ConfigInfo.pc.get
+          coreidReg := io.ConfigInfo.coreid.get
         }
         val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
-        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        difftestAmuFinish.coreid := coreidReg
         difftestAmuFinish.index := 0.U
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
           (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
@@ -97,6 +101,8 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
     val Conherent = RegInit(true.B)
     val Is_ZeroLoad = RegInit(false.B)
     val Is_FullLoad = RegInit(false.B)
+    val PrefetchTaskId = Option.when(EnableMatrixPrefetch)(RegInit(0.U(MatrixPrefetchTagCodec.taskIdWidth.W)))
+    val PrefetchStream = Option.when(EnableMatrixPrefetch)(RegInit(MatrixPrefetchStream.none))
 
     val s_idle :: s_mm_task :: Nil = Enum(2)
     val state = RegInit(s_idle)
@@ -146,6 +152,8 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
             K_Beat_Count := ConfigInfo.ApplicationTensor_A.K_Beat_Count
             Is_ZeroLoad := ConfigInfo.LoadTaskInfo.Is_ZeroLoad
             Is_FullLoad := ConfigInfo.LoadTaskInfo.Is_FullLoad
+            PrefetchTaskId.zip(ConfigInfo.PrefetchTaskId).foreach { case (to, from) => to := from }
+            PrefetchStream.zip(ConfigInfo.PrefetchStream).foreach { case (to, from) => to := from }
             Conherent := ConfigInfo.Conherent
             assert(!ConfigInfo.Is_Transpose, "AML transpose is disabled; use the standalone transpose engine")
             if(YJPAMLDebugEnable){
@@ -218,6 +226,13 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
                 Request.bits.RequestSourceID := sourceId.bits
                 Request.bits.RequestType_isWrite := false.B
                 Request.bits.UseAllocatedSourceID := true.B
+                Request.bits.MatrixPrefetchTag.foreach { tag =>
+                  tag := MatrixPrefetchTagCodec.encode(
+                    true.B,
+                    PrefetchStream.get,
+                    PrefetchTaskId.get
+                  )
+                }
                 Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
                 Request.valid := TotalRequestSize < MaxRequestIter
 
