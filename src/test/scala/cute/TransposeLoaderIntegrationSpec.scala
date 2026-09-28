@@ -2,340 +2,312 @@ package cute
 
 import chisel3._
 import chisel3.util._
+import chisel3.stage.ChiselGeneratorAnnotation
+import _root_.circt.stage.{ChiselStage, FirtoolOption}
 import chiseltest._
-import org.chipsalliance.cde.config.{Config, Parameters}
+import org.chipsalliance.cde.config.Parameters
 import org.scalatest.flatspec.AnyFlatSpec
-
 import scala.collection.mutable
+import scala.util.Random
+import utility.{ChiselDB, Constantin}
 
-object TransposeLoaderIntegrationTestConfig {
-  val params: Parameters = new Config((_, _, _) => {
-    case CuteParamsKey => CuteParams.CUTE_8Tops_128SCP
-  })
-}
-
-/**
-  * Gives AML and BML the same small test-facing control plane while preserving
-  * their production LocalMMU and MatrixReg ports.
+/** TaskController + both unmodified normal paths + AML transpose trait +
+  * production response bridges. No CPU, cache, FPE, or full-core build.
   */
-class TransposeLoaderHarness(isB: Boolean)(implicit p: Parameters) extends CuteModule {
-  private val configWidth = MatrixRegMaxTensorDimBitSize
-
+class TransposeLoaderIntegrationHarness(implicit p: Parameters) extends CuteModule {
   val io = IO(new Bundle {
-    val start = Input(Bool())
-    val dataType = Input(UInt(ElementDataType.DataTypeBitWidth.W))
-    val sourceRows = Input(UInt(configWidth.W))
-    val beatsPerRow = Input(UInt(configWidth.W))
-    val base = Input(UInt(MMUAddrWidth.W))
-    val stride = Input(UInt(MMUAddrWidth.W))
-    val hasTail = Input(Bool())
-    val tailBytes = Input(UInt(log2Ceil(outsideDataWidthByte + 1).W))
-    val sourceId = Input(UInt(LLCSourceMaxNumBitSize.W))
-
-    val taskReady = Output(Bool())
-    val taskEnd = Output(Bool())
-    val request = Decoupled(new MMURequestIO)
-    val response = Flipped(Decoupled(new MMUResponseIO))
-    val matrix = Flipped(new ABMemoryLoaderMatrixRegIO)
+    val command = Flipped(Decoupled(new Bundles.AmuLsuIO))
+    val memory = Flipped(Vec(2, new LocalMMUIO))
+    val target = Flipped(Vec(2, new ABMemoryLoaderMatrixRegIO))
+    val targetId = Output(Vec(2, UInt(ABMatrixRegIdWidth.W)))
+    val dispatch = Output(Vec(2, Bool()))
+    val completed = Output(Vec(2, Bool()))
   })
-
-  if (isB) {
-    val loader = Module(new BMemoryLoader)
-    loader.io.DebugInfo.DebugTimeStampe := 0.U
-    loader.io.LocalMMUIO.ConherentRequsetSourceID.valid := true.B
-    loader.io.LocalMMUIO.ConherentRequsetSourceID.bits := io.sourceId
-    loader.io.LocalMMUIO.nonConherentRequsetSourceID.valid := false.B
-    loader.io.LocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
-    loader.io.LocalMMUIO.Request(0) <> io.request
-    loader.io.LocalMMUIO.Response(0) <> io.response
-    for (channel <- 1 until ABMatrixRegNBanks) {
-      loader.io.LocalMMUIO.Request(channel).ready := true.B
-      loader.io.LocalMMUIO.Response(channel).valid := false.B
-      loader.io.LocalMMUIO.Response(channel).bits := 0.U.asTypeOf(new MMUResponseIO)
+  val tc = Module(new TaskController)
+  val a = Module(new AMLWrapper)
+  val b = Module(new BMLWrapper)
+  tc.io.DebugTimeStampe := 0.U
+  tc.io.ygjkctrl.reset := false.B
+  tc.io.ygjkctrl.amuCtrl.valid := io.command.valid
+  tc.io.ygjkctrl.amuCtrl.bits.op := Bundles.AmuCtrlIO.mlsOp()
+  tc.io.ygjkctrl.amuCtrl.bits.data := io.command.bits.asUInt
+  tc.io.ygjkctrl.amuCtrl.bits.pc.foreach(_ := "h80001000".U)
+  tc.io.ygjkctrl.amuCtrl.bits.coreid.foreach(_ := 0.U)
+  io.command.ready := tc.io.ygjkctrl.amuCtrl.ready
+  tc.io.ADC_MicroTask_Config.MicroTaskReady := true.B
+  tc.io.ADC_MicroTask_Config.MicroTaskEndValid := false.B
+  tc.io.BDC_MicroTask_Config.MicroTaskReady := true.B
+  tc.io.BDC_MicroTask_Config.MicroTaskEndValid := false.B
+  tc.io.CDC_MicroTask_Config.MicroTaskReady := true.B
+  tc.io.CDC_MicroTask_Config.MicroTaskEndValid := false.B
+  tc.io.CDC_MicroTask_Config.MicroTask_TEComputeEndValid := false.B
+  tc.io.ASC_MicroTask_Config.foreach { c => c.MicroTaskReady := true.B; c.MicroTaskEndValid := false.B }
+  tc.io.BSC_MicroTask_Config.foreach { c => c.MicroTaskReady := true.B; c.MicroTaskEndValid := false.B }
+  tc.io.ASL_MicroTask_Config.foreach { c => c.MicroTaskReady := true.B; c.MicroTaskEndValid := false.B }
+  tc.io.BSL_MicroTask_Config.foreach { c => c.MicroTaskReady := true.B; c.MicroTaskEndValid := false.B }
+  tc.io.CML_MicroTask_Config.LoadMicroTaskReady := true.B
+  tc.io.CML_MicroTask_Config.StoreMicroTaskReady := true.B
+  tc.io.CML_MicroTask_Config.LoadMicroTaskEndValid := false.B
+  tc.io.CML_MicroTask_Config.StoreMicroTaskEndValid := false.B
+  a.io.ConfigInfo <> tc.io.AML_MicroTask_Config
+  b.io.ConfigInfo <> tc.io.BML_MicroTask_Config
+  a.io.DebugInfo := 0.U.asTypeOf(a.io.DebugInfo)
+  b.io.DebugInfo := 0.U.asTypeOf(b.io.DebugInfo)
+  io.target(0) <> a.io.ToMatrixRegIO
+  io.target(1) <> b.io.ToMatrixRegIO
+  io.targetId(0) := a.io.MatrixRegId
+  io.targetId(1) := b.io.MatrixRegId
+  io.dispatch(0) := a.io.ConfigInfo.MicroTaskValid && a.io.ConfigInfo.MicroTaskReady
+  io.dispatch(1) := b.io.ConfigInfo.MicroTaskValid && b.io.ConfigInfo.MicroTaskReady
+  io.completed(0) := a.io.ConfigInfo.MicroTaskEndValid && a.io.ConfigInfo.MicroTaskEndReady
+  io.completed(1) := b.io.ConfigInfo.MicroTaskEndValid && b.io.ConfigInfo.MicroTaskEndReady
+  for ((mem, i) <- Seq(a.io.LocalMMUIO, b.io.LocalMMUIO).zipWithIndex) {
+    mem.ConherentRequsetSourceID := io.memory(i).ConherentRequsetSourceID
+    mem.nonConherentRequsetSourceID := io.memory(i).nonConherentRequsetSourceID
+    io.memory(i).Request <> mem.Request
+    if (AMLUseLegacyLoader) {
+      val arb = Module(new Arbiter(new MMUResponseIO, ABMatrixRegNBanks))
+      arb.io.in <> io.memory(i).Response
+      mem.Response(0) <> arb.io.out
+      for (lane <- 1 until ABMatrixRegNBanks) {
+        mem.Response(lane).valid := false.B
+        mem.Response(lane).bits := 0.U.asTypeOf(new MMUResponseIO)
+      }
+    } else {
+      val bridge = Module(new ResponseChannelBridge(
+        inputChannelCount = ABMatrixRegNBanks, respChannelCount = AMLResponseChannelCount,
+        bankCount = ABMatrixRegNBanks, queueDepth = ResponseBridgeQueueDepth,
+        dataWidth = outsideDataWidth, sourceIdWidth = 64,
+        bankIdWidth = log2Ceil(ABMatrixRegNBanks), bankIdOffset = log2Ceil(ABMatrixRegBankNEntries),
+        contextName = s"Test$i"))
+      bridge.io.timeStamp := 0.U
+      bridge.io.in <> io.memory(i).Response
+      mem.Response <> bridge.io.out
     }
-    loader.io.ToMatrixRegIO <> io.matrix
-
-    val config = loader.io.ConfigInfo
-    config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr := io.base
-    config.ApplicationTensor_B.BlockTensor_B_BaseVaddr := io.base
-    config.ApplicationTensor_B.ApplicationTensor_B_Stride_N := io.stride
-    config.ApplicationTensor_B.dataType := io.dataType
-    config.ApplicationTensor_B.HasTail := io.hasTail
-    config.ApplicationTensor_B.TailByteMask := io.tailBytes
-    config.ApplicationTensor_B.K_Beat_Count := io.beatsPerRow
-    config.MatrixRegTensor_N := io.sourceRows
-    config.MatrixRegTensor_K := io.beatsPerRow
-    config.MatrixRegId := 0.U
-    config.Conherent := true.B
-    config.Is_Transpose := true.B
-    config.MicroTaskValid := io.start
-    config.MicroTaskEndReady := true.B
-    if (EnableDifftest) {
-      config.pc.get := 0.U
-      config.coreid.get := 0.U
-    }
-    io.taskReady := config.MicroTaskReady
-    io.taskEnd := config.MicroTaskEndValid
-  } else {
-    val loader = Module(new AMemoryLoader)
-    loader.io.DebugInfo.DebugTimeStampe := 0.U
-    loader.io.LocalMMUIO.ConherentRequsetSourceID.valid := true.B
-    loader.io.LocalMMUIO.ConherentRequsetSourceID.bits := io.sourceId
-    loader.io.LocalMMUIO.nonConherentRequsetSourceID.valid := false.B
-    loader.io.LocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
-    loader.io.LocalMMUIO.Request(0) <> io.request
-    loader.io.LocalMMUIO.Response(0) <> io.response
-    for (channel <- 1 until ABMatrixRegNBanks) {
-      loader.io.LocalMMUIO.Request(channel).ready := true.B
-      loader.io.LocalMMUIO.Response(channel).valid := false.B
-      loader.io.LocalMMUIO.Response(channel).bits := 0.U.asTypeOf(new MMUResponseIO)
-    }
-    loader.io.ToMatrixRegIO <> io.matrix
-
-    val config = loader.io.ConfigInfo
-    config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := io.base
-    config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := io.stride
-    config.ApplicationTensor_A.dataType := io.dataType
-    config.ApplicationTensor_A.HasTail := io.hasTail
-    config.ApplicationTensor_A.TailByteMask := io.tailBytes
-    config.ApplicationTensor_A.K_Beat_Count := io.beatsPerRow
-    config.LoadTaskInfo.Is_ZeroLoad := false.B
-    config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-    config.LoadTaskInfo.Is_FullLoad := true.B
-    config.MatrixRegTensor_M := io.sourceRows
-    config.MatrixRegTensor_K := io.beatsPerRow
-    config.MatrixRegId := 0.U
-    config.Conherent := true.B
-    config.Is_Transpose := true.B
-    config.MicroTaskValid := io.start
-    config.MicroTaskEndReady := true.B
-    if (EnableDifftest) {
-      config.pc.get := 0.U
-      config.coreid.get := 0.U
-    }
-    io.taskReady := config.MicroTaskReady
-    io.taskEnd := config.MicroTaskEndValid
   }
 }
 
 class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTester {
-  behavior of "the legacy AML/BML streaming transpose loaders"
-
-  private val responseBytes = 64
-  private val bankCount = 8
-  private val entryBytes = 32
-  private val entriesPerBank = 32
-  private val reduceGroupSize = 2
-  private val sourceMajorElements = 128
-
-  private case class RequestMeta(sourceId: Int, row: Int, beat: Int)
-
-  private def elementDataType(elementBytes: Int): UInt = elementBytes match {
-    case 1 => ElementDataType.DataTypeWidth8
-    case 2 => ElementDataType.DataTypeWidth16
-    case 4 => ElementDataType.DataTypeWidth32
-  }
-
-  private def byteValue(row: Int, sourceByte: Int): Int =
-    (0x19 + row * 37 + sourceByte * 29) & 0xff
-
-  private def responseData(row: Int, beat: Int): BigInt = {
-    (0 until responseBytes).foldLeft(BigInt(0)) { case (packed, byteIndex) =>
-      packed | (BigInt(byteValue(row, beat * responseBytes + byteIndex)) << (byteIndex * 8))
-    }
-  }
-
-  private def pokeResponse(dut: TransposeLoaderHarness, meta: Option[RequestMeta]): Unit = {
-    dut.io.response.valid.poke(meta.nonEmpty.B)
-    dut.io.response.bits.ReseponseConherent.poke(true.B)
-    dut.io.response.bits.ReseponseData.poke(meta.map(m => responseData(m.row, m.beat)).getOrElse(BigInt(0)).U)
-    dut.io.response.bits.ReseponseSourceID.poke(meta.map(_.sourceId).getOrElse(0).U)
-  }
-
-  private def initHarness(dut: TransposeLoaderHarness): Unit = {
-    dut.io.start.poke(false.B)
-    dut.io.dataType.poke(ElementDataType.DataTypeWidth8)
-    dut.io.sourceRows.poke(0.U)
-    dut.io.beatsPerRow.poke(0.U)
-    dut.io.base.poke(0.U)
-    dut.io.stride.poke(0.U)
-    dut.io.hasTail.poke(false.B)
-    dut.io.tailBytes.poke(0.U)
-    dut.io.sourceId.poke(0.U)
-    dut.io.request.ready.poke(true.B)
-    pokeResponse(dut, None)
-  }
-
-  private def startTask(
-    dut: TransposeLoaderHarness,
-    elementBytes: Int,
-    sourceRows: Int,
-    beatsPerRow: Int,
-    stride: Int,
-    tailBytes: Option[Int]
-  ): Unit = {
-    var waitCycles = 0
-    while (!dut.io.taskReady.peek().litToBoolean && waitCycles < 64) {
-      dut.clock.step()
-      waitCycles += 1
-    }
-    assert(dut.io.taskReady.peek().litToBoolean, "loader did not become ready for a new task")
-
-    dut.io.dataType.poke(elementDataType(elementBytes))
-    dut.io.sourceRows.poke(sourceRows.U)
-    dut.io.beatsPerRow.poke(beatsPerRow.U)
-    dut.io.base.poke(0x1000.U)
-    dut.io.stride.poke(stride.U)
-    dut.io.hasTail.poke(tailBytes.nonEmpty.B)
-    dut.io.tailBytes.poke(tailBytes.getOrElse(0).U)
-    dut.io.start.poke(true.B)
-    dut.clock.step()
-    dut.io.start.poke(false.B)
-  }
-
-  private def runTransposeTask(
-    dut: TransposeLoaderHarness,
-    elementBytes: Int,
-    sourceRows: Int,
-    beatsPerRow: Int,
-    tailBytes: Option[Int] = None
-  ): Unit = {
-    val groupRows = entryBytes / elementBytes
-    val elementSlots = responseBytes / (bankCount * elementBytes)
-    val stride = sourceMajorElements * elementBytes
-    val expectedRequestCount = sourceRows * beatsPerRow
-    val expectedWrites = mutable.Map.empty[(Int, Int, Int), Int]
-    val actualWrites = mutable.Map.empty[(Int, Int, Int), Int]
-    val pendingRequests = mutable.ArrayBuffer.empty[RequestMeta]
-    val pendingResponses = mutable.Queue.empty[RequestMeta]
-    var activeResponse = Option.empty[RequestMeta]
-    var sourceId = 0
-    var requestCount = 0
-    var responseCount = 0
-    var lastWriteCycle = -1
-    var endCycle = -1
-
-    startTask(dut, elementBytes, sourceRows, beatsPerRow, stride, tailBytes)
-
-    for (row <- 0 until sourceRows; beat <- 0 until beatsPerRow) {
-      for (bank <- 0 until bankCount; phase <- 0 until responseBytes / bankCount) {
-        val q = phase / elementBytes
-        val plane = phase % elementBytes
-        val sourceByte = elementBytes * (bank + bankCount * q) + plane
-        val valid = tailBytes.forall(bytes => beat != beatsPerRow - 1 || sourceByte < bytes)
-        if (valid) {
-          val group = row / groupRows
-          val rowOffset = row % groupRows
-          val entry = group + beat * (elementSlots * reduceGroupSize) + q * reduceGroupSize
-          val byteOffset = rowOffset * elementBytes + plane
-          val key = (bank, entry, byteOffset)
-          assert(!expectedWrites.contains(key), s"golden mapping aliases $key")
-          expectedWrites(key) = byteValue(row, beat * responseBytes + sourceByte)
-        }
-      }
-    }
-
-    var cycles = 0
-    while (endCycle < 0 && cycles < 12000) {
-      if (activeResponse.isEmpty && pendingResponses.nonEmpty) {
-        activeResponse = Some(pendingResponses.dequeue())
-      }
-
-      // Deliberately create valid gaps while retaining the same source-ID/data on stalls.
-      val injectGap = activeResponse.nonEmpty && ((responseCount + cycles) % 7 == 3)
-      pokeResponse(dut, if (injectGap) None else activeResponse)
-      dut.io.sourceId.poke(sourceId.U)
-
-      for (bank <- 0 until bankCount) {
-        val addrValid = dut.io.matrix.BankAddr(bank).valid.peek().litToBoolean
-        val dataValid = dut.io.matrix.Data(bank).valid.peek().litToBoolean
-        val maskValid = dut.io.matrix.ByteMask(bank).valid.peek().litToBoolean
-        assert(addrValid == dataValid && dataValid == maskValid,
-          s"bank $bank emitted mismatched write-valid signals")
-        if (addrValid) {
-          val entry = dut.io.matrix.BankAddr(bank).bits.peek().litValue.toInt
-          val mask = dut.io.matrix.ByteMask(bank).bits.peek().litValue
-          val data = dut.io.matrix.Data(bank).bits.peek().litValue
-          assert(entry >= 0 && entry < entriesPerBank, s"bank $bank wrote out-of-range entry $entry")
-          for (byteOffset <- 0 until entryBytes if ((mask >> byteOffset) & 1) != 0) {
-            val key = (bank, entry, byteOffset)
-            val value = ((data >> (byteOffset * 8)) & 0xff).toInt
-            assert(!actualWrites.contains(key), s"duplicate MatrixReg byte write at $key")
-            actualWrites(key) = value
+  behavior of "shared AML transpose integration"
+  for (banks <- Seq(4, 8); mode <- Seq("L", "1", "2", "4", "8") if mode != "8" || banks == 8) {
+    it should s"run mlat/mlbt and preserve ordinary A/B loads for $banks banks mode $mode" in {
+      ChiselDB.init(false)
+      Constantin.init(false)
+      test(new TransposeLoaderIntegrationHarness()(TransposeTestParams(banks, mode)))
+        .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+          val rng = new Random(42)
+          val base = 0x1000L
+          val stride = 640L
+          val ids = Array.fill(2)(0)
+          case class Response(id: BigInt, address: Long)
+          dut.io.command.valid.poke(false.B)
+          for (h <- 0 until 2) {
+            dut.io.memory(h).ConherentRequsetSourceID.valid.poke(true.B)
+            dut.io.memory(h).ConherentRequsetSourceID.bits.poke(0.U)
+            dut.io.memory(h).nonConherentRequsetSourceID.valid.poke(false.B)
+            dut.io.memory(h).nonConherentRequsetSourceID.bits.poke(0.U)
+            for (lane <- 0 until banks) {
+              dut.io.memory(h).Request(lane).ready.poke(false.B)
+              dut.io.memory(h).Response(lane).valid.poke(false.B)
+              dut.io.memory(h).Response(lane).bits.ReseponseSourceID.poke(0.U)
+              dut.io.memory(h).Response(lane).bits.ReseponseData.poke(0.U)
+              dut.io.memory(h).Response(lane).bits.ReseponseConherent.poke(true.B)
+            }
           }
-          lastWriteCycle = cycles
+          // Alternate mlat/mlbt and ordinary A/B commands, including register
+          // reuse and partial source beats. All e16/e32 element bytes differ.
+          for (lg <- 0 to 2; trans <- Seq(true, false); isB <- Seq(false, true)) {
+            val e = 1 << lg
+            val rows = if (trans) 9 else 11
+            val cols = if (trans) (if (banks == 8) 127 else 63) else 13
+            val host = if (trans || !isB) 0 else 1
+            val reg = if (isB) 3 else 2
+            def value(r: Int, colByte: Int): Int = (r * 37 + colByte * 17 + (if (isB) 71 else 9)) & 255
+            val expected = (for (r <- 0 until rows; c <- 0 until cols; by <- 0 until e) yield {
+              val destRow = if (trans) c else r
+              val destByte = (if (trans) r else c) * e + by
+              ((destRow % banks, (destRow / banks) * 2 + destByte / 32, destByte % 32), value(r, c * e + by))
+            }).toMap
+            val got = mutable.Map.empty[(Int, Int, Int), Int]
+            val pending = Array.fill(2)(mutable.ArrayBuffer.empty[Response])
+            val offered = Array.fill[Option[Response]](2, banks)(None)
+            var sent = false
+            var completed = false
+            var dispatched = false
+            var cycle = 0
+            val cmd = dut.io.command.bits
+            cmd.ms.poke(reg.U)
+            cmd.ls.poke(false.B)
+            cmd.transpose.poke(trans.B)
+            cmd.isacc.poke(false.B)
+            cmd.isA.poke((!isB).B)
+            cmd.isB.poke(isB.B)
+            cmd.baseAddr.poke(base.U)
+            cmd.stride.poke(stride.U)
+            cmd.row.poke((if (isB == trans) rows else cols).U)
+            cmd.column.poke((if (isB == trans) cols else rows).U)
+            // Normal A expects (row, column); transposed A expects the
+            // destination shape (source column, source row). B reverses it.
+            cmd.widths.poke(lg.U)
+            while (!completed && cycle < 4000) {
+              dut.io.command.valid.poke((!sent).B)
+              for (h <- 0 until 2) {
+                dut.io.memory(h).ConherentRequsetSourceID.bits.poke(ids(h).U)
+                for (lane <- 0 until banks) {
+                  if (offered(h)(lane).isEmpty && pending(h).nonEmpty && rng.nextInt(4) != 0) {
+                    offered(h)(lane) = Some(pending(h).remove(rng.nextInt(pending(h).size)))
+                  }
+                  val mem = dut.io.memory(h)
+                  mem.Request(lane).ready.poke((rng.nextInt(4) != 0).B)
+                  mem.Response(lane).valid.poke(offered(h)(lane).nonEmpty.B)
+                  offered(h)(lane).foreach { resp =>
+                    val row = ((resp.address - base) / stride).toInt
+                    val start = ((resp.address - base) % stride).toInt
+                    val data = (0 until 64).foldLeft(BigInt(0))((x, i) => x | (BigInt(value(row, start + i)) << (8 * i)))
+                    mem.Response(lane).bits.ReseponseSourceID.poke(resp.id.U)
+                    mem.Response(lane).bits.ReseponseData.poke(data.U)
+                  }
+                }
+              }
+              if (dut.io.command.valid.peek().litToBoolean && dut.io.command.ready.peek().litToBoolean) sent = true
+              for (h <- 0 until 2) {
+                if (dut.io.dispatch(h).peek().litToBoolean) { assert(h == host); assert(!dispatched); dispatched = true }
+                if (dut.io.completed(h).peek().litToBoolean) { assert(h == host); completed = true }
+                for (lane <- 0 until banks) {
+                  val req = dut.io.memory(h).Request(lane)
+                  if (req.valid.peek().litToBoolean && req.ready.peek().litToBoolean) {
+                    assert(h == host)
+                    val alloc = req.bits.UseAllocatedSourceID.peek().litToBoolean
+                    val id = if (alloc) BigInt(ids(h)) else req.bits.RequestSourceID.peek().litValue
+                    pending(h) += Response(id, req.bits.RequestAddr.peek().litValue.toLong)
+                    if (alloc) ids(h) = (ids(h) + 1) % 64
+                  }
+                  if (offered(h)(lane).nonEmpty && dut.io.memory(h).Response(lane).ready.peek().litToBoolean)
+                    offered(h)(lane) = None
+                  val target = dut.io.target(h)
+                  if (target.BankAddr(lane).valid.peek().litToBoolean) {
+                    assert(h == host)
+                    dut.io.targetId(h).expect(reg.U)
+                    val address = target.BankAddr(lane).bits.peek().litValue.toInt
+                    val mask = target.ByteMask(lane).bits.peek().litValue
+                    val data = target.Data(lane).bits.peek().litValue
+                    for (by <- 0 until 32 if mask.testBit(by)) {
+                      val key = (lane, address, by)
+                      assert(!got.contains(key), s"duplicate byte $key")
+                      got(key) = ((data >> (8 * by)) & 255).toInt
+                    }
+                  }
+                }
+              }
+              dut.clock.step()
+              cycle += 1
+            }
+            assert(completed && dispatched, s"task timeout mode=$mode transpose=$trans B=$isB")
+            assert(pending.forall(_.isEmpty) && offered.flatten.forall(_.isEmpty))
+            assert(got.toMap == expected, s"data mismatch mode=$mode e${8 * e} transpose=$trans B=$isB: ${got.size}/${expected.size}")
+            dut.io.command.valid.poke(false.B)
+            for (h <- 0 until 2; lane <- 0 until banks) dut.io.memory(h).Response(lane).valid.poke(false.B)
+            dut.clock.step(4)
+          }
         }
-      }
-
-      val requestFire = dut.io.request.valid.peek().litToBoolean && dut.io.request.ready.peek().litToBoolean
-      val responseFire = activeResponse.nonEmpty && !injectGap && dut.io.response.ready.peek().litToBoolean
-      val taskEnd = dut.io.taskEnd.peek().litToBoolean
-
-      if (requestFire) {
-        val requestAddr = dut.io.request.bits.RequestAddr.peek().litValue.toInt
-        val requestSourceId = dut.io.request.bits.RequestSourceID.peek().litValue.toInt
-        val offset = requestAddr - 0x1000
-        assert(offset >= 0, s"request address 0x${requestAddr.toHexString} precedes the source base")
-        val row = offset / stride
-        val beat = (offset % stride) / responseBytes
-        assert(row >= 0 && row < sourceRows, s"request row $row outside source rows $sourceRows")
-        assert(beat >= 0 && beat < beatsPerRow, s"request beat $beat outside $beatsPerRow")
-        assert(requestSourceId == sourceId, s"request source ID $requestSourceId did not match allocator $sourceId")
-        pendingRequests += RequestMeta(sourceId, row, beat)
-        requestCount += 1
-        sourceId = (sourceId + 1) % 64
-        if (pendingRequests.size == math.min(groupRows, sourceRows - (row / groupRows) * groupRows)) {
-          pendingRequests.reverse.foreach(pendingResponses.enqueue(_))
-          pendingRequests.clear()
-        }
-      }
-
-      if (responseFire) {
-        responseCount += 1
-        activeResponse = None
-      }
-      if (taskEnd) {
-        endCycle = cycles
-      }
-
-      dut.clock.step()
-      cycles += 1
     }
-
-    assert(endCycle >= 0, s"transpose task did not complete after $cycles cycles")
-    assert(requestCount == expectedRequestCount,
-      s"expected $expectedRequestCount requests, observed $requestCount")
-    assert(responseCount == expectedRequestCount,
-      s"expected $expectedRequestCount responses, observed $responseCount")
-    assert(endCycle >= lastWriteCycle, s"task ended at $endCycle before the final write at $lastWriteCycle")
-    assert(actualWrites == expectedWrites,
-      s"loader byte writes differ from the frozen transpose mapping; missing=${expectedWrites.keySet.diff(actualWrites.keySet).take(8)}, extra=${actualWrites.keySet.diff(expectedWrites.keySet).take(8)}")
   }
 
-  private def runAllPrecisions(isB: Boolean): Unit = {
-    test(new TransposeLoaderHarness(isB)(TransposeLoaderIntegrationTestConfig.params))
+  behavior of "the single transpose FU scheduler"
+  it should "serialize mlat/mlbt on AML while a normal mlb progresses on BML" in {
+    ChiselDB.init(false)
+    Constantin.init(false)
+    test(new TransposeLoaderIntegrationHarness()(TransposeTestParams(8, "8")))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
-        dut.reset.poke(true.B)
-        dut.clock.step(2)
-        dut.reset.poke(false.B)
-        initHarness(dut)
-
-        for (elementBytes <- Seq(1, 2, 4)) {
-          val sourceRows = 64 / elementBytes
-          val beatsPerRow = sourceMajorElements * elementBytes / responseBytes
-          runTransposeTask(dut, elementBytes, sourceRows, beatsPerRow)
+        // The first two destinations share AML; the third can issue on BML
+        // while AML's first task is waiting for responses.
+        case class Task(isB: Boolean, trans: Boolean, reg: Int, base: Int)
+        val tasks = Seq(Task(false, true, 0, 0x1000), Task(true, true, 1, 0x2000), Task(true, false, 2, 0x3000))
+        case class Resp(id: BigInt, addr: Int)
+        val pending = Array.fill(2)(mutable.Queue.empty[Resp])
+        val launches = Array.fill(2)(mutable.ArrayBuffer.empty[Int])
+        val finishes = Array.fill(2)(0)
+        var next = 0
+        var cycle = 0
+        for (h <- 0 until 2) {
+          dut.io.memory(h).ConherentRequsetSourceID.valid.poke(false.B)
+          dut.io.memory(h).ConherentRequsetSourceID.bits.poke(0.U)
+          dut.io.memory(h).nonConherentRequsetSourceID.valid.poke(false.B)
+          dut.io.memory(h).nonConherentRequsetSourceID.bits.poke(0.U)
+          for (lane <- 0 until 8) {
+            dut.io.memory(h).Request(lane).ready.poke(true.B)
+            dut.io.memory(h).Response(lane).valid.poke(false.B)
+            dut.io.memory(h).Response(lane).bits.ReseponseData.poke(0.U)
+            dut.io.memory(h).Response(lane).bits.ReseponseSourceID.poke(0.U)
+            dut.io.memory(h).Response(lane).bits.ReseponseConherent.poke(true.B)
+          }
         }
-
-        // A legal e16 tail proves invalid bytes never become masked writes.
-        runTransposeTask(dut, elementBytes = 2, sourceRows = 1, beatsPerRow = 1, tailBytes = Some(62))
+        while (finishes.sum < 3 && cycle < 400) {
+          val t = tasks(next min 2)
+          dut.io.command.valid.poke((next < tasks.size).B)
+          dut.io.command.bits.ms.poke(t.reg.U)
+          dut.io.command.bits.ls.poke(false.B)
+          dut.io.command.bits.transpose.poke(t.trans.B)
+          dut.io.command.bits.isacc.poke(false.B)
+          dut.io.command.bits.isA.poke((!t.isB).B)
+          dut.io.command.bits.isB.poke(t.isB.B)
+          dut.io.command.bits.baseAddr.poke(t.base.U)
+          dut.io.command.bits.stride.poke(64.U)
+          dut.io.command.bits.row.poke(8.U)
+          dut.io.command.bits.column.poke(8.U)
+          dut.io.command.bits.widths.poke(0.U)
+          for (h <- 0 until 2) {
+            // Delay all responses to prove both physical FUs can be busy.
+            val resp = dut.io.memory(h).Response(0)
+            resp.valid.poke((cycle >= 30 && pending(h).nonEmpty).B)
+            if (pending(h).nonEmpty) {
+              resp.bits.ReseponseSourceID.poke(pending(h).front.id.U)
+              resp.bits.ReseponseData.poke(BigInt("0101010101010101" * 8, 16).U)
+            }
+          }
+          if (next < tasks.size && dut.io.command.ready.peek().litToBoolean) next += 1
+          for (h <- 0 until 2) {
+            if (dut.io.dispatch(h).peek().litToBoolean) launches(h) += cycle
+            if (dut.io.completed(h).peek().litToBoolean) finishes(h) += 1
+            val resp = dut.io.memory(h).Response(0)
+            if (resp.valid.peek().litToBoolean && resp.ready.peek().litToBoolean) pending(h).dequeue()
+            for (lane <- 0 until 8) {
+              val req = dut.io.memory(h).Request(lane)
+              if (req.valid.peek().litToBoolean) {
+                val addr = req.bits.RequestAddr.peek().litValue.toInt
+                assert((h == 0 && addr >= 0x1000 && addr < 0x3000) || (h == 1 && addr >= 0x3000))
+                pending(h).enqueue(Resp(req.bits.RequestSourceID.peek().litValue, addr))
+              }
+              if (dut.io.target(h).BankAddr(lane).valid.peek().litToBoolean) {
+                val id = dut.io.targetId(h).peek().litValue.toInt
+                assert(if (h == 0) id == finishes(0) else id == 2)
+              }
+            }
+          }
+          if (cycle == 29) {
+            assert(launches(0).size == 1 && launches(1).size == 1,
+              "normal B load should overlap first transpose; second transpose must wait")
+          }
+          dut.clock.step()
+          cycle += 1
+        }
+        assert(finishes.toSeq == Seq(2, 1))
+        assert(launches(0).size == 2 && launches(1).size == 1)
+        assert(launches(0)(1) > 30 && pending.forall(_.isEmpty))
       }
   }
+}
 
-  it should "place AML e8/e16/e32 bytes at the correct bank, entry, and offset" in {
-    runAllPrecisions(isB = false)
-  }
-
-  it should "place BML e8/e16/e32 bytes at the correct bank, entry, and offset" in {
-    runAllPrecisions(isB = true)
-  }
+/** Narrow synthesis-RTL/elaboration check, including the optional difftest
+  * wiring. Example: CUTE.test.runMain cute.EmitTransposeLoad 8 8 true outDir
+  */
+object EmitTransposeLoad extends App {
+  require(args.length == 4, "banks mode difftest output-directory")
+  implicit val p: Parameters = TransposeTestParams(args(0).toInt, args(1), args(2).toBoolean)
+  ChiselDB.init(false)
+  Constantin.init(false)
+  (new ChiselStage).execute(
+    Array("-td", args(3), "--target", "systemverilog", "--split-verilog"),
+    Seq(ChiselGeneratorAnnotation(() => new TransposeLoaderIntegrationHarness),
+      FirtoolOption("--disable-annotation-unknown")))
 }

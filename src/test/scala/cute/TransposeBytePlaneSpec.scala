@@ -1,304 +1,160 @@
 package cute
 
 import chisel3._
-import chisel3.util._
 import chiseltest._
 import org.chipsalliance.cde.config.{Config, Parameters}
 import org.scalatest.flatspec.AnyFlatSpec
-
 import scala.collection.mutable
+import scala.util.Random
 
-object TransposeBytePlaneTestConfig {
-  val params: Parameters = new Config((_, _, _) => {
-    case CuteParamsKey => CuteParams.CUTE_8Tops_128SCP
-  })
-}
-
-class TransposeAddressScaleHarness(implicit p: Parameters) extends CuteModule {
-  private val indexWidth = MatrixRegMaxTensorDimBitSize
-  private val groupBaseWidth = indexWidth + log2Ceil(ABMatrixRegEntryByteSize + 1)
-  private val beatBaseWidth = indexWidth + log2Ceil(Trans_Load_Size + 1) + log2Ceil(ReduceGroupSize + 1)
-
-  val io = IO(new Bundle {
-    val elementBytes = Input(UInt(3.W))
-    val groupIndex = Input(UInt(indexWidth.W))
-    val beatIndex = Input(UInt(indexWidth.W))
-    val elementSlot = Input(UInt(log2Ceil(Trans_Load_Size).W))
-    val groupBase = Output(UInt(groupBaseWidth.W))
-    val beatBase = Output(UInt(beatBaseWidth.W))
-    val writeOffset = Output(UInt((log2Ceil(Trans_Load_Size) + log2Ceil(ReduceGroupSize)).W))
-  })
-
-  io.groupBase := TransposeBytePlane.groupBase(
-    io.groupIndex, io.elementBytes, ABMatrixRegEntryByteSize
-  )
-  io.beatBase := TransposeBytePlane.beatEntryBase(
-    io.beatIndex, io.elementBytes, Trans_Load_Size, ReduceGroupSize
-  )
-  io.writeOffset := TransposeBytePlane.reduceGroupOffset(io.elementSlot, ReduceGroupSize)
+object TransposeTestParams {
+  def apply(banks: Int, mode: String = "8", diff: Boolean = false): Parameters =
+    new Config((_, _, _) => {
+      case CuteParamsKey => (if (banks == 8) CuteParams.CUTE_8Tops_128SCP else CuteParams.CUTE_2Tops).copy(
+        Debug = CuteDebugParams.NoDebug, EnableDifftest = diff,
+        LoaderBridgeChannelConfig = s"A${mode}B${mode}CLLCSL")
+    })
 }
 
 class TransposeBytePlaneSpec extends AnyFlatSpec with ChiselScalatestTester {
-  behavior of "the streaming transpose byte-plane path"
+  behavior of "SP-2 DFF transpose engine"
+  private case class Pending(slot: Boolean, row: Int, address: Long)
+  private val base = 0x1000L
+  private val stride = 640L // aligned, non-power-of-two, crosses 4KB physically
+  private def byteAt(r: Int, c: Int, b: Int): Int = (r * 37 + c * 11 + b * 53 + 0x81) & 255
 
-  private val responseBytes = 64
-  private val bankCount = 8
-  private val entryBytes = 32
-  private val reduceGroupSize = 2
-  private val byteSlots = responseBytes / bankCount
-  private val testBank = 3
+  for (banks <- Seq(4, 8); ports <- Seq(1, banks)) {
+    it should s"transpose tails and sustain overlapping fill/drain with $banks banks and $ports ports" in {
+      test(new TransposeLoadEngine(ports)(TransposeTestParams(banks, ports.toString)))
+        .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+          val rng = new Random(514 + banks + ports)
+          dut.io.command.valid.poke(false.B)
+          dut.io.done.ready.poke(false.B)
+          dut.io.writeback.ready.poke(false.B)
+          for (p <- 0 until ports) {
+            dut.io.request(p).ready.poke(false.B)
+            dut.io.response(p).valid.poke(false.B)
+            dut.io.response(p).bits.slot.poke(false.B)
+            dut.io.response(p).bits.row.poke(0.U)
+            dut.io.response(p).bits.data.poke(0.U)
+          }
 
-  private def sourceByteIndex(elementBytes: Int, bank: Int, slot: Int): Int =
-    elementBytes * (bank + bankCount * (slot / elementBytes)) + (slot % elementBytes)
-
-  private def byteValue(row: Int, byteIndex: Int): Int =
-    (0x31 + row * 67 + byteIndex * 13) & 0xff
-
-  private def responseData(row: Int): BigInt =
-    (0 until responseBytes).foldLeft(BigInt(0)) { case (packed, byteIndex) =>
-      packed | (BigInt(byteValue(row, byteIndex)) << (byteIndex * 8))
-    }
-
-  private def responseMask(elementBytes: Int, maskedPhases: Set[Int]): BigInt = {
-    val invalidBytes = maskedPhases.map(phase => sourceByteIndex(elementBytes, testBank, phase))
-    (0 until responseBytes).foldLeft(BigInt(0)) { case (mask, byteIndex) =>
-      if (invalidBytes.contains(byteIndex)) mask else mask | (BigInt(1) << byteIndex)
-    }
-  }
-
-  private def initPipe(dut: TransAlignPipe): Unit = {
-    dut.io.in_data.poke(0.U)
-    dut.io.in_mask.poke(0.U)
-    dut.io.resp_beat_cnt.poke(0.U)
-    dut.io.entry_offset.poke(0.U)
-    dut.io.bytes_per_element.poke(1.U)
-    dut.io.debug_time.poke(0.U)
-    dut.io.is_drain_trigger.poke(false.B)
-    dut.io.in_valid.poke(false.B)
-    dut.io.out.ready.poke(true.B)
-  }
-
-  private def runPipeCase(elementBytes: Int, rows: Int, permutation: Seq[Int], maskedPhases: Set[Int] = Set.empty): Unit = {
-    test(new TransAlignPipe(testBank)(TransposeBytePlaneTestConfig.params))
-      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
-        dut.reset.poke(true.B)
-        dut.clock.step(2)
-        dut.reset.poke(false.B)
-        initPipe(dut)
-
-        val observed = mutable.ArrayBuffer.empty[(Int, Int)]
-        var emptyPhaseTransactions = 0
-
-        def observeOutput(): Unit = {
-          if (dut.io.out.valid.peek().litToBoolean) {
-            val phase = dut.io.out.bits(0).phase.peek().litValue.toInt
-            var anyByteValid = false
-            for (lane <- 0 until byteSlots) {
-              dut.io.out.bits(lane).phase.expect(phase.U)
-              if (dut.io.out.bits(lane).mask.peek().litToBoolean) {
-                anyByteValid = true
-                val byteOffset = dut.io.out.bits(lane).entry_offset.peek().litValue.toInt
-                val plane = phase % elementBytes
-                assert(byteOffset >= plane && (byteOffset - plane) % elementBytes == 0,
-                  s"e$elementBytes phase $phase produced non-element-aligned offset $byteOffset")
-                val row = (byteOffset - plane) / elementBytes
-                assert(row >= 0 && row < rows, s"e$elementBytes row $row outside group")
-                val expectedByteIndex = sourceByteIndex(elementBytes, testBank, phase)
-                dut.io.out.bits(lane).data.expect(byteValue(row, expectedByteIndex).U)
-                observed += phase -> row
+          def run(rows: Int, columns: Int, lg: Int, stalls: Boolean): Unit = {
+            val e = 1 << lg
+            val expected = (for (r <- 0 until rows; c <- 0 until columns; b <- 0 until e) yield {
+              ((c % banks, (c / banks) * 2 + (r * e) / 32, (r * e + b) % 32), byteAt(r, c, b))
+            }).toMap
+            val actual = mutable.Map.empty[(Int, Int, Int), Int]
+            val requests = mutable.Set.empty[Long]
+            val pending = mutable.ArrayBuffer.empty[Pending]
+            dut.io.command.ready.expect(true.B)
+            dut.io.command.bits.base.poke(base.U)
+            dut.io.command.bits.stride.poke(stride.U)
+            dut.io.command.bits.rows.poke(rows.U)
+            dut.io.command.bits.columns.poke(columns.U)
+            dut.io.command.bits.elementLgBytes.poke(lg.U)
+            dut.io.command.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.command.valid.poke(false.B)
+            var cycle = 0
+            var overlap = false
+            var heldOutput: Option[BigInt] = None
+            val heldRequests = Array.fill[Option[Pending]](ports)(None)
+            while (!dut.io.done.valid.peek().litToBoolean && cycle < 4000) {
+              val outReady = !stalls || rng.nextInt(4) != 0
+              dut.io.writeback.ready.poke(outReady.B)
+              val offered = (0 until ports).map(p =>
+                if (stalls && rng.nextInt(5) == 0) None
+                else rng.shuffle(pending.filter(_.row % ports == p).toSeq).headOption)
+              for (p <- 0 until ports) {
+                dut.io.request(p).ready.poke((!stalls || rng.nextInt(4) != 0).B)
+                val resp = dut.io.response(p)
+                resp.valid.poke(offered(p).nonEmpty.B)
+                offered(p).foreach { m =>
+                  val r = ((m.address - base) / stride).toInt
+                  val colByte = ((m.address - base) % stride).toInt
+                  val bits = (0 until 64).foldLeft(BigInt(0)) { (x, i) =>
+                    x | (BigInt(byteAt(r, (colByte + i) / e, (colByte + i) % e)) << (8 * i))
+                  }
+                  resp.bits.slot.poke(m.slot.B)
+                  resp.bits.row.poke(m.row.U)
+                  resp.bits.data.poke(bits.U)
+                }
               }
+              var received = false
+              for (p <- offered.indices if offered(p).nonEmpty && dut.io.response(p).ready.peek().litToBoolean) {
+                assert(pending.contains(offered(p).get))
+                pending -= offered(p).get
+                received = true
+              }
+              for (p <- 0 until ports) {
+                val req = dut.io.request(p)
+                if (req.valid.peek().litToBoolean) {
+                  val m = Pending(req.bits.slot.peek().litToBoolean, req.bits.row.peek().litValue.toInt,
+                    req.bits.address.peek().litValue.toLong)
+                  heldRequests(p).foreach(old => assert(m == old, "request changed under backpressure"))
+                  if (req.ready.peek().litToBoolean) {
+                    assert(!requests(m.address), s"duplicate address ${m.address}")
+                    assert(!pending.exists(x => x.slot == m.slot && x.row == m.row), "slot reused too early")
+                    requests += m.address
+                    pending += m
+                    heldRequests(p) = None
+                  } else heldRequests(p) = Some(m)
+                } else assert(heldRequests(p).isEmpty, "request withdrawn under backpressure")
+              }
+              val out = dut.io.writeback
+              if (out.valid.peek().litToBoolean) {
+                // Pack the hardware fields in software; avoid constructing
+                // hardware (asUInt) in the test driver's simulation context.
+                val signature = out.bits.data.map(_.peek().litValue).foldLeft(BigInt(0))((a, x) => (a << 256) | x) ^
+                  out.bits.mask.map(_.peek().litValue).foldLeft(BigInt(0))((a, x) => (a << 32) | x)
+                heldOutput.foreach(old => assert(old == signature, "writeback changed under backpressure"))
+                heldOutput = if (outReady) None else Some(signature)
+                if (outReady) {
+                  overlap ||= received
+                  for (bank <- 0 until banks) {
+                    val addr = out.bits.address(bank).peek().litValue.toInt
+                    val mask = out.bits.mask(bank).peek().litValue
+                    val data = out.bits.data(bank).peek().litValue
+                    for (b <- 0 until 32 if mask.testBit(b)) {
+                      val key = (bank, addr, b)
+                      assert(!actual.contains(key), s"duplicate write $key")
+                      actual(key) = ((data >> (8 * b)) & 255).toInt
+                    }
+                  }
+                }
+              } else assert(heldOutput.isEmpty, "writeback withdrawn under backpressure")
+              dut.clock.step()
+              cycle += 1
             }
-            if (!anyByteValid) {
-              emptyPhaseTransactions += 1
+            assert(cycle < 4000, s"timeout rows=$rows columns=$columns lg=$lg pending=$pending")
+            assert(pending.isEmpty)
+            assert(requests.size == rows * ((columns * e + 63) / 64))
+            assert(actual.toMap == expected, s"transpose mismatch rows=$rows columns=$columns lg=$lg")
+            dut.io.command.ready.expect(false.B)
+            dut.clock.step(3)
+            dut.io.done.valid.expect(true.B) // completion must wait for its consumer
+            dut.io.done.ready.poke(true.B)
+            dut.clock.step()
+            dut.io.done.ready.poke(false.B)
+            dut.io.command.ready.expect(true.B)
+            if (!stalls && rows * e == 64 && columns == (if (banks == 8) 128 else 64)) {
+              val groups = ((rows + 7) / 8) * ((columns * e + 63) / 64)
+              val ideal = math.max(8 / ports, 64 / (banks * e))
+              assert(cycle <= 10 + groups * (ideal + 4), s"unexpected throughput regression: $cycle cycles")
+              assert(overlap, "ping-pong never overlapped fill and output")
+              println(f"SP2_PERF banks=$banks ports=$ports e${8 * e} bytes=${rows * columns * e} cycles=$cycle B/cycle=${rows * columns * e.toDouble / cycle}%.2f")
             }
           }
+          for (lg <- 0 to 2) {
+            run(0, 0, lg, stalls = true)
+            run(1, 1, lg, stalls = true)
+            run(7, 9, lg, stalls = true)
+            run(9, 17, lg, stalls = true)
+            run(64 / (1 << lg) - 1, (if (banks == 8) 127 else 63), lg, stalls = true)
+            run(64 / (1 << lg), (if (banks == 8) 128 else 64), lg, stalls = false)
+          }
         }
-
-        permutation.zipWithIndex.foreach { case (row, arrival) =>
-          dut.io.in_data.poke(responseData(row).U)
-          dut.io.in_mask.poke(responseMask(elementBytes, maskedPhases).U)
-          dut.io.resp_beat_cnt.poke(arrival.U)
-          dut.io.entry_offset.poke(row.U)
-          dut.io.bytes_per_element.poke(elementBytes.U)
-          dut.io.is_drain_trigger.poke((arrival == rows - 1).B)
-          dut.io.in_valid.poke(true.B)
-          observeOutput()
-          dut.clock.step()
-        }
-
-        dut.io.in_valid.poke(false.B)
-        dut.io.is_drain_trigger.poke(false.B)
-        for (_ <- 0 until 96) {
-          observeOutput()
-          dut.clock.step()
-        }
-
-        val expected = for {
-          row <- 0 until rows
-          phase <- 0 until byteSlots
-          if !maskedPhases.contains(phase)
-        } yield phase -> row
-        assert(observed.sorted == expected.sorted,
-          s"e$elementBytes pipe mapping did not preserve the expected phase/row set")
-        assert(observed.distinct.size == observed.size,
-          s"e$elementBytes pipe emitted a duplicate byte-plane packet")
-        if (maskedPhases.nonEmpty) {
-          assert(emptyPhaseTransactions > 0,
-            "an all-byte-invalid logical phase must continue through the pipe")
-          assert(observed.exists(_._1 > maskedPhases.max),
-            "a valid phase after an all-byte-invalid phase was lost")
-        }
-      }
-  }
-
-  it should "match the frozen e8/e16/e32 mapping model" in {
-    for (elementBytes <- Seq(1, 2, 4); bank <- Seq(0, 3, 7); slot <- 0 until byteSlots) {
-      val q = slot / elementBytes
-      val plane = slot % elementBytes
-      val expectedSource = elementBytes * (bank + bankCount * q) + plane
-      assert(sourceByteIndex(elementBytes, bank, slot) == expectedSource)
-      assert(TransposeBytePlane.sourceByteIndex(bank, slot, elementBytes, bankCount) == expectedSource)
     }
-
-    for (elementBytes <- Seq(1, 2, 4); group <- Seq(0, 1); beat <- Seq(0, 1); row <- 0 until entryBytes / elementBytes; phase <- 0 until byteSlots) {
-      val q = phase / elementBytes
-      val plane = phase % elementBytes
-      val base = group + beat * ((byteSlots / elementBytes) * reduceGroupSize)
-      val entry = base + q * reduceGroupSize
-      val byteOffset = row * elementBytes + plane
-      assert(entry >= 0 && entry < 32, s"e$elementBytes entry $entry outside the physical bank")
-      assert(byteOffset >= 0 && byteOffset < entryBytes, s"e$elementBytes byte offset $byteOffset outside the entry")
-    }
-  }
-
-  it should "select constant shifts for transpose group and beat bases" in {
-    test(new TransposeAddressScaleHarness()(TransposeBytePlaneTestConfig.params))
-      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
-        for {
-          elementBytes <- Seq(1, 2, 4)
-          groupIndex <- Seq(0, 1, 7, 31)
-          beatIndex <- Seq(0, 1, 3, 7)
-          elementSlot <- 0 until byteSlots
-        } {
-          dut.io.elementBytes.poke(elementBytes.U)
-          dut.io.groupIndex.poke(groupIndex.U)
-          dut.io.beatIndex.poke(beatIndex.U)
-          dut.io.elementSlot.poke(elementSlot.U)
-
-          dut.io.groupBase.expect((groupIndex * (entryBytes / elementBytes)).U)
-          dut.io.beatBase.expect((beatIndex * ((byteSlots / elementBytes) * reduceGroupSize)).U)
-          dut.io.writeOffset.expect((elementSlot * reduceGroupSize).U)
-        }
-      }
-  }
-
-  it should "cover every physical entry for a 128 by 64-byte raw tile" in {
-    val sourceMajorElements = 128
-    val sourceReduceBytes = 64
-
-    for (elementBytes <- Seq(1, 2, 4)) {
-      val sourceRows = sourceReduceBytes / elementBytes
-      val groupRows = entryBytes / elementBytes
-      val responseBeats = sourceMajorElements * elementBytes / responseBytes
-      val groups = sourceRows / groupRows
-
-      assert(groups == 2, s"e$elementBytes expected two source-row groups")
-      assert(sourceRows % groupRows == 0, s"e$elementBytes source rows must be group aligned")
-      assert(sourceMajorElements * elementBytes % responseBytes == 0,
-        s"e$elementBytes source rows must be response aligned")
-
-      val writeLocations = for {
-        group <- 0 until groups
-        beat <- 0 until responseBeats
-        row <- 0 until groupRows
-        phase <- 0 until byteSlots
-      } yield {
-        val q = phase / elementBytes
-        val plane = phase % elementBytes
-        val entry = group + beat * ((byteSlots / elementBytes) * reduceGroupSize) + q * reduceGroupSize
-        val byteOffset = row * elementBytes + plane
-        assert(entry >= 0 && entry < 32, s"e$elementBytes entry $entry outside the physical bank")
-        assert(byteOffset >= 0 && byteOffset < entryBytes,
-          s"e$elementBytes byte offset $byteOffset outside the entry")
-        entry -> byteOffset
-      }
-
-      assert(writeLocations.distinct.size == writeLocations.size,
-        s"e$elementBytes physical byte mapping aliases two source bytes")
-      assert(writeLocations.size == 32 * entryBytes,
-        s"e$elementBytes did not cover every byte in one physical bank")
-      assert(writeLocations.map(_._1).toSet == (0 until 32).toSet,
-        s"e$elementBytes did not cover physical entries 0 through 31")
-    }
-  }
-
-  it should "preserve e8 byte planes through a response permutation" in {
-    runPipeCase(elementBytes = 1, rows = 32, permutation = (0 until 32).reverse)
-  }
-
-  it should "preserve e16 byte planes through a response permutation" in {
-    runPipeCase(elementBytes = 2, rows = 16, permutation = Seq(4, 0, 12, 8, 1, 13, 5, 9, 2, 14, 6, 10, 3, 15, 7, 11))
-  }
-
-  it should "preserve e32 byte planes through a response permutation" in {
-    runPipeCase(elementBytes = 4, rows = 8, permutation = Seq(5, 0, 7, 2, 6, 1, 4, 3))
-  }
-
-  it should "advance a fully invalid e16 phase without shifting the following phase" in {
-    runPipeCase(elementBytes = 2, rows = 16, permutation = (0 until 16).reverse, maskedPhases = Set(1))
-  }
-
-  it should "pipe router phase metadata independently from the final byte mask" in {
-    test(new OOORouter()(TransposeBytePlaneTestConfig.params))
-      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
-        dut.reset.poke(true.B)
-        dut.clock.step(2)
-        dut.reset.poke(false.B)
-        dut.io.in.valid.poke(false.B)
-        for (lane <- 0 until byteSlots) {
-          dut.io.in.bits(lane).data.poke(0.U)
-          dut.io.in.bits(lane).mask.poke(false.B)
-          dut.io.in.bits(lane).entry_offset.poke(0.U)
-          dut.io.in.bits(lane).phase.poke(0.U)
-        }
-
-        dut.io.in.valid.poke(true.B)
-        for (lane <- 0 until byteSlots) {
-          dut.io.in.bits(lane).phase.poke(1.U)
-        }
-        dut.clock.step()
-        dut.io.in.valid.poke(false.B)
-        dut.clock.step(2)
-        dut.io.txn_valid.expect(true.B)
-        dut.io.valid.expect(false.B)
-        dut.io.phase.expect(1.U)
-
-        dut.clock.step()
-        dut.io.in.valid.poke(true.B)
-        for (lane <- 0 until byteSlots) {
-          dut.io.in.bits(lane).data.poke(0.U)
-          dut.io.in.bits(lane).mask.poke(false.B)
-          dut.io.in.bits(lane).entry_offset.poke(0.U)
-          dut.io.in.bits(lane).phase.poke(6.U)
-        }
-        for (plane <- 0 until 4) {
-          dut.io.in.bits(plane).data.poke((0xa0 + plane).U)
-          dut.io.in.bits(plane).mask.poke(true.B)
-          dut.io.in.bits(plane).entry_offset.poke((20 + plane).U)
-        }
-        dut.clock.step()
-        dut.io.in.valid.poke(false.B)
-        dut.clock.step(2)
-
-        val expectedMask = (0 until 4).foldLeft(BigInt(0))((mask, plane) => mask | (BigInt(1) << (20 + plane)))
-        val expectedData = (0 until 4).foldLeft(BigInt(0)) { case (data, plane) =>
-          data | (BigInt(0xa0 + plane) << ((20 + plane) * 8))
-        }
-        dut.io.txn_valid.expect(true.B)
-        dut.io.valid.expect(true.B)
-        dut.io.phase.expect(6.U)
-        dut.io.final_mask.expect(expectedMask.U)
-        dut.io.final_data.expect(expectedData.U)
-      }
   }
 }

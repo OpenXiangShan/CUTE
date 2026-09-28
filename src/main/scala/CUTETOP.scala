@@ -13,7 +13,7 @@ class CUTETopIO()(implicit p: Parameters) extends CuteBundle{
     val perf = Output(new CutePerfToCoreIO)
 }
 
-class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends CuteModule {
+class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends CuteModule with HasTransposeLoadEngine {
     private val nameContext = VerilogNameHelper.sanitize(contextName)
     override def desiredName: String = s"${nameContext}Wrapper_${if (AMLUseLegacyLoader) "Legacy" else "Multi"}"
 
@@ -26,20 +26,18 @@ class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends Cu
     })
 
     if (!AMLUseLegacyLoader) {
-        val inner = Module(new MultiChannelsABMemLoader("AML", nameContext))
+        val inner = Module(new MultiChannelsABMemLoader("AML", nameContext, emitDifftest = false))
             .suggestName(s"${nameContext}_multi_loader")
-        inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
-        inner.io.ConfigInfo <> io.ConfigInfo
-        inner.io.LocalMMUIO <> io.LocalMMUIO
+        connectTransposeLoadEngine(io.ConfigInfo, io.LocalMMUIO, io.ToMatrixRegIO, io.MatrixRegId,
+          inner.io.ConfigInfo, inner.io.LocalMMUIO, inner.io.ToMatrixRegIO, inner.io.MatrixRegId,
+          legacy = false, diffIndex = 0)
         inner.io.DebugInfo <> io.DebugInfo
-        io.MatrixRegId := inner.io.MatrixRegId
     } else {
-        val inner = Module(new AMemoryLoader).suggestName(s"${nameContext}_legacy_loader")
-        inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
-        inner.io.ConfigInfo <> io.ConfigInfo
-        inner.io.LocalMMUIO <> io.LocalMMUIO
+        val inner = Module(new AMemoryLoader(emitDifftest = false)).suggestName(s"${nameContext}_legacy_loader")
+        connectTransposeLoadEngine(io.ConfigInfo, io.LocalMMUIO, io.ToMatrixRegIO, io.MatrixRegId,
+          inner.io.ConfigInfo, inner.io.LocalMMUIO, inner.io.ToMatrixRegIO, inner.io.MatrixRegId,
+          legacy = true, diffIndex = 0)
         inner.io.DebugInfo <> io.DebugInfo
-        io.MatrixRegId := inner.io.MatrixRegId
     }
 }
 
@@ -377,7 +375,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     val ASMRegs = Option.when(cuteMatrixExtension.enableScalingFactor)(
       Seq.tabulate(2)(i => Module(new ABScaleMatrixReg)).toVector
-    ) //双缓冲
+    ) // Double-buffered storage.
     val ASC = Option.when(cuteMatrixExtension.enableScalingFactor)(
       Module(new AScaleController)
     )
@@ -387,7 +385,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     val BSMRegs = Option.when(cuteMatrixExtension.enableScalingFactor)(
       Seq.tabulate(2)(i => Module(new ABScaleMatrixReg)).toVector
-    ) //双缓冲
+    ) // Double-buffered storage.
     val BSC = Option.when(cuteMatrixExtension.enableScalingFactor)(
       Module(new BScaleController)
     )
@@ -409,14 +407,14 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     DebugTimeStampe := DebugTimeStampe + 1.U
 
     TaskCtrl.io.DebugTimeStampe := DebugTimeStampe
-    //ADC的默认输入
+    // Default ADC inputs.
     ADC.io.FromMatrixRegIO.Data.valid := false.B
     ADC.io.FromMatrixRegIO.BankAddr.ready := false.B
     ADC.io.ConfigInfo <> TaskCtrl.io.ADC_MicroTask_Config
     ADC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
 
     ASC.foreach { asc =>
-        //ASC的默认输入
+        // Default ASC inputs.
         asc.io.FromMatrixRegIO.Data.valid := false.B
         asc.io.FromMatrixRegIO.Data.bits := 0.U.asTypeOf(asc.io.FromMatrixRegIO.Data.bits)
         asc.io.FromMatrixRegIO.BankAddr.ready := false.B
@@ -424,7 +422,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         asc.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     }
 
-    //AML的默认输入
+    // Default AML inputs.
     AML.io.ConfigInfo <> TaskCtrl.io.AML_MicroTask_Config
     AML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     if (!AMLUseLegacyLoader) {
@@ -445,20 +443,20 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     }
 
     ASL.foreach { asl =>
-        //ASL的默认输入
+    // Default ASL inputs.
         asl.io.ConfigInfo <> TaskCtrl.io.ASL_MicroTask_Config.get
         asl.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
         connectWithResponseArbiter(asl.io.LocalMMUIO, MMU.io.ASLocalMMUIO, ABMatrixRegNBanks, "ASL_legacy_1resp")
     }
 
-    //BDC的默认输入
+    // Default BDC inputs.
     BDC.io.FromMatrixRegIO.Data.valid := false.B
     BDC.io.FromMatrixRegIO.BankAddr.ready := false.B
     BDC.io.ConfigInfo <> TaskCtrl.io.BDC_MicroTask_Config
     BDC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
 
     BSC.foreach { bsc =>
-        //BSC的默认输入
+    // Default BSC inputs.
         bsc.io.FromMatrixRegIO.Data.valid := false.B
         bsc.io.FromMatrixRegIO.Data.bits := 0.U.asTypeOf(bsc.io.FromMatrixRegIO.Data.bits)
         bsc.io.FromMatrixRegIO.BankAddr.ready := false.B
@@ -466,7 +464,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         bsc.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     }
 
-    //BML的默认输入
+    // Default BML inputs.
     BML.io.ConfigInfo <> TaskCtrl.io.BML_MicroTask_Config
     BML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     if (!BMLUseLegacyLoader) {
@@ -487,7 +485,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     }
 
     BSL.foreach { bsl =>
-        //BSL的默认输入
+    // Default BSL inputs.
         bsl.io.ConfigInfo <> TaskCtrl.io.BSL_MicroTask_Config.get
         bsl.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
         connectWithResponseArbiter(bsl.io.LocalMMUIO, MMU.io.BSLocalMMUIO, ABMatrixRegNBanks, "BSL_legacy_1resp")
@@ -504,13 +502,13 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         }
     }
 
-    //CDC的默认输入
+    // Default CDC inputs.
     CDC.io.FromMatrixRegIO.ReadResponseData := 0.U.asTypeOf(CDC.io.FromMatrixRegIO.ReadResponseData)
     CDC.io.FromMatrixRegIO.ReadWriteResponse := 0.U.asTypeOf(CDC.io.FromMatrixRegIO.ReadWriteResponse)
     CDC.io.ConfigInfo <> TaskCtrl.io.CDC_MicroTask_Config
     CDC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
 
-    //CML的默认输入
+    // Default CML inputs.
     CML.io.ConfigInfo <> TaskCtrl.io.CML_MicroTask_Config
     CML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     if (!CLoadUseLegacyLoader) {
@@ -593,7 +591,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     BSC.foreach(_.io.ComputeGo := MTE.io.ComputeGo)
     CDC.io.ComputeGo := MTE.io.ComputeGo
     
-    //后续需要连入CPU的MMU或者IOMMU
+    // Connect to the CPU MMU or IOMMU in a future integration.
     MMU.io.LastLevelCacheTLIO <> io.mmu2llc
 
     io.ctrl2top <> TaskCtrl.io.ygjkctrl
@@ -621,14 +619,14 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     perf.memEvents(11) := MMU.io.perfProbe.wr32BReq
     io.perf := RegNext(perf, 0.U.asTypeOf(new CutePerfToCoreIO))
 
-    //给每个 MatrixReg 的输入进行默认赋值
+    // Assign default inputs for each MatrixReg.
     
     // AB MatrixReg
     for (i <- 0 until ABMatrixRegCount){
-        //DataController的请求
+        // DataController requests.
         ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
         ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
-        //MemoryLoader的请求
+        // MemoryLoader requests.
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
         ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ByteMask := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ByteMask)
@@ -652,14 +650,14 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     }
 
     // ============================================
-    // A Scale MatrixReg 路由逻辑 (双缓冲)
+        // A Scale MatrixReg routing logic (double-buffered).
     // ============================================
     def connectScaleControlToRegs(
         spadId: UInt,
         ScaleCtrlIO: ABScaleControlMatrixRegIO,
         ScaleRegs: Seq[ABScaleMatrixReg]
     ): Unit = {
-        // ASC 选择 ScaleRegs，根据 SpadId 选择对应的 MatrixReg
+        // ASC selects ScaleRegs and the MatrixReg selected by SpadId.
         for (spadIdx <- 0 until ScaleRegs.length) {
             val dest = ScaleRegs(spadIdx).io.FromScaleController
             val ascSel = spadId === spadIdx.U
@@ -672,7 +670,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             }
         }
 
-        // ASC 接收 ScaleRegs 返回的数据
+        // ASC receives ScaleRegs responses.
         val sels = ScaleRegs.indices.map(spadId === _.U)
         ScaleCtrlIO.BankAddr.ready := Mux1H(sels zip ScaleRegs.map(_.io.FromScaleController.BankAddr.ready))
         ScaleCtrlIO.Data.valid     := Mux1H(sels zip ScaleRegs.map(_.io.FromScaleController.Data.valid))
@@ -684,7 +682,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         ScaleLoaderIO: ABScaleLoaderMatrixRegIO,
         ScaleRegs: Seq[ABScaleMatrixReg]
     ): Unit = {
-        // ASL 选择 ScaleRegs，根据 SpadId 选择对应的 MatrixReg
+        // ASL selects ScaleRegs and the MatrixReg selected by SpadId.
         for (spadIdx <- 0 until ScaleRegs.length) {
             val dest = ScaleRegs(spadIdx).io.FromScaleLoader
             val aslSel = spadId === spadIdx.U
