@@ -624,6 +624,7 @@ case class CuteParams(
     val MsyncRegs :Int = 32,
 
     val EnableDifftest: Boolean = false, //whether DiffTest is enabled
+    val DifftestAsyncClockName: Option[String] = None,
 
     // Statically elaborate matrix-prefetch descriptors, control signals, and request tags.
     val EnableMatrixPrefetch: Boolean = false,
@@ -883,6 +884,7 @@ trait HasCuteParams {
     def ReduceGroupSize = cuteParams.ReduceGroupSize
     def EnableDifftest = cuteParams.EnableDifftest
     def EnableMatrixPrefetch = cuteParams.EnableMatrixPrefetch
+    def DifftestAsyncClockName = cuteParams.DifftestAsyncClockName
     def L2NBanks = cuteParams.L2NBanks
     def LoaderBridgeChannelConfig = cuteParams.LoaderBridgeChannelConfig
     def parsedLoaderBridgeChannelConfig = cuteParams.parsedLoaderBridgeChannelConfig

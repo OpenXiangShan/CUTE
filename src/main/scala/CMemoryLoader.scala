@@ -88,7 +88,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         val loadFinishAny = io.ConfigInfo.LoadMicroTaskEndValid && io.ConfigInfo.LoadMicroTaskEndReady
         val storeFinishAny = io.ConfigInfo.StoreMicroTaskEndValid && io.ConfigInfo.StoreMicroTaskEndReady
 
-        val difftestLoadFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestLoadFinish = CuteDifftest(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         difftestLoadFinish.coreid := LoadCoreidReg.get
         difftestLoadFinish.index := 2.U
         difftestLoadFinish.valid := loadWriteAny || loadFinishAny
@@ -116,7 +116,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         difftestLoadFinish.finish := loadFinishAny
 
         // Store path has no per-bank writeback payload, only finish handshake.
-        val difftestStoreFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestStoreFinish = CuteDifftest(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         difftestStoreFinish.coreid := StoreCoreidReg.get
         difftestStoreFinish.index := 5.U
         difftestStoreFinish.valid := storeFinishAny

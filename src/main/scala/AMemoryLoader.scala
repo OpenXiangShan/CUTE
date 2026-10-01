@@ -448,7 +448,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
           pcReg := io.ConfigInfo.pc.get
           coreidReg := io.ConfigInfo.coreid.get
         }
-        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestAmuFinish = CuteDifftest(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         difftestAmuFinish.coreid := coreidReg
         difftestAmuFinish.index := 0.U
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
