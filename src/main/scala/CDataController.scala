@@ -57,7 +57,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
           pcReg := io.ConfigInfo.pc.get
           coreidReg := io.ConfigInfo.coreid.get
         }
-        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestAmuFinish = CuteDifftest(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         // 默认值初始化
         difftestAmuFinish.coreid := coreidReg
         difftestAmuFinish.index := 3.U

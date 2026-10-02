@@ -570,16 +570,32 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   val readyByAge = VecInit(readyBySlot.rotate(winHead))
-  val issueFound = readyByAge.asUInt.orR
+  val normalIssueFound = readyByAge.asUInt.orR
   val issueAgeOH = PriorityEncoderOH(readyByAge)
   val issueSlotOH = VecInit(issueAgeOH.rotateRight(winHead))
+  val releaseHoldValid = RegInit(false.B)
+  val releaseHoldSlotIdx = RegInit(0.U(SlotIdxWidth.W))
   val issueSlotIdx = WireInit(0.U(SlotIdxWidth.W))
-  when(issueFound) {
+  when(releaseHoldValid) {
+    issueSlotIdx := releaseHoldSlotIdx
+  }.elsewhen(normalIssueFound) {
     issueSlotIdx := OHToUInt(issueSlotOH)
   }
 
-  val issueFire = issueFound
+  val issueFound = releaseHoldValid || normalIssueFound
   val issueSlot = slots(issueSlotIdx)
+  val issueSelectedIsRelease = issueFound && issueSlot.opKind === TaskCtrlOpKind.Release
+  val selectedRelease = issueSlot.entry.ctrl.data.asTypeOf(new AmuReleaseIO)
+  io.ygjkctrl.mrelease.valid := issueSelectedIsRelease
+  io.ygjkctrl.mrelease.bits.msyncRd(selectedRelease.msyncRd) := true.B
+  val issueFire = issueFound && (!issueSelectedIsRelease || io.ygjkctrl.mrelease.ready)
+
+  when(issueSelectedIsRelease && !io.ygjkctrl.mrelease.ready) {
+    releaseHoldValid := true.B
+    releaseHoldSlotIdx := issueSlotIdx
+  }.elsewhen(issueFire && issueSelectedIsRelease) {
+    releaseHoldValid := false.B
+  }
 
   val deqStoreReadsAB = deqIsLsu && (deqLsu.ls === 1.U) && !deqLsu.isacc
   val deqStoreReadsC = deqIsLsu && (deqLsu.ls === 1.U) && deqLsu.isacc
@@ -1136,8 +1152,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
       is(TaskCtrlOpKind.Release) {
         val issueRelease = issueCtrl.data.asTypeOf(new AmuReleaseIO)
-        io.ygjkctrl.mrelease.valid := true.B
-        io.ygjkctrl.mrelease.bits.msyncRd(issueRelease.msyncRd) := true.B
 
         releaseIssueEvent.eventType := 0.U
         releaseIssueEvent.msync := issueRelease.msyncRd
@@ -1565,7 +1579,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   // ===================== Release DiffTest alignment =====================
   if (EnableDifftest) {
-    val releaseFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 3, dontCare = true)
+    val releaseFinish = CuteDifftest(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 3, dontCare = true)
     val releaseIssueOwnerSlot = issueSlotIdx
     val releaseIssueOwnerEntry = issueSlot.entry
 

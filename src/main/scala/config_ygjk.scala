@@ -43,7 +43,7 @@ class MreleaseIO(implicit p: Parameters) extends CuteBundle {
 class YGJKControl(implicit p: Parameters) extends CuteBundle{
   val reset = Output(Bool())
   val amuCtrl = Decoupled(new AmuCtrlIO)
-  val mrelease = Flipped(Valid(new MreleaseIO))
+  val mrelease = Flipped(Decoupled(new MreleaseIO))
 }
 
 class YGJKIO(implicit p: Parameters) extends CuteBundle {
