@@ -578,7 +578,7 @@ class MultiChannelsABMemLoader(
           pcReg := io.ConfigInfo.pc.get
           coreidReg := io.ConfigInfo.coreid.get
         }
-        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestAmuFinish = MatrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K)
         difftestAmuFinish.coreid := coreidReg
         val diffIndexMap = Map(
             "AML" -> 0,

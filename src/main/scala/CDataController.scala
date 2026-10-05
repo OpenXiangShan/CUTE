@@ -60,7 +60,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         // 默认值初始化
         difftestAmuFinish.coreid := coreidReg
-        difftestAmuFinish.index := 3.U
+        difftestAmuFinish.index := 0.U
         difftestAmuFinish.valid := (io.FromMatrixRegIO.WriteBankAddr.map(_.valid).reduce(_||_)
           || (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
         difftestAmuFinish.pc := pcReg
