@@ -3,6 +3,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import difftest._
+import difftest.util.MatrixHash
 import org.chipsalliance.cde.config._
 import freechips.rocketchip.util.SeqToAugmentedSeq
 import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
