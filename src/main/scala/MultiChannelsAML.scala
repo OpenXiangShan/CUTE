@@ -200,6 +200,7 @@ class MultiChannelsABMemLoader(
                 reqQueue.io.enq.bits.RequestAddr := BaseVAddr + mIter * Stride + (kIter << log2Ceil(outsideDataWidthByte))
                 reqQueue.io.enq.bits.RequestConherent := Conherent
                 reqQueue.io.enq.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+                reqQueue.io.enq.bits.IsTranspose := false.B
                 reqQueue.io.enq.bits.RequestSourceID := sourceId
 
                 request.valid := reqQueue.io.deq.valid
@@ -292,6 +293,7 @@ class MultiChannelsABMemLoader(
         io.LocalMMUIO.Request(i).valid := false.B
         io.LocalMMUIO.Request(i).bits := 0.U.asTypeOf(io.LocalMMUIO.Request(i).bits)
         io.LocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.LocalMMUIO.Request(i).bits.IsTranspose := false.B
         io.LocalMMUIO.Response(i).ready := false.B
 
         normalReqQueues(i).io.enq.valid := false.B

@@ -54,12 +54,14 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         io.LoadLocalMMUIO.Request(i).valid := false.B
         io.LoadLocalMMUIO.Request(i).bits := DontCare
         io.LoadLocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.LoadLocalMMUIO.Request(i).bits.IsTranspose := false.B
         io.LoadLocalMMUIO.Request(i).bits.MatrixPrefetchTag.foreach(_ := 0.U)
         io.LoadLocalMMUIO.Request(i).bits.MatrixTraceTag.foreach(_ := 0.U)
         io.LoadLocalMMUIO.Response(i).ready := false.B
         io.StoreLocalMMUIO.Request(i).valid := false.B
         io.StoreLocalMMUIO.Request(i).bits := DontCare
         io.StoreLocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.StoreLocalMMUIO.Request(i).bits.IsTranspose := false.B
         io.StoreLocalMMUIO.Request(i).bits.MatrixPrefetchTag.foreach(_ := 0.U)
         io.StoreLocalMMUIO.Request(i).bits.MatrixTraceTag.foreach(_ := 0.U)
         io.StoreLocalMMUIO.Response(i).ready := false.B
@@ -410,6 +412,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                   )
                 }
                 ReadRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+                ReadRequest.bits.IsTranspose := false.B
                 ReadRequest.valid := (TotalRequestSize < MaxRequestIter)
 
                 //确定这个访存请求一定会发出
@@ -960,6 +963,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 WriteRequest.bits.MatrixTraceTag.zip(StoreTraceTag).foreach { case (to, from) => to := from }
                 WriteRequest.bits.RequestData := Request_Data.asUInt
                 WriteRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+                WriteRequest.bits.IsTranspose := false.B
                 WriteRequest.valid := true.B
 
                 //只有fire了才能继续

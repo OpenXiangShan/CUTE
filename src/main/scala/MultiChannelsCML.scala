@@ -68,10 +68,12 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         io.LoadLocalMMUIO.Request(i).valid := false.B
         io.LoadLocalMMUIO.Request(i).bits := 0.U.asTypeOf(io.LoadLocalMMUIO.Request(i).bits)
         io.LoadLocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.LoadLocalMMUIO.Request(i).bits.IsTranspose := false.B
         io.LoadLocalMMUIO.Response(i).ready := false.B
         io.StoreLocalMMUIO.Request(i).valid := false.B
         io.StoreLocalMMUIO.Request(i).bits := 0.U.asTypeOf(io.StoreLocalMMUIO.Request(i).bits)
         io.StoreLocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.StoreLocalMMUIO.Request(i).bits.IsTranspose := false.B
         io.StoreLocalMMUIO.Response(i).ready := false.B
     }
 
@@ -378,6 +380,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                   )
                 }
                 ReadRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+                ReadRequest.bits.IsTranspose := false.B
 
                 when(ReadRequest.fire){
                     val cycle = io.DebugInfo.DebugTimeStampe
@@ -704,6 +707,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
             WriteRequest.bits.MatrixTraceTag.zip(StoreTraceTag).foreach { case (to, from) => to := from }
             WriteRequest.bits.RequestData := StoreQueue.io.deq.bits
             WriteRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+            WriteRequest.bits.IsTranspose := false.B
 
 
 

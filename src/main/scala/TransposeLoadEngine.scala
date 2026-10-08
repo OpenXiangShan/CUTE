@@ -319,6 +319,7 @@ trait HasTransposeLoadEngine { this: CuteModule =>
         val req = engine.io.request(lane)
         val resp = engine.io.response(lane)
         val transReq = WireDefault(0.U.asTypeOf(new MMURequestIO))
+        transReq.IsTranspose := true.B
         transReq.RequestAddr := req.bits.address
         transReq.RequestConherent := coherent
         transReq.RequestSourceID := (req.bits.row(bankBits - 1, 0) << bankOffset) |

@@ -583,6 +583,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     perf.memEvents(6) := TaskCtrl.io.perfProbe.cmlLoadActive
     perf.memEvents(7) := TaskCtrl.io.perfProbe.cmlStoreActive
     perf.memEvents(8) := MMU.io.perfProbe.rdReq
+    perf.localMMU := MMU.io.perfProbe
     perf.memEvents(9) := MMU.io.perfProbe.wrReq
     perf.memEvents(10) := MMU.io.perfProbe.rd32BReq
     perf.memEvents(11) := MMU.io.perfProbe.wr32BReq

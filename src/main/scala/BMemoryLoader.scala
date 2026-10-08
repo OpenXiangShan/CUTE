@@ -271,6 +271,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             Request.bits.RequestType_isWrite := false.B
             Request.bits.UseAllocatedSourceID := true.B
             Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+            Request.bits.IsTranspose := false.B
             Request.valid := TotalRequestSize < MaxRequestIter
 
             when(Request.fire && sourceId.valid){//A valid source ID means this request can be issued.

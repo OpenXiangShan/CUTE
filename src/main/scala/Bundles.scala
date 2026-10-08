@@ -232,14 +232,25 @@ class TaskControllerPerfProbe(implicit p: Parameters) extends CuteBundle {
   val cmlStoreActive = Bool()
 }
 
-class LocalMMUPerfProbe extends Bundle {
+class LocalMMUPerfProbe(implicit p: Parameters) extends CuteBundle {
   val rdReq = Bool()
   val wrReq = Bool()
   val rd32BReq = UInt(6.W)
   val wr32BReq = UInt(6.W)
+  // Observational scheduler probes; these never feed request control.
+  val offered = Vec(6, UInt(log2Ceil(ABMatrixRegNBanks + 1).W))
+  val issued = Vec(6, UInt(log2Ceil(ABMatrixRegNBanks + 1).W))
+  val evaluated = Vec(6, UInt(ABMatrixRegNBanks.W))
+  val priorityBlocked = Vec(6, UInt(ABMatrixRegNBanks.W))
+  val selectedFire = Vec(6, UInt(ABMatrixRegNBanks.W))
+  val collisionMasked = Vec(4, UInt(ABMatrixRegNBanks.W))
+  val selectedOwner = Vec(ABMatrixRegNBanks, UInt(log2Ceil(7).W))
+  val held = UInt(ABMatrixRegNBanks.W)
+  val cLoadRefill = UInt(ABMatrixRegNBanks.W)
 }
 
 class CutePerfToCoreIO(implicit p: Parameters) extends CuteBundle {
+  val localMMU = new LocalMMUPerfProbe
   val backendEvents = Vec(CutePerfEventCounts.Backend, UInt(6.W))
   val memEvents = Vec(CutePerfEventCounts.Mem, UInt(6.W))
 }

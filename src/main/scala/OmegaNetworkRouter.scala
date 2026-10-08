@@ -13,6 +13,117 @@ class RoutedResponse(val dataWidth: Int, val sourceIdWidth: Int) extends Bundle 
   val coherent = Bool()
 }
 
+class OmegaRouteToken(val laneCount: Int) extends Bundle {
+  val valid = Bool()
+  val destinationLane = UInt(log2Ceil(laneCount max 2).W)
+  val origin = UInt(laneCount.W)
+}
+
+/** Shared topology equations used by both admission prediction and response routing. */
+object OmegaTopology {
+  def stageCount(laneCount: Int): Int = log2Ceil(laneCount)
+
+  def perfectShuffle(index: Int, laneCount: Int): Int = {
+    require(laneCount > 1)
+    ((index << 1) & (laneCount - 1)) | (index >> (stageCount(laneCount) - 1))
+  }
+
+  def destinationLane(bankId: UInt, laneCount: Int, outputCount: Int, bankCount: Int): UInt = {
+    val group = ResponseChannelHelper.groupIdOfBank(bankId, outputCount, bankCount)
+    val laneStride = laneCount / outputCount
+    if (laneStride == 1) group else (group << log2Ceil(laneStride))(log2Ceil(laneCount) - 1, 0)
+  }
+
+  def routeBit(destinationLane: UInt, laneCount: Int, stageIndex: Int): Bool = {
+    destinationLane(stageCount(laneCount) - 1 - stageIndex)
+  }
+
+  /**
+    * Predict the origins accepted by an Omega fabric when every exposed output is ready.
+    * Tokens are removed at the exact stage where the router's static switch arbitration
+    * would reject them, so a loser can never reappear at a later stage.
+    */
+  def survivorMask(valid: Seq[Bool], destinationLanes: Seq[UInt]): UInt = {
+    require(valid.nonEmpty && isPow2(valid.size))
+    require(valid.size == destinationLanes.size)
+    val laneCount = valid.size
+    if (laneCount == 1) {
+      valid.head.asUInt
+    } else {
+      val stages = Seq.fill(stageCount(laneCount) + 1)(Wire(Vec(laneCount, new OmegaRouteToken(laneCount))))
+      for (lane <- 0 until laneCount) {
+        stages.head(lane).valid := valid(lane)
+        stages.head(lane).destinationLane := destinationLanes(lane)
+        stages.head(lane).origin := UIntToOH(lane.U, laneCount)
+      }
+
+      for (stage <- 0 until stageCount(laneCount)) {
+        for (switch <- 0 until laneCount / 2) {
+          val topIndex = switch * 2
+          val bottomIndex = topIndex + 1
+          val top = stages(stage)(topIndex)
+          val bottom = stages(stage)(bottomIndex)
+          val topSelect = routeBit(top.destinationLane, laneCount, stage)
+          val bottomSelect = routeBit(bottom.destinationLane, laneCount, stage)
+          val topWinsOut0 = top.valid && !topSelect
+          val bottomWinsOut0 = bottom.valid && !bottomSelect && !topWinsOut0
+          val bottomWinsOut1 = bottom.valid && bottomSelect
+          val topWinsOut1 = top.valid && topSelect && !bottomWinsOut1
+          val out0 = Wire(new OmegaRouteToken(laneCount))
+          val out1 = Wire(new OmegaRouteToken(laneCount))
+
+          out0 := Mux(topWinsOut0, top, bottom)
+          out0.valid := topWinsOut0 || bottomWinsOut0
+          out1 := Mux(bottomWinsOut1, bottom, top)
+          out1.valid := bottomWinsOut1 || topWinsOut1
+
+          val out0Index = if (stage == stageCount(laneCount) - 1) topIndex else perfectShuffle(topIndex, laneCount)
+          val out1Index = if (stage == stageCount(laneCount) - 1) bottomIndex else perfectShuffle(bottomIndex, laneCount)
+          stages(stage + 1)(out0Index) := out0
+          stages(stage + 1)(out1Index) := out1
+        }
+      }
+
+      stages.last.map(token => Mux(token.valid, token.origin, 0.U)).reduce(_ | _)
+    }
+  }
+
+  /**
+    * Admit routes in physical-input order without allowing a newcomer to
+    * displace an already reserved route.  The returned bits retain physical
+    * input identity, just like [[survivorMask]].
+    */
+  def incrementalCompatibleMask(
+    valid: Seq[Bool],
+    destinationLanes: Seq[UInt],
+    reserved: Seq[Bool]
+  ): UInt = {
+    require(valid.nonEmpty && isPow2(valid.size))
+    require(valid.size == destinationLanes.size)
+    require(valid.size == reserved.size)
+
+    var accepted = reserved
+    for (physicalInput <- valid.indices) {
+      val newcomer = valid(physicalInput) && !reserved(physicalInput)
+      val tentative = accepted.updated(
+        physicalInput,
+        accepted(physicalInput) || newcomer
+      )
+      val tentativeSurvivors = survivorMask(tentative, destinationLanes)
+      val preservesAccepted = accepted.zipWithIndex.map { case (route, input) =>
+        !route || tentativeSurvivors(input)
+      }.reduce(_ && _)
+      val acceptNewcomer = newcomer &&
+        tentativeSurvivors(physicalInput) && preservesAccepted
+      accepted = accepted.updated(
+        physicalInput,
+        accepted(physicalInput) || acceptNewcomer
+      )
+    }
+    VecInit(accepted).asUInt
+  }
+}
+
 object VerilogNameHelper {
   def sanitize(raw: String): String = {
     val cleaned = raw.replaceAll("[^A-Za-z0-9_]", "_")
@@ -173,13 +284,8 @@ class OmegaResponseRouter(
     }
   }
 
-  private def routeBit(sourceId: UInt, stageIdx: Int): Bool = {
-    destinationLaneOf(sourceId)(networkIdxWidth - 1 - stageIdx)
-  }
-
-  private def perfectShuffle(idx: Int): Int = {
-    ((idx << 1) & (n - 1)) | (idx >> (stageCount - 1))
-  }
+  private def routeBit(sourceId: UInt, stageIdx: Int): Bool =
+    OmegaTopology.routeBit(destinationLaneOf(sourceId), n, stageIdx)
 
   val inDest = Wire(Vec(n, UInt(outputIdxWidth.W)))
   for (i <- 0 until n) {
@@ -222,7 +328,7 @@ class OmegaResponseRouter(
 
         for (port <- 0 until 2) {
           val switchOut = topIn + port
-          val nextIdx = if (stageIdx == stageCount - 1) switchOut else perfectShuffle(switchOut)
+          val nextIdx = if (stageIdx == stageCount - 1) switchOut else OmegaTopology.perfectShuffle(switchOut, n)
           fabric(stageIdx + 1)(nextIdx) <> switch.io.out(port)
         }
       }

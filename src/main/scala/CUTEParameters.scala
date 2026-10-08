@@ -66,6 +66,21 @@ object ResponseChannelHelper {
     def render: String = s"A${a.renderToken}B${b.renderToken}CL${cLoad.renderToken}CS${cStore.renderToken}"
   }
 
+  final case class LoaderRouteDescriptor(
+    name: String,
+    mode: LoaderMode,
+    bankCount: Int,
+    bankIdOffset: Int
+  ) {
+    require(isPow2(bankCount), s"$name bank count ($bankCount) must be a power of two")
+    val bankIdWidth: Int = log2Ceil(bankCount)
+    val collisionProne: Boolean = !mode.isLegacy
+    val responseChannelCount: Int = mode.responseChannelCount
+
+    def extractBankId(sourceId: UInt): UInt =
+      sourceId(bankIdOffset + bankIdWidth - 1, bankIdOffset)
+  }
+
   private val LoaderBridgeChannelConfigPattern = "^A(L|1|2|4|8)B(L|1|2|4|8)CL(L|1|2|4|8)CS(L|1|2|4|8)$".r
 
   def parseLoaderMode(token: String): LoaderMode = token match {
@@ -628,7 +643,10 @@ case class CuteParams(
 
     // User-facing loader response mode selector.
     // L means legacy single-channel loader; 1/2/4/8 mean parameterized bridge width.
-    val LoaderBridgeChannelConfig: String = "ALBLCL2CS4"
+    val LoaderBridgeChannelConfig: String = "ALBLCL2CS4",
+
+    // Elastic safety buffer on every parameterized Omega input.
+    val EnableOmegaInputQueue: Boolean = true
 ) {
     val parsedLoaderBridgeChannelConfig = ResponseChannelHelper.parseLoaderBridgeChannelConfig(LoaderBridgeChannelConfig)
     val AMLChannelMode = parsedLoaderBridgeChannelConfig.a
@@ -636,10 +654,31 @@ case class CuteParams(
     val CLoadChannelMode = parsedLoaderBridgeChannelConfig.cLoad
     val CStoreChannelMode = parsedLoaderBridgeChannelConfig.cStore
 
+    val AMLRouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
+      "A", AMLChannelMode, ABMatrixRegNBanks, log2Ceil(ABMatrixRegBankNEntries))
+    val BMLRouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
+      "B", BMLChannelMode, ABMatrixRegNBanks, log2Ceil(ABMatrixRegBankNEntries))
+    val CLoadRouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
+      "CLoad", CLoadChannelMode, CMatrixRegNBanks, log2Ceil(CMatrixRegBankNEntries))
+    val CStoreRouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
+      "CStore", CStoreChannelMode, CMatrixRegNBanks, log2Ceil(CMatrixRegBankNEntries))
+
     require(
       CLoadChannelMode.isLegacy == CStoreChannelMode.isLegacy,
       s"mixed legacy/parameterized C loader modes are not supported now: ${parsedLoaderBridgeChannelConfig.render}"
     )
+    require(L2NBanks >= 1 && isPow2(L2NBanks),
+      s"L2NBanks ($L2NBanks) must be a positive power of two")
+    if (L2NBanks == 8 && parsedLoaderBridgeChannelConfig ==
+      ResponseChannelHelper.LoaderBridgeChannelConfig(
+        ResponseChannelHelper.ParameterizedLoaderMode(8),
+        ResponseChannelHelper.ParameterizedLoaderMode(8),
+        ResponseChannelHelper.ParameterizedLoaderMode(8),
+        ResponseChannelHelper.ParameterizedLoaderMode(8))) {
+      require(ABMatrixRegNBanks == L2NBanks && CMatrixRegNBanks == L2NBanks,
+        s"eight-bank perfect batching requires L2 and MatrixReg bank identity: " +
+          s"L2=$L2NBanks AB=$ABMatrixRegNBanks C=$CMatrixRegNBanks")
+    }
 
     // require(ReduceWidthByte == 64, "FP8/4 now only support 512 bit reduce width")
     require(outsideDataWidth == 512 || outsideDataWidth == 256, "currently only support 512/256 bit outsideDataWidth")
@@ -859,6 +898,7 @@ trait HasCuteParams {
     def EnableDifftest = cuteParams.EnableDifftest
     def L2NBanks = cuteParams.L2NBanks
     def LoaderBridgeChannelConfig = cuteParams.LoaderBridgeChannelConfig
+    def EnableOmegaInputQueue = cuteParams.EnableOmegaInputQueue
     def parsedLoaderBridgeChannelConfig = cuteParams.parsedLoaderBridgeChannelConfig
     def AMLChannelMode = cuteParams.AMLChannelMode
     def BMLChannelMode = cuteParams.BMLChannelMode
@@ -873,6 +913,10 @@ trait HasCuteParams {
     def CLoadBridgeResponseChannelCount = CLoadChannelMode.responseChannelCount
     def CStoreBridgeResponseChannelCount = CStoreChannelMode.responseChannelCount
     def CMLUseMultiChannelLoader = !CLoadUseLegacyLoader
+    def AMLRouteDescriptor = cuteParams.AMLRouteDescriptor
+    def BMLRouteDescriptor = cuteParams.BMLRouteDescriptor
+    def CLoadRouteDescriptor = cuteParams.CLoadRouteDescriptor
+    def CStoreRouteDescriptor = cuteParams.CStoreRouteDescriptor
 
     def MinGroupSize = FPEparams.MinGroupSize //minimum compute group size of FPE
     def MinDataTypeWidth = FPEparams.MinDataTypeWidth //minimum data type width of FPE
@@ -1370,6 +1414,8 @@ class MMURequestIO(implicit p: Parameters) extends CuteBundle{
     val UseAllocatedSourceID = Bool()
     val isA = Bool()
     val MatrixIsAcc = Bool()
+    // Shared transpose engine uses source-row routing, not normal AB swizzle.
+    val IsTranspose = Bool()
     val RequestMask = UInt(MMUMaskWidth.W)
 }
 

@@ -67,179 +67,85 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     }
     val allocFull = allocatedBusy.reduce(_&&_)
 
-    //8通道并行请求处理：为每个通道选择优先级最高的矩阵请求
-    //优先级：A读 > AS读 > B读 > BS读 > C读 > C写
-    for (i <- 0 until ABMatrixRegNBanks) {
-        val aReq = io.ALocalMMUIO.Request(i)
-        val bReq = io.BLocalMMUIO.Request(i)
-        val cLoadReq = io.CLoadLocalMMUIO.Request(i)
-        val cStoreReq = io.CStoreLocalMMUIO.Request(i)
-        val asReq = io.ASLocalMMUIO.Request(i)
-        val bsReq = io.BSLocalMMUIO.Request(i)
+    val scheduler = Module(new CollisionAwareLocalMMUScheduler(
+        laneCount = ABMatrixRegNBanks,
+        bankCount = ABMatrixRegNBanks,
+        aResponseChannels = AMLResponseChannelCount,
+        bResponseChannels = BMLResponseChannelCount,
+        cLoadResponseChannels = CLoadBridgeResponseChannelCount,
+        cStoreResponseChannels = CStoreBridgeResponseChannelCount,
+        aLegacy = AMLUseLegacyLoader,
+        bLegacy = BMLUseLegacyLoader,
+        cLoadLegacy = CLoadUseLegacyLoader,
+        cStoreLegacy = CStoreUseLegacyLoader
+    ))
 
-        // A/B/AS/BS 目前只有读请求，C有读写
-        def reqCanIssue(req: DecoupledIO[MMURequestIO]): Bool = !req.bits.UseAllocatedSourceID || !allocFull
+    val requestSources = Seq(
+        io.CLoadLocalMMUIO.Request,
+        io.CStoreLocalMMUIO.Request,
+        io.ALocalMMUIO.Request,
+        io.ASLocalMMUIO.Request,
+        io.BLocalMMUIO.Request,
+        io.BSLocalMMUIO.Request
+    )
+    val sourceTags = Seq(CReadTag, CWriteTag, AReadTag, ASReadTag, BReadTag, BSReadTag)
+    val routeDescriptors = Seq(
+        CLoadRouteDescriptor,
+        CStoreRouteDescriptor,
+        AMLRouteDescriptor,
+        AMLRouteDescriptor,
+        BMLRouteDescriptor,
+        BMLRouteDescriptor
+    )
+    val sourceIsWrite = Seq(false, true, false, false, false, false)
+    val sourceIsAcc = Seq(true, true, false, false, false, false)
+    val sourceIsA = Seq(false, false, true, false, false, false)
 
-        val aReadValid = aReq.valid && !aReq.bits.RequestType_isWrite && reqCanIssue(aReq)
-        val asReadValid = asReq.valid && !asReq.bits.RequestType_isWrite && reqCanIssue(asReq)
-        val bReadValid = bReq.valid && !bReq.bits.RequestType_isWrite && reqCanIssue(bReq)
-        val bsReadValid = bsReq.valid && !bsReq.bits.RequestType_isWrite && reqCanIssue(bsReq)
-        val cReadValid = cLoadReq.valid && !cLoadReq.bits.RequestType_isWrite && reqCanIssue(cLoadReq)
-        val cWriteValid = cStoreReq.valid && cStoreReq.bits.RequestType_isWrite && reqCanIssue(cStoreReq)
+    for (mmuio <- abcss) {
+        mmuio.ConherentRequsetSourceID.valid := !allocFull
+        mmuio.ConherentRequsetSourceID.bits := allocatedId
+        mmuio.nonConherentRequsetSourceID := io.LastLevelCacheTLIO.nonConherentRequsetSourceID
+    }
 
-        // 优先级：A读 > AS读 > B读 > BS读 > C读 > C写
-        val choseMatrix = Mux(aReadValid,     LocalMMUTaskType.AFirst,
-                  Mux(asReadValid,    LocalMMUTaskType.AScaleFirst,
-                  Mux(bReadValid,     LocalMMUTaskType.BFirst,
-                  Mux(bsReadValid,    LocalMMUTaskType.BScaleFirst,
-                  Mux(cReadValid,     LocalMMUTaskType.CLoadFirst,
-                  Mux(cWriteValid,    LocalMMUTaskType.CStoreFirst,
-                              LocalMMUTaskType.TaskTypeMax.U))))))
+    for (source <- 0 until LocalMMUSourceClass.Count; i <- 0 until ABMatrixRegNBanks) {
+        val req = requestSources(source)(i)
+        val candidate = scheduler.io.candidates(source)(i)
+        val useAllocatedId = req.bits.UseAllocatedSourceID
+        val effectiveOrigId = Mux(
+            useAllocatedId,
+            MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize),
+            req.bits.RequestSourceID
+        )
+        val legalType = req.bits.RequestType_isWrite === sourceIsWrite(source).B
 
-        val llcReq = io.LastLevelCacheTLIO.Request(i)
+        candidate.valid := req.valid && legalType && (!useAllocatedId || !allocFull)
+        candidate.bits.request := req.bits
+        candidate.bits.request.MatrixIsAcc := sourceIsAcc(source).B
+        candidate.bits.request.isA := sourceIsA(source).B
+        candidate.bits.request.RequestSourceID := MemTraceId.encodeSourceId(effectiveOrigId, sourceTags(source))
+        candidate.bits.physicalInput := IdealL2Banking.bankOf(req.bits.RequestAddr, L2NBanks)
+        candidate.bits.returnBank := routeDescriptors(source).extractBankId(effectiveOrigId)
+        req.ready := candidate.ready
 
-        switch(choseMatrix) {
-            is(LocalMMUTaskType.AFirst) {
-                // A：8 通道并行读，来源标签 AReadTag
-                val useAllocId = aReq.bits.UseAllocatedSourceID
-                val reqLoaderOrigId = aReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
-                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, AReadTag)
-
-                aReq.ready := llcReq.ready && (!useAllocId || !allocFull)
-                llcReq.valid := aReq.valid && (!useAllocId || !allocFull)
-                llcReq.bits := aReq.bits
-                llcReq.bits.MatrixIsAcc := false.B // A matrix is tile matrix register
-                llcReq.bits.isA := true.B
-                llcReq.bits.RequestSourceID := reqSourceId
-                io.ALocalMMUIO.ConherentRequsetSourceID.valid := !allocFull
-                io.ALocalMMUIO.ConherentRequsetSourceID.bits := allocatedId
-                io.ALocalMMUIO.nonConherentRequsetSourceID := io.LastLevelCacheTLIO.nonConherentRequsetSourceID
-
-                when(llcReq.fire && useAllocId) {
-                    allocatedBusy(allocatedId) := true.B
-                    allocatedTag(allocatedId) := AReadTag
-                }
-
-            }
-            is(LocalMMUTaskType.AScaleFirst) {
-                // AS：8 通道并行读
-                val useAllocId = asReq.bits.UseAllocatedSourceID
-                val reqLoaderOrigId = asReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
-                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, ASReadTag)
-
-                asReq.ready := llcReq.ready && (!useAllocId || !allocFull)
-                llcReq.valid := asReq.valid && (!useAllocId || !allocFull)
-                llcReq.bits := asReq.bits
-                llcReq.bits.MatrixIsAcc := false.B
-                llcReq.bits.isA := false.B
-                llcReq.bits.RequestSourceID := reqSourceId
-                io.ASLocalMMUIO.ConherentRequsetSourceID.valid := !allocFull
-                io.ASLocalMMUIO.ConherentRequsetSourceID.bits := allocatedId
-                io.ASLocalMMUIO.nonConherentRequsetSourceID := io.LastLevelCacheTLIO.nonConherentRequsetSourceID
-
-                when(llcReq.fire && useAllocId) {
-                    allocatedBusy(allocatedId) := true.B
-                    allocatedTag(allocatedId) := ASReadTag
-                }
-
-            }
-            is(LocalMMUTaskType.BFirst) {
-                // B：8 通道并行读，来源标签 BReadTag
-                val useAllocId = bReq.bits.UseAllocatedSourceID
-                val reqLoaderOrigId = bReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
-                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, BReadTag)
-
-                bReq.ready := llcReq.ready && (!useAllocId || !allocFull)
-                llcReq.valid := bReq.valid && (!useAllocId || !allocFull)
-                llcReq.bits := bReq.bits
-                llcReq.bits.MatrixIsAcc := false.B // B matrix is tile matrix register
-                llcReq.bits.isA := false.B
-                llcReq.bits.RequestSourceID := reqSourceId
-                io.BLocalMMUIO.ConherentRequsetSourceID.valid := !allocFull
-                io.BLocalMMUIO.ConherentRequsetSourceID.bits := allocatedId
-                io.BLocalMMUIO.nonConherentRequsetSourceID := io.LastLevelCacheTLIO.nonConherentRequsetSourceID
-
-                when(llcReq.fire && useAllocId) {
-                    allocatedBusy(allocatedId) := true.B
-                    allocatedTag(allocatedId) := BReadTag
-                }
-
-            }
-            is(LocalMMUTaskType.BScaleFirst) {
-                // BS：8 通道并行读
-                val useAllocId = bsReq.bits.UseAllocatedSourceID
-                val reqLoaderOrigId = bsReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
-                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, BSReadTag)
-
-                bsReq.ready := llcReq.ready && (!useAllocId || !allocFull)
-                llcReq.valid := bsReq.valid && (!useAllocId || !allocFull)
-                llcReq.bits := bsReq.bits
-                llcReq.bits.MatrixIsAcc := false.B
-                llcReq.bits.isA := false.B
-                llcReq.bits.RequestSourceID := reqSourceId
-                io.BSLocalMMUIO.ConherentRequsetSourceID.valid := !allocFull
-                io.BSLocalMMUIO.ConherentRequsetSourceID.bits := allocatedId
-                io.BSLocalMMUIO.nonConherentRequsetSourceID := io.LastLevelCacheTLIO.nonConherentRequsetSourceID
-
-                when(llcReq.fire && useAllocId) {
-                    allocatedBusy(allocatedId) := true.B
-                    allocatedTag(allocatedId) := BSReadTag
-                }
-
-            }
-            is(LocalMMUTaskType.CLoadFirst) {
-                // C Load：来源标签 CReadTag
-                val useAllocId = cLoadReq.bits.UseAllocatedSourceID
-                val reqLoaderOrigId = cLoadReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
-                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, CReadTag)
-
-                cLoadReq.ready := llcReq.ready && (!useAllocId || !allocFull)
-                llcReq.valid := cLoadReq.valid && (!useAllocId || !allocFull)
-                llcReq.bits := cLoadReq.bits
-                llcReq.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
-                llcReq.bits.isA := false.B
-                llcReq.bits.RequestSourceID := reqSourceId
-                io.CLoadLocalMMUIO.ConherentRequsetSourceID.valid := !allocFull
-                io.CLoadLocalMMUIO.ConherentRequsetSourceID.bits := allocatedId
-                io.CLoadLocalMMUIO.nonConherentRequsetSourceID := io.LastLevelCacheTLIO.nonConherentRequsetSourceID
-
-                when(llcReq.fire && useAllocId) {
-                    allocatedBusy(allocatedId) := true.B
-                    allocatedTag(allocatedId) := CReadTag
-                }
-
-            }
-            is(LocalMMUTaskType.CStoreFirst) {
-                // C Store：来源标签 CWriteTag
-                val useAllocId = cStoreReq.bits.UseAllocatedSourceID
-                val reqLoaderOrigId = cStoreReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
-                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, CWriteTag)
-
-                cStoreReq.ready := llcReq.ready && (!useAllocId || !allocFull)
-                llcReq.valid := cStoreReq.valid && (!useAllocId || !allocFull)
-                llcReq.bits := cStoreReq.bits
-                llcReq.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
-                llcReq.bits.isA := false.B
-                llcReq.bits.RequestSourceID := reqSourceId
-                io.CStoreLocalMMUIO.ConherentRequsetSourceID.valid := !allocFull
-                io.CStoreLocalMMUIO.ConherentRequsetSourceID.bits := allocatedId
-                io.CStoreLocalMMUIO.nonConherentRequsetSourceID := io.LastLevelCacheTLIO.nonConherentRequsetSourceID
-
-                when(llcReq.fire && useAllocId) {
-                    allocatedBusy(allocatedId) := true.B
-                    allocatedTag(allocatedId) := CWriteTag
-                }
-
-            }
+        when(candidate.valid) {
+            assert(req.bits.IsTranspose || candidate.bits.returnBank === i.U,
+                cf"LocalMMU request lane $i does not match MatrixReg destination ${candidate.bits.returnBank}")
+            assert(candidate.bits.physicalInput < L2NBanks.U,
+                cf"LocalMMU request lane $i selected invalid L2 bank ${candidate.bits.physicalInput}")
         }
 
+        when(candidate.fire && useAllocatedId) {
+            allocatedBusy(allocatedId) := true.B
+            allocatedTag(allocatedId) := sourceTags(source)
+        }
+    }
 
+    for (i <- 0 until ABMatrixRegNBanks) {
+        scheduler.io.llc(i).ready := io.LastLevelCacheTLIO.Request(i).ready
+        io.LastLevelCacheTLIO.Request(i).valid := scheduler.io.llc(i).valid
+        io.LastLevelCacheTLIO.Request(i).bits := scheduler.io.llc(i).bits
+
+        
     }
 
     //8通道并行响应处理：按 encodedId 低位标签路由到对应的 MMU IO
@@ -373,6 +279,17 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     io.perfProbe.wrReq := outReqWrFire.asUInt.orR
     io.perfProbe.rd32BReq := (0 until ABMatrixRegNBanks).map(i => Mux(outReqRdFire(i), outReqMask32B(i), 0.U)).reduce(_ +& _)
     io.perfProbe.wr32BReq := (0 until ABMatrixRegNBanks).map(i => Mux(outReqWrFire(i), outReqMask32B(i), 0.U)).reduce(_ +& _)
+    for (source <- 0 until LocalMMUSourceClass.Count) {
+        io.perfProbe.offered(source) := PopCount(scheduler.io.candidates(source).map(_.valid))
+        io.perfProbe.issued(source) := PopCount(scheduler.io.candidates(source).map(_.fire))
+    }
+    io.perfProbe.collisionMasked := scheduler.io.collisionMasked
+    io.perfProbe.selectedOwner := scheduler.io.selectedOwner
+    io.perfProbe.evaluated := scheduler.io.evaluated
+    io.perfProbe.priorityBlocked := scheduler.io.priorityBlocked
+    io.perfProbe.selectedFire := scheduler.io.selectedFire
+    io.perfProbe.held := scheduler.io.held
+    io.perfProbe.cLoadRefill := scheduler.io.cLoadRefill
 
     def countRequestFire(reqs: Vec[DecoupledIO[MMURequestIO]], predicate: DecoupledIO[MMURequestIO] => Bool): UInt = {
         PopCount(reqs.map(req => req.fire && predicate(req)))
