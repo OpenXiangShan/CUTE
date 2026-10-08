@@ -92,6 +92,108 @@ class MultiChannelLoaderBankedWriteSpec extends AnyFlatSpec with ChiselScalatest
     }
   }
 
+  it should "complete a minimal transpose task without normal scheduler state" in {
+    implicit val p: Parameters = parameters.alterPartial {
+      case CuteParamsKey => parameters(CuteParamsKey).copy(LoaderBridgeChannelConfig = "A8B8CL8CS8")
+    }
+    test(new AMLWrapper("AML_transpose_minimal"))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+        clearLocalMmu(dut.io.LocalMMUIO, dut.ABMatrixRegNBanks)
+        dut.io.ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr.poke(0x1000.U)
+        dut.io.ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M.poke(64.U)
+        dut.io.ConfigInfo.ApplicationTensor_A.dataType.poke(ElementDataType.DataTypeWidth8)
+        dut.io.ConfigInfo.ApplicationTensor_A.HasTail.poke(true.B)
+        dut.io.ConfigInfo.ApplicationTensor_A.TailByteMask.poke(8.U)
+        dut.io.ConfigInfo.ApplicationTensor_A.K_Beat_Count.poke(1.U)
+        dut.io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad.poke(false.B)
+        dut.io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad.poke(false.B)
+        dut.io.ConfigInfo.LoadTaskInfo.Is_FullLoad.poke(true.B)
+        dut.io.ConfigInfo.MatrixRegTensor_M.poke(1.U)
+        dut.io.ConfigInfo.MatrixRegTensor_K.poke(1.U)
+        dut.io.ConfigInfo.MatrixRegId.poke(0.U)
+        dut.io.ConfigInfo.Conherent.poke(false.B)
+        dut.io.ConfigInfo.Is_Transpose.poke(true.B)
+        dut.io.ConfigInfo.MicroTaskValid.poke(false.B)
+        dut.io.ConfigInfo.MicroTaskEndReady.poke(true.B)
+        dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
+        dut.reset.poke(true.B)
+        dut.clock.step(2)
+        dut.reset.poke(false.B)
+
+        dut.io.ConfigInfo.MicroTaskValid.poke(true.B)
+        dut.clock.step()
+        dut.io.ConfigInfo.MicroTaskValid.poke(false.B)
+        var cycles = 0
+        var sourceId = BigInt(0)
+        var requested = false
+        var responded = false
+        var completed = false
+        var writeCount = 0
+        val writeAddresses = collection.mutable.Set.empty[BigInt]
+        while (!completed && cycles < 80) {
+          val request = dut.io.LocalMMUIO.Request(0)
+          if (request.valid.peek().litToBoolean && request.ready.peek().litToBoolean) {
+            assert(!requested, "minimal transpose emitted more than one request")
+            request.bits.RequestAddr.expect(0x1000.U)
+            sourceId = request.bits.RequestSourceID.peek().litValue
+            requested = true
+          }
+          val sendResponse = requested && !responded
+          dut.io.LocalMMUIO.Response(0).valid.poke(sendResponse.B)
+          dut.io.LocalMMUIO.Response(0).bits.ReseponseSourceID.poke(sourceId.U)
+          dut.io.LocalMMUIO.Response(0).bits.ReseponseData.poke(BigInt("a5" * dut.outsideDataWidthByte, 16).U)
+          dut.io.LocalMMUIO.Response(0).bits.ReseponseConherent.poke(false.B)
+          if (sendResponse && dut.io.LocalMMUIO.Response(0).ready.peek().litToBoolean) {
+            responded = true
+          }
+          for {
+            bank <- 0 until dut.ABMatrixRegNBanks
+            lane <- 0 until WriteLanes
+          } {
+            val write = dut.io.ToMatrixRegIO.WriteRequest(bank)(lane)
+            write.Data.valid.expect(write.BankAddr.valid.peek())
+            write.ByteMask.valid.expect(write.BankAddr.valid.peek())
+            if (write.BankAddr.valid.peek().litToBoolean) {
+              val address = write.BankAddr.bits.peek().litValue
+              assert(address < dut.Trans_Load_Size * dut.ReduceGroupSize,
+                s"transpose write bank=$bank lane=$lane had out-of-range address $address")
+              assert(address % dut.ReduceGroupSize == 0,
+                s"transpose write bank=$bank lane=$lane had misaligned address $address")
+              assert(write.ByteMask.bits.peek().litValue != 0,
+                s"transpose write bank=$bank lane=$lane had an empty mask")
+              writeAddresses += address
+              writeCount += 1
+            }
+          }
+          completed = dut.io.ConfigInfo.MicroTaskEndValid.peek().litToBoolean
+          dut.clock.step()
+          cycles += 1
+        }
+        assert(requested && responded, "minimal transpose did not complete request/response")
+        assert(writeCount > 0, "minimal transpose produced no MatrixReg writes")
+        assert(writeAddresses == Set(BigInt(0)),
+          s"minimal transpose write addresses were ${writeAddresses.toSeq.sorted.mkString(",")}")
+        assert(completed, s"minimal transpose did not quiesce after $cycles cycles")
+        dut.io.perfProbe.loadTotalFired.expect(0.U)
+        dut.io.perfProbe.loadPerfectBatches.expect(0.U)
+        dut.io.perfProbe.seedStatus.expect(ABPerfectBatchSeed.Disabled.U)
+        dut.io.perfProbe.seedVector.foreach(_.expect(0.U))
+        dut.io.perfProbe.seedAttempts.expect(0.U)
+        dut.io.perfProbe.seedSuccesses.expect(0.U)
+        dut.io.perfProbe.seedFallbacks.expect(0.U)
+        dut.io.perfProbe.windowRepairs.expect(0.U)
+        dut.clock.step(4)
+        for {
+          bank <- 0 until dut.ABMatrixRegNBanks
+          lane <- 0 until WriteLanes
+        } {
+          dut.io.LocalMMUIO.Request(bank).valid.expect(false.B)
+          dut.io.LocalMMUIO.Response(bank).ready.expect(false.B)
+          dut.io.ToMatrixRegIO.WriteRequest(bank)(lane).BankAddr.valid.expect(false.B)
+        }
+      }
+  }
+
   it should "hold and atomically drain an odd-base C response on its channel" in {
     implicit val p: Parameters = parameters
     test(new MultiChannelsCMemLoader()).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>

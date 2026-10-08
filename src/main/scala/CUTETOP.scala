@@ -25,6 +25,7 @@ class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends Cu
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
         val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
+        val perfProbe = Output(new ABMLPerfProbe)
     })
 
     if (!AMLUseLegacyLoader) {
@@ -34,12 +35,14 @@ class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends Cu
           inner.io.ConfigInfo, inner.io.LocalMMUIO, inner.io.ToMatrixRegIO, inner.io.MatrixRegId,
           legacy = false, diffIndex = 0)
         inner.io.DebugInfo <> io.DebugInfo
+        io.perfProbe := inner.io.perfProbe
     } else {
         val inner = Module(new AMemoryLoader(emitDifftest = false)).suggestName(s"${nameContext}_legacy_loader")
         connectTransposeLoadEngine(io.ConfigInfo, io.LocalMMUIO, io.ToMatrixRegIO, io.MatrixRegId,
           inner.io.ConfigInfo, inner.io.LocalMMUIO, inner.io.ToMatrixRegIO, inner.io.MatrixRegId,
           legacy = true, diffIndex = 0)
         inner.io.DebugInfo <> io.DebugInfo
+        io.perfProbe := 0.U.asTypeOf(new ABMLPerfProbe)
     }
 }
 
@@ -53,6 +56,7 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
         val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
+        val perfProbe = Output(new ABMLPerfProbe)
     })
 
     if (!BMLUseLegacyLoader) {
@@ -88,6 +92,7 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         inner.io.LocalMMUIO <> io.LocalMMUIO
         inner.io.DebugInfo <> io.DebugInfo
         io.MatrixRegId := inner.io.MatrixRegId
+        io.perfProbe := inner.io.perfProbe
     } else {
         val inner = Module(new BMemoryLoader).suggestName(s"${nameContext}_legacy_loader")
         inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
@@ -95,6 +100,7 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         inner.io.LocalMMUIO <> io.LocalMMUIO
         inner.io.DebugInfo <> io.DebugInfo
         io.MatrixRegId := inner.io.MatrixRegId
+        io.perfProbe := 0.U.asTypeOf(new ABMLPerfProbe)
     }
 }
 
@@ -281,7 +287,10 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         bankIdOffset: Int,
         queueDepth: Int,
         hasDataPayload: Boolean,
-        contextName: String
+        contextName: String,
+        identityFriendlyInput: Boolean = false,
+        serviceTraceActive: Bool = false.B,
+        releaseDebug: Bool = false.B
     ): Unit = {
         val nameContext = VerilogNameHelper.sanitize(contextName)
         connectLoaderRequestsWithGroupedArbiter(loader, mmu, channelCount, reqChannelCount, nameContext)
@@ -297,9 +306,12 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             bankIdOffset = bankIdOffset,
             hasDataPayload = hasDataPayload,
             debugEnable = YJPDebugEnable,
-            contextName = nameContext
+            contextName = nameContext,
+            identityFriendlyInput = identityFriendlyInput
         )).suggestName(s"${nameContext}_response_bridge")
         bridge.io.timeStamp := time_stamp
+        bridge.io.serviceTraceActive := false.B
+        bridge.io.releaseDebug := false.B
 
         for (i <- 0 until channelCount) {
             bridge.io.in(i).valid := mmu.Response(i).valid
@@ -453,7 +465,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             log2Ceil(ABMatrixRegBankNEntries),
             ResponseBridgeQueueDepth,
             true,
-            amlBridgeContext
+            amlBridgeContext,
+            identityFriendlyInput = AMLResponseChannelCount == ABMatrixRegNBanks
         )
     } else {
         connectWithResponseArbiter(AML.io.LocalMMUIO, MMU.io.ALocalMMUIO, ABMatrixRegNBanks, amlBridgeContext)
@@ -495,7 +508,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             log2Ceil(ABMatrixRegBankNEntries),
             ResponseBridgeQueueDepth,
             true,
-            bmlBridgeContext
+            bmlBridgeContext,
+            identityFriendlyInput = BMLResponseChannelCount == ABMatrixRegNBanks
         )
     } else {
         connectWithResponseArbiter(BML.io.LocalMMUIO, MMU.io.BLocalMMUIO, ABMatrixRegNBanks, bmlBridgeContext)
@@ -635,6 +649,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     perf.memEvents(10) := MMU.io.perfProbe.rd32BReq
     perf.memEvents(11) := MMU.io.perfProbe.wr32BReq
     perf.localMMU := MMU.io.perfProbe
+    perf.aml := AML.io.perfProbe
+    perf.bml := BML.io.perfProbe
     perf.cml := CML.io.perfProbe
     io.perf := RegNext(perf, 0.U.asTypeOf(new CutePerfToCoreIO))
 

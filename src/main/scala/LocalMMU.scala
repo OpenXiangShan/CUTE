@@ -164,7 +164,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         io.LastLevelCacheTLIO.Request(i).valid := scheduler.io.llc(i).valid
         io.LastLevelCacheTLIO.Request(i).bits := scheduler.io.llc(i).bits
 
-        
+
     }
 
     //8通道并行响应处理：按 encodedId 低位标签路由到对应的 MMU IO
@@ -263,6 +263,10 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
             }.elsewhen(tag === CWriteTag) {
                 c_store_mmu_response.valid := true.B
                 c_store_mmu_response.bits := llc_response.bits
+                // Store acknowledgements carry no data. The shared response data
+                // bus may change while an ACK is stalled, so do not forward it
+                // into the response bridge's queued payload or stability checks.
+                c_store_mmu_response.bits.ReseponseData := 0.U
                 c_store_mmu_response.bits.ReseponseSourceID := loaderSourceId
                 llc_response.ready := c_store_mmu_response.ready
                 when(llc_response.fire) {

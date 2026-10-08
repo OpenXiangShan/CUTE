@@ -200,7 +200,8 @@ class OmegaResponseRouter(
   val outCount: Int = -1,
   val bankCount: Int = -1,
   val debugEnable: Boolean = false,
-  val contextName: String = "Generic"
+  val contextName: String = "Generic",
+  val identityFriendlyInput: Boolean = false
 ) extends Module {
   private val outputCount = if (outCount == -1) n else outCount
   private val totalBanks = if (bankCount == -1) n else bankCount
@@ -229,11 +230,16 @@ class OmegaResponseRouter(
 
   require(outputCount <= n, s"output channel count ($outputCount) must be <= input channel count ($n)")
   require(n % outputCount == 0, s"input channel count ($n) must be divisible by output channel count ($outputCount)")
+  require(!identityFriendlyInput || (n == 8 && outputCount == n && totalBanks == n),
+    "identity-friendly Omega is currently defined for the full 8x8 topology")
 
   val io = IO(new Bundle {
     val timeStamp = Input(UInt(64.W))
     val in = Flipped(Vec(n, Decoupled(new RoutedResponse(dataWidth, sourceIdWidth))))
     val out = Vec(outputCount, Decoupled(new RoutedResponse(dataWidth, sourceIdWidth)))
+    // Topology-only rejection with all outputs assumed ready. Downstream
+    // backpressure is intentionally excluded from this mask.
+    val blockedByOmega = Output(UInt(n.W))
   })
 
   /** Local log helper with unified timestamp format. */
@@ -291,6 +297,24 @@ class OmegaResponseRouter(
     }
   }
 
+  private val physicalValid = io.in.map(_.valid)
+  private val physicalDest = io.in.map(in => destinationLaneOf(in.bits.sourceId))
+  private val idealSurvivors = if (n == 1) {
+    physicalValid.head.asUInt
+  } else if (identityFriendlyInput) {
+    val physicalAtInternal = physicalValid.indices.sortBy(OmegaTopology.perfectShuffle(_, n))
+    val internalSurvivors = OmegaTopology.survivorMask(
+      physicalAtInternal.map(physicalValid),
+      physicalAtInternal.map(physicalDest)
+    )
+    VecInit(physicalValid.indices.map { physical =>
+      internalSurvivors(OmegaTopology.perfectShuffle(physical, n))
+    }).asUInt
+  } else {
+    OmegaTopology.survivorMask(physicalValid, physicalDest)
+  }
+  io.blockedByOmega := VecInit(physicalValid).asUInt & ~idealSurvivors
+
   if (n == 1) {
     io.out(0).valid := io.in(0).valid
     io.out(0).bits := io.in(0).bits
@@ -299,9 +323,14 @@ class OmegaResponseRouter(
     val fabric = Seq.fill(stageCount + 1)(Wire(Vec(n, Decoupled(new RoutedResponse(dataWidth, sourceIdWidth)))))
 
     for (i <- 0 until n) {
-      fabric.head(i).valid := io.in(i).valid
-      fabric.head(i).bits := io.in(i).bits
-      io.in(i).ready := fabric.head(i).ready
+      val internalInput = if (identityFriendlyInput) {
+        OmegaTopology.perfectShuffle(i, n)
+      } else {
+        i
+      }
+      fabric.head(internalInput).valid := io.in(i).valid
+      fabric.head(internalInput).bits := io.in(i).bits
+      io.in(i).ready := fabric.head(internalInput).ready
     }
 
     for (stageIdx <- 0 until stageCount) {

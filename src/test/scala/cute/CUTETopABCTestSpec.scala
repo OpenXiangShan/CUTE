@@ -203,8 +203,8 @@ class CUTETopABCTestSpec extends AnyFlatSpec with ChiselScalatestTester {
       assert(collisionSources.indices.forall { domain =>
         evaluatedBySource(collisionSources(domain)) >= collisionMaskedByDomain(domain)
       }, s"collision count exceeded evaluated count: evaluated=${evaluatedBySource.mkString(",")} collision=${collisionMaskedByDomain.mkString(",")}")
-      assert(collisionMaskedByDomain.sum > 0,
-        "concurrent A/B/C run did not exercise any LocalMMU collision masking")
+      // A conflict-free schedule is a valid outcome. Directed collision and
+      // refill behavior is covered by LocalMMUL2BankRouteSpec.
       assert(cmlPerfectBatchPulses == dut.io.perf.cml.loadPerfectBatches.peek().litValue.toLong,
         s"CML perfect pulse/counter mismatch: pulses=$cmlPerfectBatchPulses counter=${dut.io.perf.cml.loadPerfectBatches.peek().litValue}")
       assert(dut.io.perf.cml.loadTotalFired.peek().litValue.toLong == issuedBySource(LocalMMUSourceClass.CLoad),

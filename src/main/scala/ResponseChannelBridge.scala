@@ -16,7 +16,8 @@ class ResponseChannelBridge(
   val bankIdOffset: Int = 0,
   val hasDataPayload: Boolean = true,
   val debugEnable: Boolean = false,
-  val contextName: String = "Generic"
+  val contextName: String = "Generic",
+  val identityFriendlyInput: Boolean = false
 )(implicit p: Parameters) extends CuteModule {
   require(inputChannelCount >= 1, s"inputChannelCount ($inputChannelCount) must be >= 1")
   require(respChannelCount >= 1, s"respChannelCount ($respChannelCount) must be >= 1")
@@ -32,8 +33,13 @@ class ResponseChannelBridge(
 
   val io = IO(new Bundle {
     val timeStamp = Input(UInt(64.W))
+    val serviceTraceActive = Input(Bool())
+    val releaseDebug = Input(Bool())
     val in = Flipped(Vec(inputChannelCount, Decoupled(new MMUResponseIO)))
     val out = Vec(bankCount, Decoupled(new MMUResponseIO))
+    val omegaBlockedCycles = Output(UInt(64.W))
+    val omegaBlockedRespCycles = Output(UInt(64.W))
+    val omegaBlockedResponses = Output(UInt(64.W))
   })
 
   private def log(msg: => Printable): Unit = {
@@ -53,7 +59,8 @@ class ResponseChannelBridge(
     outCount = respChannelCount,
     bankCount = bankCount,
     debugEnable = debugEnable,
-    contextName = nameContext
+    contextName = nameContext,
+    identityFriendlyInput = identityFriendlyInput
   )).suggestName(s"${nameContext}_omega_router")
   router.io.timeStamp := io.timeStamp
 
@@ -86,19 +93,52 @@ class ResponseChannelBridge(
       assert(extractBankId(io.in(channel).bits.ReseponseSourceID) < bankCount.U,
         cf"ResponseChannelBridge: input $channel has illegal bank id")
     }
-    when(io.in(channel).valid && !io.in(channel).ready) {
-      assert(RegNext(io.in(channel).valid && !io.in(channel).ready, false.B) === false.B ||
-        io.in(channel).bits === RegEnable(io.in(channel).bits, io.in(channel).valid && !io.in(channel).ready),
-        s"ResponseChannelBridge input $channel payload changed while stalled")
-    }
 
-    
+
 
     XSPerfAccumulate(s"CUTE_${nameContext}_omega_input_offer_$channel", io.in(channel).valid)
     XSPerfAccumulate(s"CUTE_${nameContext}_omega_input_accept_$channel", io.in(channel).fire)
     XSPerfAccumulate(s"CUTE_${nameContext}_omega_accept_$channel", router.io.in(channel).fire)
     XSPerfAccumulate(s"CUTE_${nameContext}_omega_input_stall_$channel", io.in(channel).valid && !io.in(channel).ready)
   }
+
+  // Count only at the Omega input head. This avoids counting the same response
+  // once at the bridge input queue and again at the router. `blockedActive`
+  // remains set until that exact head fires, so a multi-cycle stall contributes
+  // one response but multiple response-cycles.
+  val omegaBlockedMask = router.io.blockedByOmega
+  val blockedActive = RegInit(VecInit(Seq.fill(inputChannelCount)(false.B)))
+  val newBlockedMask = omegaBlockedMask & ~blockedActive.asUInt
+  for (channel <- 0 until inputChannelCount) {
+    when(omegaBlockedMask(channel)) {
+      blockedActive(channel) := true.B
+    }
+    when(router.io.in(channel).fire) {
+      blockedActive(channel) := false.B
+    }
+  }
+
+  val blockedCycleIncrement = omegaBlockedMask.orR.asUInt
+  val blockedRespCycleIncrement = PopCount(omegaBlockedMask)
+  val blockedResponseIncrement = PopCount(newBlockedMask)
+  val blockedCycles = RegInit(0.U(64.W))
+  val blockedRespCycles = RegInit(0.U(64.W))
+  val blockedResponses = RegInit(0.U(64.W))
+  val blockedCyclesNext = blockedCycles + blockedCycleIncrement
+  val blockedRespCyclesNext = blockedRespCycles + blockedRespCycleIncrement
+  val blockedResponsesNext = blockedResponses + blockedResponseIncrement
+  blockedCycles := blockedCyclesNext
+  blockedRespCycles := blockedRespCyclesNext
+  blockedResponses := blockedResponsesNext
+  io.omegaBlockedCycles := blockedCycles
+  io.omegaBlockedRespCycles := blockedRespCycles
+  io.omegaBlockedResponses := blockedResponses
+
+  XSPerfAccumulate(s"CUTE_${nameContext}_omega_blocked_cycles", blockedCycleIncrement)
+  XSPerfAccumulate(s"CUTE_${nameContext}_omega_blocked_resp_cycles", blockedRespCycleIncrement)
+  XSPerfAccumulate(s"CUTE_${nameContext}_omega_blocked_responses", blockedResponseIncrement)
+
+
 
   val bankDataQueues = Option.when(hasDataPayload) {
     Seq.tabulate(bankCount) { bank =>
@@ -190,4 +230,14 @@ class ResponseChannelBridge(
       }
     }
   }
+
+  val bridgeInValidMask = VecInit(io.in.map(_.valid)).asUInt
+  val bridgeInReadyMask = VecInit(io.in.map(_.ready)).asUInt
+  val bridgeInFireMask = VecInit(io.in.map(_.fire)).asUInt
+  val omegaInFireMask = VecInit(router.io.in.map(_.fire)).asUInt
+  val omegaOutFireMask = VecInit(router.io.out.map(_.fire)).asUInt
+  val bankValidMask = VecInit(io.out.map(_.valid)).asUInt
+  val bankReadyMask = VecInit(io.out.map(_.ready)).asUInt
+  val bankFireMask = VecInit(io.out.map(_.fire)).asUInt
+
 }

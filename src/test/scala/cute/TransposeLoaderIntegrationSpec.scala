@@ -80,8 +80,11 @@ class TransposeLoaderIntegrationHarness(implicit p: Parameters) extends CuteModu
         bankCount = ABMatrixRegNBanks, queueDepth = ResponseBridgeQueueDepth,
         dataWidth = outsideDataWidth, sourceIdWidth = 64,
         bankIdWidth = log2Ceil(ABMatrixRegNBanks), bankIdOffset = log2Ceil(ABMatrixRegBankNEntries),
-        contextName = s"Test$i"))
+        contextName = s"Test$i",
+        identityFriendlyInput = ABMatrixRegNBanks == 8 && AMLResponseChannelCount == 8))
       bridge.io.timeStamp := 0.U
+      bridge.io.serviceTraceActive := false.B
+      bridge.io.releaseDebug := false.B
       bridge.io.in <> io.memory(i).Response
       mem.Response <> bridge.io.out
     }
@@ -186,16 +189,19 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
                   if (offered(h)(lane).nonEmpty && dut.io.memory(h).Response(lane).ready.peek().litToBoolean)
                     offered(h)(lane) = None
                   val target = dut.io.target(h)
-                  if (target.BankAddr(lane).valid.peek().litToBoolean) {
-                    assert(h == host)
-                    dut.io.targetId(h).expect(reg.U)
-                    val address = target.BankAddr(lane).bits.peek().litValue.toInt
-                    val mask = target.ByteMask(lane).bits.peek().litValue
-                    val data = target.Data(lane).bits.peek().litValue
-                    for (by <- 0 until 32 if mask.testBit(by)) {
-                      val key = (lane, address, by)
-                      assert(!got.contains(key), s"duplicate byte $key")
-                      got(key) = ((data >> (8 * by)) & 255).toInt
+                  for (port <- 0 until 2) {
+                    val write = target.WriteRequest(lane)(port)
+                    if (write.BankAddr.valid.peek().litToBoolean) {
+                      assert(h == host)
+                      dut.io.targetId(h).expect(reg.U)
+                      val address = write.BankAddr.bits.peek().litValue.toInt
+                      val mask = write.ByteMask.bits.peek().litValue
+                      val data = write.Data.bits.peek().litValue
+                      for (by <- 0 until 32 if mask.testBit(by)) {
+                        val key = (lane, address, by)
+                        assert(!got.contains(key), s"duplicate byte $key")
+                        got(key) = ((data >> (8 * by)) & 255).toInt
+                      }
                     }
                   }
                 }
@@ -279,9 +285,11 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
                 assert((h == 0 && addr >= 0x1000 && addr < 0x3000) || (h == 1 && addr >= 0x3000))
                 pending(h).enqueue(Resp(req.bits.RequestSourceID.peek().litValue, addr))
               }
-              if (dut.io.target(h).BankAddr(lane).valid.peek().litToBoolean) {
-                val id = dut.io.targetId(h).peek().litValue.toInt
-                assert(if (h == 0) id == finishes(0) else id == 2)
+              for (port <- 0 until 2) {
+                if (dut.io.target(h).WriteRequest(lane)(port).BankAddr.valid.peek().litToBoolean) {
+                  val id = dut.io.targetId(h).peek().litValue.toInt
+                  assert(if (h == 0) id == finishes(0) else id == 2)
+                }
               }
             }
           }

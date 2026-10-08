@@ -148,6 +148,7 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
       dut.io.ConfigInfo.MicroTaskValid.poke(false.B)
 
       val observed = mutable.ArrayBuffer.empty[(BigInt, BigInt)]
+      val regAddrWidth = chisel3.util.log2Ceil(dut.ABMatrixRegBankNEntries)
       var cycles = 0
       while (observed.size < 16 && cycles < 40) {
         for (channel <- 0 until 8) {
@@ -155,7 +156,8 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
           if (request.valid.peek().litToBoolean && request.ready.peek().litToBoolean) {
             val address = request.bits.RequestAddr.peek().litValue
             val source = request.bits.RequestSourceID.peek().litValue
-            assert(((address >> 6) & 7) == channel)
+            val destination = ((source >> regAddrWidth) & 7).toInt
+            assert(destination == channel)
             observed += address -> source
           }
         }
@@ -163,7 +165,6 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
         cycles += 1
       }
 
-      val regAddrWidth = chisel3.util.log2Ceil(dut.ABMatrixRegBankNEntries)
       val expected = (for {
         row <- 0 until 8
         column <- 0 until 2
@@ -237,6 +238,7 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
       dut.io.ConfigInfo.LoadMicroTaskValid.poke(false.B)
 
       val observed = mutable.ArrayBuffer.empty[(BigInt, BigInt)]
+      val regAddrWidth = chisel3.util.log2Ceil(dut.CMatrixRegBankNEntries)
       var cycles = 0
       while (observed.size < 16 && cycles < 40) {
         for (channel <- 0 until 8) {
@@ -244,7 +246,8 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
           if (request.valid.peek().litToBoolean && request.ready.peek().litToBoolean) {
             val address = request.bits.RequestAddr.peek().litValue
             val source = request.bits.RequestSourceID.peek().litValue
-            assert(((address >> 6) & 7) == channel)
+            val destination = ((source >> regAddrWidth) & 7).toInt
+            assert(destination == channel)
             observed += address -> source
           }
         }
@@ -252,7 +255,6 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
         cycles += 1
       }
 
-      val regAddrWidth = chisel3.util.log2Ceil(dut.CMatrixRegBankNEntries)
       val expected = (for {
         row <- 0 until 8
         column <- 0 until 2
