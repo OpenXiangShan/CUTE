@@ -89,7 +89,10 @@ class OmegaResponseRouter(
   val outCount: Int = -1,
   val bankCount: Int = -1,
   val debugEnable: Boolean = false,
-  val contextName: String = "Generic"
+  val contextName: String = "Generic",
+  val traceTag: UInt = 0.U,
+  val responseUsesAllocatedSourceId: Boolean = false,
+  val allocatedSourceIdWidth: Int = 0
 ) extends Module {
   private val outputCount = if (outCount == -1) n else outCount
   private val totalBanks = if (bankCount == -1) n else bankCount
@@ -118,6 +121,8 @@ class OmegaResponseRouter(
 
   require(outputCount <= n, s"output channel count ($outputCount) must be <= input channel count ($n)")
   require(n % outputCount == 0, s"input channel count ($n) must be divisible by output channel count ($outputCount)")
+  require(!responseUsesAllocatedSourceId || allocatedSourceIdWidth > 0,
+    "allocatedSourceIdWidth must be positive when responseUsesAllocatedSourceId is true")
 
   val io = IO(new Bundle {
     val timeStamp = Input(UInt(64.W))
@@ -126,9 +131,9 @@ class OmegaResponseRouter(
   })
 
   /** Local log helper with unified timestamp format. */
-  private def log(msg: => Printable): Unit = {
-    if (debugEnable) printf(cf"[T${io.timeStamp}][OmegaRouter] " + msg + "\n")
-  }
+  private def log(msg: => Printable): Unit = if (debugEnable) printf(msg + "\n")
+
+
 
   /** Extract bankId from the configured bit-range of sourceId. */
   def extractBankId(sourceId: UInt): UInt = {
@@ -179,10 +184,11 @@ class OmegaResponseRouter(
   val inDest = Wire(Vec(n, UInt(outputIdxWidth.W)))
   for (i <- 0 until n) {
     inDest(i) := destinationOf(io.in(i).bits.sourceId)
-    when(io.in(i).valid) {
+    when(io.in(i).fire) {
       val bid = normalizedBankId(io.in(i).bits.sourceId)
-      log(cf"in[$i] valid bankId=$bid dest=${inDest(i)} sourceId=0x${io.in(i).bits.sourceId}%x")
+      log(cf"in[$i] fire bankId=$bid dest=${inDest(i)} sourceId=0x${io.in(i).bits.sourceId}%x")
     }
+
   }
 
   if (n == 1) {
@@ -235,10 +241,11 @@ class OmegaResponseRouter(
     }
   }
 
-  for (outIdx <- 0 until outputCount) {
-    when(io.out(outIdx).valid) {
-      val bid = normalizedBankId(io.out(outIdx).bits.sourceId)
-      log(cf"out[$outIdx] valid bankId=$bid sourceId=0x${io.out(outIdx).bits.sourceId}%x ready=${io.out(outIdx).ready}")
-    }
+    for (outIdx <- 0 until outputCount) {
+      when(io.out(outIdx).fire) {
+        val bid = normalizedBankId(io.out(outIdx).bits.sourceId)
+        log(cf"out[$outIdx] fire bankId=$bid sourceId=0x${io.out(outIdx).bits.sourceId}%x")
+      }
+
   }
 }

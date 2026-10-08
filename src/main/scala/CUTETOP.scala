@@ -4,7 +4,6 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
-import xscache.coupledL2.prefetch.MatrixPrefetchControl
 // import boom.exu.ygjk._
 // import scala.collection.parallel.Task
 
@@ -12,7 +11,6 @@ class CUTETopIO()(implicit p: Parameters) extends CuteBundle{
     val mmu2llc = Flipped(new MMU2TLIO)
     val ctrl2top = Flipped(new YGJKControl)
     val perf = Output(new CutePerfToCoreIO)
-    val matrixPrefetch = Option.when(EnableMatrixPrefetch)(Output(new MatrixPrefetchControl))
 }
 
 class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends CuteModule with HasTransposeLoadEngine {
@@ -68,8 +66,6 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         bToAConfig.MatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_N
         bToAConfig.MatrixRegTensor_K := io.ConfigInfo.MatrixRegTensor_K
         bToAConfig.MatrixRegId := io.ConfigInfo.MatrixRegId
-        bToAConfig.PrefetchTaskId.zip(io.ConfigInfo.PrefetchTaskId).foreach { case (to, from) => to := from }
-        bToAConfig.PrefetchStream.zip(io.ConfigInfo.PrefetchStream).foreach { case (to, from) => to := from }
         bToAConfig.Conherent := io.ConfigInfo.Conherent
         bToAConfig.Is_Transpose := io.ConfigInfo.Is_Transpose
         bToAConfig.MicroTaskValid := io.ConfigInfo.MicroTaskValid
@@ -77,8 +73,10 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         bToAConfig.LoadTaskInfo.Is_FullLoad := true.B
         bToAConfig.LoadTaskInfo.Is_ZeroLoad := false.B
         bToAConfig.LoadTaskInfo.Is_RepeatRowLoad := false.B
-        bToAConfig.pc.foreach(_ := io.ConfigInfo.pc.getOrElse(0xDEAD1234.U))
-        bToAConfig.coreid.foreach(_ := io.ConfigInfo.coreid.getOrElse(0xDEAD5678.U))
+        bToAConfig.PrefetchTaskId.foreach(_ := io.ConfigInfo.PrefetchTaskId.getOrElse(0.U))
+        bToAConfig.PrefetchStream.foreach(_ := io.ConfigInfo.PrefetchStream.getOrElse(0.U))
+        bToAConfig.pc.foreach(_ := 0.U)
+        bToAConfig.coreid.foreach(_ := 0.U)
 
         io.ConfigInfo.MicroTaskReady := bToAConfig.MicroTaskReady
         io.ConfigInfo.MicroTaskEndValid := bToAConfig.MicroTaskEndValid
@@ -186,29 +184,9 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         loader.nonConherentRequsetSourceID := mmu.nonConherentRequsetSourceID
     }
 
-    def connectRequestChannels(
-        loaderReq: Vec[DecoupledIO[MMURequestIO]],
-        loaderCoherentId: Valid[UInt],
-        loaderNonCoherentId: Valid[UInt],
-        mmuReq: Vec[DecoupledIO[MMURequestIO]],
-        mmuCoherentId: Valid[UInt],
-        mmuNonCoherentId: Valid[UInt],
-        channelCount: Int
-    ): Unit = {
-        for (i <- 0 until channelCount) {
-            mmuReq(i) <> loaderReq(i)
-        }
-        loaderCoherentId := mmuCoherentId
-        loaderNonCoherentId := mmuNonCoherentId
-    }
-
-    def connectRequestChannelsWithGroupedArbiter(
-        loaderReq: Vec[DecoupledIO[MMURequestIO]],
-        loaderCoherentId: Valid[UInt],
-        loaderNonCoherentId: Valid[UInt],
-        mmuReq: Vec[DecoupledIO[MMURequestIO]],
-        mmuCoherentId: Valid[UInt],
-        mmuNonCoherentId: Valid[UInt],
+    def connectLoaderRequestsWithGroupedArbiter(
+        loader: LocalMMUIO,
+        mmu: LocalMMUIO,
         channelCount: Int,
         reqChannelCount: Int,
         contextName: String
@@ -216,12 +194,12 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         require(reqChannelCount >= 1 && reqChannelCount <= channelCount, s"reqChannelCount ($reqChannelCount) must be within [1, $channelCount]")
 
         val nameContext = VerilogNameHelper.sanitize(contextName)
-        loaderCoherentId := mmuCoherentId
-        loaderNonCoherentId := mmuNonCoherentId
+        loader.ConherentRequsetSourceID := mmu.ConherentRequsetSourceID
+        loader.nonConherentRequsetSourceID := mmu.nonConherentRequsetSourceID
 
         if (reqChannelCount == channelCount) {
             for (i <- 0 until channelCount) {
-                mmuReq(i) <> loaderReq(i)
+                mmu.Request(i) <> loader.Request(i)
             }
         } else {
             require(channelCount % reqChannelCount == 0, s"channelCount ($channelCount) must be divisible by reqChannelCount ($reqChannelCount)")
@@ -232,39 +210,19 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
                     .suggestName(s"${nameContext}_req_group${group}_arb")
 
                 for ((bank, idx) <- banks.zipWithIndex) {
-                    arb.io.in(idx) <> loaderReq(bank)
+                    arb.io.in(idx) <> loader.Request(bank)
                 }
 
-                mmuReq(group).valid := arb.io.out.valid
-                mmuReq(group).bits := arb.io.out.bits
-                arb.io.out.ready := mmuReq(group).ready
+                mmu.Request(group).valid := arb.io.out.valid
+                mmu.Request(group).bits := arb.io.out.bits
+                arb.io.out.ready := mmu.Request(group).ready
             }
 
             for (group <- reqChannelCount until channelCount) {
-                mmuReq(group).valid := false.B
-                mmuReq(group).bits := DontCare
+                mmu.Request(group).valid := false.B
+                mmu.Request(group).bits := DontCare
             }
         }
-    }
-
-    def connectLoaderRequestsWithGroupedArbiter(
-        loader: LocalMMUIO,
-        mmu: LocalMMUIO,
-        channelCount: Int,
-        reqChannelCount: Int,
-        contextName: String
-    ): Unit = {
-        connectRequestChannelsWithGroupedArbiter(
-            loader.Request,
-            loader.ConherentRequsetSourceID,
-            loader.nonConherentRequsetSourceID,
-            mmu.Request,
-            mmu.ConherentRequsetSourceID,
-            mmu.nonConherentRequsetSourceID,
-            channelCount,
-            reqChannelCount,
-            contextName
-        )
     }
 
     def connectWithResponseBridge(
@@ -275,9 +233,10 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         reqChannelCount: Int,
         bankIdWidth: Int,
         bankIdOffset: Int,
-        queueDepth: Int,
-        hasDataPayload: Boolean,
-        contextName: String
+        baseDepth: Int,
+        contextName: String,
+        traceTag: UInt,
+        responseUsesAllocatedSourceId: Boolean
     ): Unit = {
         val nameContext = VerilogNameHelper.sanitize(contextName)
         connectLoaderRequestsWithGroupedArbiter(loader, mmu, channelCount, reqChannelCount, nameContext)
@@ -286,14 +245,15 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             inputChannelCount = channelCount,
             respChannelCount = respChannelCount,
             bankCount = channelCount,
-            queueDepth = queueDepth,
+            baseDepth = baseDepth,
             dataWidth = outsideDataWidth,
             sourceIdWidth = 64,
             bankIdWidth = bankIdWidth,
             bankIdOffset = bankIdOffset,
-            hasDataPayload = hasDataPayload,
             debugEnable = YJPDebugEnable,
-            contextName = nameContext
+            contextName = nameContext,
+            traceTag = traceTag,
+            responseUsesAllocatedSourceId = responseUsesAllocatedSourceId
         )).suggestName(s"${nameContext}_response_bridge")
         bridge.io.timeStamp := time_stamp
 
@@ -333,39 +293,31 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             loader.Response(i).bits := DontCare
         }
     }
-    
-    // The parameterized bridge uses the same request and response width.  In
-    // particular, CS1 must arbitrate all C-store banks onto request channel 0;
-    // otherwise the nominal A1B1CL1CS1 baseline still issues C stores through
-    // all eight CUTE-to-L2 channels.
+
+    val cStoreUsesGroupedRequest =
+        CStoreBridgeResponseChannelCount == 2 || CStoreBridgeResponseChannelCount == 4
     val cStoreRequestChannelCount =
-        if (CStoreUseLegacyLoader) CMatrixRegNBanks else CStoreBridgeResponseChannelCount
-    val aRequestChannelCount =
-        if (AMLUseLegacyLoader) ABMatrixRegNBanks else AMLResponseChannelCount
-    val bRequestChannelCount =
-        if (BMLUseLegacyLoader) ABMatrixRegNBanks else BMLResponseChannelCount
-    val cLoadRequestChannelCount =
-        if (CLoadUseLegacyLoader) CMatrixRegNBanks else CLoadBridgeResponseChannelCount
+        if (cStoreUsesGroupedRequest) CStoreBridgeResponseChannelCount else CMatrixRegNBanks
 
     val amlBridgeContext = multiOrLegacyBridgeContext(
         "AML",
         AMLUseLegacyLoader,
         ABMatrixRegNBanks,
-        aRequestChannelCount,
+        ABMatrixRegNBanks,
         AMLResponseChannelCount
     )
     val bmlBridgeContext = multiOrLegacyBridgeContext(
         "BML",
         BMLUseLegacyLoader,
         ABMatrixRegNBanks,
-        bRequestChannelCount,
+        ABMatrixRegNBanks,
         BMLResponseChannelCount
     )
     val cLoadBridgeContext = multiOrLegacyBridgeContext(
         "CLoad",
         CLoadUseLegacyLoader,
         CMatrixRegNBanks,
-        cLoadRequestChannelCount,
+        CMatrixRegNBanks,
         CLoadBridgeResponseChannelCount
     )
     val cStoreBridgeContext = multiOrLegacyBridgeContext(
@@ -409,8 +361,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val CML = Module(new CMLWrapper(cmlWrapperContext)).suggestName(s"${cmlWrapperContext}_wrapper")
 
     val TaskCtrl: BaseTaskController = Module(new TaskController)
-    io.matrixPrefetch.zip(TaskCtrl.io.matrixPrefetch).foreach { case (to, from) => to := from }
-    
+
     val MTE = Module(new MatrixTE)
 
     val MMU = Module(new LocalMMU)
@@ -444,22 +395,33 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             MMU.io.ALocalMMUIO,
             ABMatrixRegNBanks,
             AMLResponseChannelCount,
-            aRequestChannelCount,
+            ABMatrixRegNBanks,
             log2Ceil(ABMatrixRegNBanks),
             log2Ceil(ABMatrixRegBankNEntries),
-            ResponseBridgeQueueDepth,
-            true,
-            amlBridgeContext
+            AMemoryLoaderReadFromMemoryFIFODepth,
+            amlBridgeContext,
+            MemTraceId.aReadTag,
+            false
         )
     } else {
-        connectWithResponseArbiter(AML.io.LocalMMUIO, MMU.io.ALocalMMUIO, ABMatrixRegNBanks, amlBridgeContext)
+        connectWithResponseArbiter(
+            AML.io.LocalMMUIO,
+            MMU.io.ALocalMMUIO,
+            ABMatrixRegNBanks,
+            amlBridgeContext
+        )
     }
 
     ASL.foreach { asl =>
     // Default ASL inputs.
         asl.io.ConfigInfo <> TaskCtrl.io.ASL_MicroTask_Config.get
         asl.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-        connectWithResponseArbiter(asl.io.LocalMMUIO, MMU.io.ASLocalMMUIO, ABMatrixRegNBanks, "ASL_legacy_1resp")
+        connectWithResponseArbiter(
+            asl.io.LocalMMUIO,
+            MMU.io.ASLocalMMUIO,
+            ABMatrixRegNBanks,
+            "ASL_legacy_1resp"
+        )
     }
 
     // Default BDC inputs.
@@ -486,22 +448,33 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             MMU.io.BLocalMMUIO,
             ABMatrixRegNBanks,
             BMLResponseChannelCount,
-            bRequestChannelCount,
+            ABMatrixRegNBanks,
             log2Ceil(ABMatrixRegNBanks),
             log2Ceil(ABMatrixRegBankNEntries),
-            ResponseBridgeQueueDepth,
-            true,
-            bmlBridgeContext
+            BMemoryLoaderReadFromMemoryFIFODepth,
+            bmlBridgeContext,
+            MemTraceId.bReadTag,
+            false
         )
     } else {
-        connectWithResponseArbiter(BML.io.LocalMMUIO, MMU.io.BLocalMMUIO, ABMatrixRegNBanks, bmlBridgeContext)
+        connectWithResponseArbiter(
+            BML.io.LocalMMUIO,
+            MMU.io.BLocalMMUIO,
+            ABMatrixRegNBanks,
+            bmlBridgeContext
+        )
     }
 
     BSL.foreach { bsl =>
     // Default BSL inputs.
         bsl.io.ConfigInfo <> TaskCtrl.io.BSL_MicroTask_Config.get
         bsl.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-        connectWithResponseArbiter(bsl.io.LocalMMUIO, MMU.io.BSLocalMMUIO, ABMatrixRegNBanks, "BSL_legacy_1resp")
+        connectWithResponseArbiter(
+            bsl.io.LocalMMUIO,
+            MMU.io.BSLocalMMUIO,
+            ABMatrixRegNBanks,
+            "BSL_legacy_1resp"
+        )
     }
 
     if (!cuteMatrixExtension.enableScalingFactor) {
@@ -530,44 +503,27 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             MMU.io.CLoadLocalMMUIO,
             CMatrixRegNBanks,
             CLoadBridgeResponseChannelCount,
-            cLoadRequestChannelCount,
+            CMatrixRegNBanks,
             log2Ceil(CMatrixRegNBanks),
             log2Ceil(CMatrixRegBankNEntries),
-            ResponseBridgeQueueDepth,
-            true,
-            cLoadBridgeContext
+            CMemoryLoaderReadFromMemoryFIFODepth,
+            cLoadBridgeContext,
+            MemTraceId.cReadTag,
+            false
         )
-        if (CStoreDirectAckCountMode) {
-            connectRequestChannelsWithGroupedArbiter(
-                CML.io.StoreLocalMMUIO.Request,
-                CML.io.StoreLocalMMUIO.ConherentRequsetSourceID,
-                CML.io.StoreLocalMMUIO.nonConherentRequsetSourceID,
-                MMU.io.CStoreLocalMMUIO.Request,
-                MMU.io.CStoreLocalMMUIO.ConherentRequsetSourceID,
-                MMU.io.CStoreLocalMMUIO.nonConherentRequsetSourceID,
-                CMatrixRegNBanks,
-                cStoreRequestChannelCount,
-                cStoreBridgeContext
-            )
-            for (i <- 0 until CMatrixRegNBanks) {
-                CML.io.StoreLocalMMUIO.Response(i).valid := MMU.io.CStoreLocalMMUIO.Response(i).valid
-                CML.io.StoreLocalMMUIO.Response(i).bits := MMU.io.CStoreLocalMMUIO.Response(i).bits
-                MMU.io.CStoreLocalMMUIO.Response(i).ready := CML.io.StoreLocalMMUIO.Response(i).ready
-            }
-        } else {
-            connectWithResponseBridge(
-                CML.io.StoreLocalMMUIO,
-                MMU.io.CStoreLocalMMUIO,
-                CMatrixRegNBanks,
-                CStoreBridgeResponseChannelCount,
-                cStoreRequestChannelCount,
-                log2Ceil(CMatrixRegNBanks),
-                log2Ceil(CMatrixRegBankNEntries),
-                ResponseBridgeQueueDepth,
-                false,
-                cStoreBridgeContext
-            )
-        }
+        connectWithResponseBridge(
+            CML.io.StoreLocalMMUIO,
+            MMU.io.CStoreLocalMMUIO,
+            CMatrixRegNBanks,
+            CStoreBridgeResponseChannelCount,
+            cStoreRequestChannelCount,
+            log2Ceil(CMatrixRegNBanks),
+            log2Ceil(CMatrixRegBankNEntries),
+            CMemoryLoaderReadFromMemoryFIFODepth,
+            cStoreBridgeContext,
+            MemTraceId.cWriteTag,
+            false
+        )
     } else {
         connectWithResponseArbiter(
             CML.io.LoadLocalMMUIO,
@@ -603,7 +559,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     ASC.foreach(_.io.ComputeGo := MTE.io.ComputeGo)
     BSC.foreach(_.io.ComputeGo := MTE.io.ComputeGo)
     CDC.io.ComputeGo := MTE.io.ComputeGo
-    
+
     // Connect to the CPU MMU or IOMMU in a future integration.
     MMU.io.LastLevelCacheTLIO <> io.mmu2llc
 
@@ -633,16 +589,15 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     io.perf := RegNext(perf, 0.U.asTypeOf(new CutePerfToCoreIO))
 
     // Assign default inputs for each MatrixReg.
-    
+
     // AB MatrixReg
     for (i <- 0 until ABMatrixRegCount){
         // DataController requests.
         ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
         ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
-        // MemoryLoader requests.
-        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
-        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
-        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ByteMask := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ByteMask)
+        //MemoryLoader的请求
+        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequest :=
+            0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequest)
     }
 
     if (cuteMatrixExtension.enableScalingFactor) {
@@ -723,26 +678,26 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     def disableABLoaderPort(dest: ABMemoryLoaderMatrixRegIO): Unit = {
         for (b <- 0 until ABMatrixRegNBanks) {
-            dest.BankAddr(b).valid := false.B
-            dest.BankAddr(b).bits := DontCare
-            dest.Data(b).valid := false.B
-            dest.Data(b).bits := DontCare
-            dest.ByteMask(b).valid := false.B
-            dest.ByteMask(b).bits := Fill(ABMatrixRegEntryByteSize, true.B)
+            for (lane <- 0 until 2) {
+                val write = dest.WriteRequest(b)(lane)
+                write.BankAddr.valid := false.B
+                write.BankAddr.bits := DontCare
+                write.Data.valid := false.B
+                write.Data.bits := DontCare
+                write.ByteMask.valid := false.B
+                write.ByteMask.bits := Fill(ABMatrixRegEntryByteSize, true.B)
+            }
         }
     }
 
     def copyABLoaderPort(dest: ABMemoryLoaderMatrixRegIO, src: ABMemoryLoaderMatrixRegIO): Unit = {
         for (b <- 0 until ABMatrixRegNBanks) {
-            dest.BankAddr(b).valid := src.BankAddr(b).valid
-            dest.BankAddr(b).bits := src.BankAddr(b).bits
-            dest.Data(b).valid := src.Data(b).valid
-            dest.Data(b).bits := src.Data(b).bits
-            dest.ByteMask(b).valid := src.ByteMask(b).valid
-            dest.ByteMask(b).bits := src.ByteMask(b).bits
+            for (lane <- 0 until 2) {
+                dest.WriteRequest(b)(lane) := src.WriteRequest(b)(lane)
+            }
         }
     }
-    
+
     for (regIdx <- 0 until ABMatrixRegCount) {
         val dest = ABMatrixRegs(regIdx).io.MatrixRegIO.FromMemoryLoader
         val amlSel = AML.io.MatrixRegId === regIdx.U
@@ -822,13 +777,17 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
         for (bank <- 0 until CMatrixRegNBanks) {
             dest.ReadRequestToMatrixReg.BankAddr(bank).valid := storeSel && CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).valid
-            dest.WriteRequestToMatrixReg.BankAddr(bank).valid := loadSel && CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(bank).valid
-            dest.WriteRequestToMatrixReg.Data(bank).valid := loadSel && CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(bank).valid
-            dest.WriteRequestToMatrixReg.ByteMask(bank).valid := loadSel && CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask(bank).valid
             dest.ReadRequestToMatrixReg.BankAddr(bank).bits := CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).bits
-            dest.WriteRequestToMatrixReg.BankAddr(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(bank).bits
-            dest.WriteRequestToMatrixReg.Data(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(bank).bits
-            dest.WriteRequestToMatrixReg.ByteMask(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask(bank).bits
+            for (lane <- 0 until 2) {
+                val destWrite = dest.WriteRequestToMatrixReg.WriteRequest(bank)(lane)
+                val srcWrite = CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(bank)(lane)
+                destWrite.BankAddr.valid := loadSel && srcWrite.BankAddr.valid
+                destWrite.Data.valid := loadSel && srcWrite.Data.valid
+                destWrite.ByteMask.valid := loadSel && srcWrite.ByteMask.valid
+                destWrite.BankAddr.bits := srcWrite.BankAddr.bits
+                destWrite.Data.bits := srcWrite.Data.bits
+                destWrite.ByteMask.bits := srcWrite.ByteMask.bits
+            }
         }
 
         val loadReqForThisReg = Mux(loadSel, CML.io.ToMatrixRegIO.LoadReadWriteRequest, 0.U)
@@ -857,7 +816,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     for (regIdx <- 0 until CMatrixRegCount) {
         val dest = CMatrixRegs(regIdx).io.MatrixRegIO.FromDataController
-        
+
         when(CDC.io.MatrixRegId === regIdx.U) {
             for (bank <- 0 until CMatrixRegNBanks) {
                 dest.ReadBankAddr(bank).valid := CDC.io.FromMatrixRegIO.ReadBankAddr(bank).valid

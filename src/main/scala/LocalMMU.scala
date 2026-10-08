@@ -46,33 +46,15 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         io.LastLevelCacheTLIO.Response(i).ready := false.B
     }
 
-    // SourceId 编码配置：低 2bit 作为来源标签
+    // SourceId 编码配置：低位作为来源标签，0 保留为非法日志 id
     // encodedId = (origId << 2) | sourceTag
-    val SourceTagWidth = 3
-    val AReadTag  = 0.U(SourceTagWidth.W) // A 读
-    val BReadTag  = 1.U(SourceTagWidth.W) // B 读
-    val CReadTag  = 2.U(SourceTagWidth.W) // C 读（与 CUTE2YGJK 中 CReadTag 保持一致）
-    val CWriteTag = 3.U(SourceTagWidth.W) // C 写（与 CUTE2YGJK 中 CWriteTag 保持一致）
-    val ASReadTag = 4.U(SourceTagWidth.W) // AS 读 - 使用独立channel，tag可以复用
-    val BSReadTag = 5.U(SourceTagWidth.W) // BS 读 - 使用独立channel，tag可以复用
-
-    def encodeSourceId(origId: UInt, tag: UInt): UInt = {
-        (origId << SourceTagWidth) | tag
-    }
-
-    val AllocatedOrigIdFlagBit = 60
-    def markAllocatedOrigId(id: UInt): UInt = {
-        Cat(1.U(1.W), 0.U((AllocatedOrigIdFlagBit - LLCSourceMaxNumBitSize).W), id.pad(LLCSourceMaxNumBitSize))
-    }
-    def isAllocatedOrigId(id: UInt): Bool = id.pad(64)(AllocatedOrigIdFlagBit)
-    def restoreLoaderSourceId(id: UInt): UInt = {
-        val id64 = id.pad(64)
-        Mux(
-            isAllocatedOrigId(id64),
-            Cat(0.U((64 - LLCSourceMaxNumBitSize).W), id64(LLCSourceMaxNumBitSize - 1, 0)),
-            id64
-        )
-    }
+    val SourceTagWidth = MemTraceId.SourceTagWidth
+    val AReadTag  = MemTraceId.aReadTag
+    val BReadTag  = MemTraceId.bReadTag
+    val CReadTag  = MemTraceId.cReadTag
+    val CWriteTag = MemTraceId.cWriteTag
+    val ASReadTag = MemTraceId.asReadTag
+    val BSReadTag = MemTraceId.bsReadTag
 
     val allocatedBusy = RegInit(VecInit(Seq.fill(LLCSourceMaxNum)(false.B)))
     val allocatedTag = RegInit(VecInit(Seq.fill(LLCSourceMaxNum)(0.U(SourceTagWidth.W))))
@@ -121,13 +103,12 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 // A：8 通道并行读，来源标签 AReadTag
                 val useAllocId = aReq.bits.UseAllocatedSourceID
                 val reqLoaderOrigId = aReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, markAllocatedOrigId(allocatedId), reqLoaderOrigId)
-                val reqSourceId = encodeSourceId(reqLlcOrigId, AReadTag)
+                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
+                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, AReadTag)
 
                 aReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := aReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := aReq.bits
-                llcReq.bits.MatrixTraceTag.foreach(_ := 0.U)
                 llcReq.bits.MatrixIsAcc := false.B // A matrix is tile matrix register
                 llcReq.bits.isA := true.B
                 llcReq.bits.RequestSourceID := reqSourceId
@@ -140,23 +121,17 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                     allocatedTag(allocatedId) := AReadTag
                 }
 
-                when(llcReq.fire) {
-                    if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} A Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
-                    }
-                }
             }
             is(LocalMMUTaskType.AScaleFirst) {
                 // AS：8 通道并行读
                 val useAllocId = asReq.bits.UseAllocatedSourceID
                 val reqLoaderOrigId = asReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, markAllocatedOrigId(allocatedId), reqLoaderOrigId)
-                val reqSourceId = encodeSourceId(reqLlcOrigId, ASReadTag)
+                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
+                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, ASReadTag)
 
                 asReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := asReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := asReq.bits
-                llcReq.bits.MatrixTraceTag.foreach(_ := 0.U)
                 llcReq.bits.MatrixIsAcc := false.B
                 llcReq.bits.isA := false.B
                 llcReq.bits.RequestSourceID := reqSourceId
@@ -169,23 +144,17 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                     allocatedTag(allocatedId) := ASReadTag
                 }
 
-                when(llcReq.fire) {
-                    if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} AS Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
-                    }
-                }
             }
             is(LocalMMUTaskType.BFirst) {
                 // B：8 通道并行读，来源标签 BReadTag
                 val useAllocId = bReq.bits.UseAllocatedSourceID
                 val reqLoaderOrigId = bReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, markAllocatedOrigId(allocatedId), reqLoaderOrigId)
-                val reqSourceId = encodeSourceId(reqLlcOrigId, BReadTag)
+                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
+                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, BReadTag)
 
                 bReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := bReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := bReq.bits
-                llcReq.bits.MatrixTraceTag.foreach(_ := 0.U)
                 llcReq.bits.MatrixIsAcc := false.B // B matrix is tile matrix register
                 llcReq.bits.isA := false.B
                 llcReq.bits.RequestSourceID := reqSourceId
@@ -198,23 +167,17 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                     allocatedTag(allocatedId) := BReadTag
                 }
 
-                when(llcReq.fire) {
-                    if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} B Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
-                    }
-                }
             }
             is(LocalMMUTaskType.BScaleFirst) {
                 // BS：8 通道并行读
                 val useAllocId = bsReq.bits.UseAllocatedSourceID
                 val reqLoaderOrigId = bsReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, markAllocatedOrigId(allocatedId), reqLoaderOrigId)
-                val reqSourceId = encodeSourceId(reqLlcOrigId, BSReadTag)
+                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
+                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, BSReadTag)
 
                 bsReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := bsReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := bsReq.bits
-                llcReq.bits.MatrixTraceTag.foreach(_ := 0.U)
                 llcReq.bits.MatrixIsAcc := false.B
                 llcReq.bits.isA := false.B
                 llcReq.bits.RequestSourceID := reqSourceId
@@ -227,23 +190,17 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                     allocatedTag(allocatedId) := BSReadTag
                 }
 
-                when(llcReq.fire) {
-                    if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} BS Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
-                    }
-                }
             }
             is(LocalMMUTaskType.CLoadFirst) {
                 // C Load：来源标签 CReadTag
                 val useAllocId = cLoadReq.bits.UseAllocatedSourceID
                 val reqLoaderOrigId = cLoadReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, markAllocatedOrigId(allocatedId), reqLoaderOrigId)
-                val reqSourceId = encodeSourceId(reqLlcOrigId, CReadTag)
+                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
+                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, CReadTag)
 
                 cLoadReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := cLoadReq.valid && (!useAllocId || !allocFull)
                 llcReq.bits := cLoadReq.bits
-                llcReq.bits.MatrixTraceTag.foreach(_ := 0.U)
                 llcReq.bits.MatrixIsAcc := true.B // C matrix is accumulation matrix register
                 llcReq.bits.isA := false.B
                 llcReq.bits.RequestSourceID := reqSourceId
@@ -256,18 +213,13 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                     allocatedTag(allocatedId) := CReadTag
                 }
 
-                when(llcReq.fire) {
-                    if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} CLoad Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
-                    }
-                }
             }
             is(LocalMMUTaskType.CStoreFirst) {
                 // C Store：来源标签 CWriteTag
                 val useAllocId = cStoreReq.bits.UseAllocatedSourceID
                 val reqLoaderOrigId = cStoreReq.bits.RequestSourceID
-                val reqLlcOrigId = Mux(useAllocId, markAllocatedOrigId(allocatedId), reqLoaderOrigId)
-                val reqSourceId = encodeSourceId(reqLlcOrigId, CWriteTag)
+                val reqLlcOrigId = Mux(useAllocId, MemTraceId.markAllocatedOrigId(allocatedId, LLCSourceMaxNumBitSize), reqLoaderOrigId)
+                val reqSourceId = MemTraceId.encodeSourceId(reqLlcOrigId, CWriteTag)
 
                 cStoreReq.ready := llcReq.ready && (!useAllocId || !allocFull)
                 llcReq.valid := cStoreReq.valid && (!useAllocId || !allocFull)
@@ -284,38 +236,19 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                     allocatedTag(allocatedId) := CWriteTag
                 }
 
-                when(llcReq.fire) {
-                    if (YJPDebugEnable) {
-                        printf(cf"[LocalMMU][${logTime}] Ch${i.U} CStore Req.fire loaderSourceId=${reqLoaderOrigId}, useAllocId=${useAllocId}, encodedSourceId=${llcReq.bits.RequestSourceID}, addr=${Hexadecimal(llcReq.bits.RequestAddr)}\n")
-                    }
-                }
             }
         }
 
-        // 握手监控日志：请求侧
-        when(io.LastLevelCacheTLIO.Request(i).fire) {
-            if (YJPDebugEnable) {
-                printf(cf"[LocalMMU][${logTime}] Ch${i.U} TL Req.fire encodedSourceId=${io.LastLevelCacheTLIO.Request(i).bits.RequestSourceID}, addr=${Hexadecimal(io.LastLevelCacheTLIO.Request(i).bits.RequestAddr)}, isWrite=${io.LastLevelCacheTLIO.Request(i).bits.RequestType_isWrite}, matrixIsAcc=${io.LastLevelCacheTLIO.Request(i).bits.MatrixIsAcc}\n")
-            }
-        }
+
     }
 
     //8通道并行响应处理：按 encodedId 低位标签路由到对应的 MMU IO
-    // 握手监控日志：响应侧
-    def logResponse(channel: Int, tagStr: String, tag: UInt, encodedId: UInt, shiftedOrigId: UInt, loaderSourceId: UInt, data: UInt): Unit = {
-        val resp = io.LastLevelCacheTLIO.Response(channel)
-         when(resp.fire) {
-            if (YJPDebugEnable) {
-                printf(cf"[LocalMMU][${logTime}] Ch${channel.U} -> ${tagStr} Resp.fire encodedSourceId=${encodedId}, tag=${tag}, shiftedOrigId=${shiftedOrigId}, loaderSourceId=${loaderSourceId}, allocatedOrigId=${isAllocatedOrigId(shiftedOrigId)}, data=${Hexadecimal(data)}\n")
-            }
-        }
-    }
-
     for (i <- 0 until ABMatrixRegNBanks) {
         val llc_response = io.LastLevelCacheTLIO.Response(i)
         val a_mmu_response = io.ALocalMMUIO.Response(i)
         val b_mmu_response = io.BLocalMMUIO.Response(i)
         val c_mmu_response = io.CLoadLocalMMUIO.Response(i)
+        val c_store_mmu_response = io.CStoreLocalMMUIO.Response(i)
         val as_mmu_response = io.ASLocalMMUIO.Response(i)
         val bs_mmu_response = io.BSLocalMMUIO.Response(i)
 
@@ -324,7 +257,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         val origId = Wire(UInt(64.W))
         origId := encodedId >> SourceTagWidth
         val loaderSourceId = Wire(UInt(64.W))
-        loaderSourceId := restoreLoaderSourceId(origId)
+        loaderSourceId := MemTraceId.restoreLoaderSourceId(origId, LLCSourceMaxNumBitSize)
         val data = llc_response.bits.ReseponseData
 
         // 默认保持 ready 低电平，后续根据路由目的端覆盖
@@ -354,11 +287,10 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 llc_response.ready := a_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
-                    when(isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
+                    when(MemTraceId.isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "A", tag, encodedId, origId, loaderSourceId, data)
             }.elsewhen(tag === BReadTag) {
                 b_mmu_response.valid := true.B
                 b_mmu_response.bits := llc_response.bits
@@ -366,11 +298,10 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 llc_response.ready := b_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
-                    when(isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
+                    when(MemTraceId.isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "B", tag, encodedId, origId, loaderSourceId, data)
             }.elsewhen(tag === ASReadTag) {
                 as_mmu_response.valid := true.B
                 as_mmu_response.bits := llc_response.bits
@@ -378,11 +309,10 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 llc_response.ready := as_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
-                    when(isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
+                    when(MemTraceId.isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "AS", tag, encodedId, origId, loaderSourceId, data)
             }.elsewhen(tag === BSReadTag) {
                 bs_mmu_response.valid := true.B
                 bs_mmu_response.bits := llc_response.bits
@@ -390,11 +320,10 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 llc_response.ready := bs_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
-                    when(isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
+                    when(MemTraceId.isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "BS", tag, encodedId, origId, loaderSourceId, data)
             }.elsewhen(tag === CReadTag) {
                 c_mmu_response.valid := true.B
                 c_mmu_response.bits := llc_response.bits
@@ -402,27 +331,35 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                 llc_response.ready := c_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
-                    when(isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
+                    when(MemTraceId.isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "CLoad", tag, encodedId, origId, loaderSourceId, data)
             }.elsewhen(tag === CWriteTag) {
-                val c_store_mmu_response = io.CStoreLocalMMUIO.Response(i)
                 c_store_mmu_response.valid := true.B
                 c_store_mmu_response.bits := llc_response.bits
                 c_store_mmu_response.bits.ReseponseSourceID := loaderSourceId
                 llc_response.ready := c_store_mmu_response.ready
                 when(llc_response.fire) {
                     val allocIdx = origId(LLCSourceMaxNumBitSize - 1, 0)
-                    when(isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
+                    when(MemTraceId.isAllocatedOrigId(origId) && allocatedBusy(allocIdx) && allocatedTag(allocIdx) === tag) {
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-                logResponse(i, "CStore", tag, encodedId, origId, loaderSourceId, data)
             }.otherwise{
                 assert(false.B, cf"Unsupported tag ${tag} in LLC response routing")
             }
+        }
+
+        Seq(
+          ("A", a_mmu_response),
+          ("B", b_mmu_response),
+          ("AS", as_mmu_response),
+          ("BS", bs_mmu_response),
+          ("CLoad", c_mmu_response),
+          ("CStore", c_store_mmu_response)
+        ).foreach { case (targetName, resp) =>
+
         }
     }
 

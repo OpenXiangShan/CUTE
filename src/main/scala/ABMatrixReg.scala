@@ -6,118 +6,131 @@ import chisel3.util._
 import org.chipsalliance.cde.config._
 import utility.sram.SRAMTemplate
 
-// ABMatrixReg，使用SRAMTemplate实现的A/B矩阵寄存器
-// 用于暂存A矩阵或B矩阵的数据，供给TE模块使用
-// 在DataController看来是一个只读的矩阵
-// 矩阵需要支持滑动窗口，分Matrix_M个bank是合理的
-// MatrixReg的功能是，根据输入的地址，输出数据
-
-class ABMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+class ABMatrixRegIO(implicit p: Parameters) extends CuteBundle {
     val FromDataController = new ABDataControlMatrixRegIO
     val FromMemoryLoader = new ABMemoryLoaderMatrixRegIO
 }
 
-class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule{
-    val io = IO(new Bundle{
+class ABMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
+    val io = IO(new Bundle {
         val MatrixRegIO = new ABMatrixRegIO
     })
 
+    val dataControllerBankAddr = io.MatrixRegIO.FromDataController.BankAddr.bits
+    val dataControllerData = io.MatrixRegIO.FromDataController.Data.bits
+    val memoryLoaderWrites = io.MatrixRegIO.FromMemoryLoader.WriteRequest
 
-    // 读写优先级逻辑：写优先于读
-    // 目前在Loader、DataController里面都加了FIFO，能保证一些堵的情况的发生
+    val laneValid = Wire(Vec(ABMatrixRegNBanks, Vec(2, Bool())))
+    for (bank <- 0 until ABMatrixRegNBanks) {
+        for (lane <- 0 until 2) {
+            val write = memoryLoaderWrites(bank)(lane)
+            val valids = Cat(write.BankAddr.valid, write.Data.valid, write.ByteMask.valid)
+            laneValid(bank)(lane) := valids.andR
+            assert(valids === 0.U || valids.andR, "ABMatrixReg: loader lane valids must agree")
+        }
+        when(laneValid(bank)(1)) {
+            assert(laneValid(bank)(0), "ABMatrixReg: loader lane 1 requires lane 0")
+            assert(
+                memoryLoaderWrites(bank)(1).BankAddr.bits === memoryLoaderWrites(bank)(0).BankAddr.bits + 1.U,
+                "ABMatrixReg: loader pair addresses must be consecutive"
+            )
+            assert(
+                memoryLoaderWrites(bank)(1).BankAddr.bits(0) =/= memoryLoaderWrites(bank)(0).BankAddr.bits(0),
+                "ABMatrixReg: loader pair must target opposite parity banks"
+            )
+        }
+    }
 
-    // DataController端的信号
-    val DataControllerBankAddr = io.MatrixRegIO.FromDataController.BankAddr.bits
-    val DataControllerData = io.MatrixRegIO.FromDataController.Data.bits
+    val writeGo = laneValid.asUInt.orR
+    val readGo = io.MatrixRegIO.FromDataController.BankAddr.valid && !writeGo
+    io.MatrixRegIO.FromDataController.BankAddr.ready := readGo
+    io.MatrixRegIO.FromDataController.Data.valid := RegNext(readGo, false.B)
 
-    // MemoryLoader端的信号
-    val MemoryLoaderBankAddr = io.MatrixRegIO.FromMemoryLoader.BankAddr
-    val MemoryLoaderData = io.MatrixRegIO.FromMemoryLoader.Data
-    val MemoryLoaderByteMask = io.MatrixRegIO.FromMemoryLoader.ByteMask
+    val debugS1BankAddr = RegNext(dataControllerBankAddr)
 
-    // 写优先的MatrixReg控制逻辑
-    // write_go: 只要有写入请求（正常写或零填充）就为true
-    val write_go = MemoryLoaderBankAddr.zip(MemoryLoaderData).map{case (a, b) => a.valid && b.valid}.reduce(_||_)
-
-    // read_go: 只有在没有写请求时才允许读，实现写优先
-    val read_go = io.MatrixRegIO.FromDataController.BankAddr.valid && 
-                  !MemoryLoaderBankAddr.map(_.valid).reduce(_||_) && 
-                  !write_go
-    
-    // 为输入信号赋ready
-    io.MatrixRegIO.FromDataController.BankAddr.ready := read_go
-    
-    // SRAM下一拍返回结果，所以使用上一拍的ready作为valid
-    io.MatrixRegIO.FromDataController.Data.valid := RegNext(read_go)
-    val debug_s1_bank_addr = RegNext(DataControllerBankAddr)
-    
-    // 实例化多个SRAM作为多个bank
-    val sram_banks = (0 until ABMatrixRegNBanks) map { i =>
-
-        // Use byte-wide ways so SRAMTemplate waymask becomes byte write enable.
-        val bank = Module(new SRAMTemplate(
+    val sramBanks = (0 until ABMatrixRegNBanks).map { bankIdx =>
+        val bankDepthHalf = (ABMatrixRegBankNEntries + 1) / 2
+        val evenBank = Module(new SRAMTemplate(
             gen = UInt(8.W),
-            set = ABMatrixRegBankNEntries,
+            set = bankDepthHalf,
             way = ABMatrixRegEntryByteSize,
             singlePort = true,
             latency = 1,
             hasMbist = false,
             hasSramCtl = false
-        ))
-        
-        // 第0周期的数据 - 读取
-        val s0_bank_read_addr = DataControllerBankAddr(i)
-        val s0_bank_read_valid = read_go
-        
-        // 第1周期的数据 - 读取结果
-        val s1_bank_read_data = WireInit(0.U((ABMatrixRegEntryByteSize*8).W))
-        
-        when(RegNext(read_go))
-        {
-            // 输出读的信息
-            if (YJPDebugEnable)
-            {
-                printf("[ABMatrixReg_Read(%d)]Bank(%d): debug_s1_bank_addr = %d, s1_bank_read_data = %x\n",
-                       scp_id.U, i.U, debug_s1_bank_addr(0), s1_bank_read_data)
+        )).suggestName("CUTE-AB-MatrixReg-Even-SRAM")
+        val oddBank = Module(new SRAMTemplate(
+            gen = UInt(8.W),
+            set = bankDepthHalf,
+            way = ABMatrixRegEntryByteSize,
+            singlePort = true,
+            latency = 1,
+            hasMbist = false,
+            hasSramCtl = false
+        )).suggestName("CUTE-AB-MatrixReg-Odd-SRAM")
+
+        val readAddr = dataControllerBankAddr(bankIdx)
+        val readParity = readAddr(0)
+        val readIdx = readAddr >> 1
+        val s1ReadParity = RegNext(readParity)
+
+        evenBank.io.r.req.valid := readGo && !readParity
+        evenBank.io.r.req.bits.setIdx := readIdx
+        oddBank.io.r.req.valid := readGo && readParity
+        oddBank.io.r.req.bits.setIdx := readIdx
+
+        val evenReadData = evenBank.io.r.resp.data.asUInt
+        val oddReadData = oddBank.io.r.resp.data.asUInt
+        val readData = Mux(s1ReadParity, oddReadData, evenReadData)
+        dataControllerData(bankIdx) := readData
+
+        val evenSelect = VecInit((0 until 2).map { lane =>
+            laneValid(bankIdx)(lane) && !memoryLoaderWrites(bankIdx)(lane).BankAddr.bits(0)
+        })
+        val oddSelect = VecInit((0 until 2).map { lane =>
+            laneValid(bankIdx)(lane) && memoryLoaderWrites(bankIdx)(lane).BankAddr.bits(0)
+        })
+        assert(PopCount(evenSelect) <= 1.U, "ABMatrixReg: multiple writes target the even parity bank")
+        assert(PopCount(oddSelect) <= 1.U, "ABMatrixReg: multiple writes target the odd parity bank")
+
+        val evenWrite = Mux1H(evenSelect, memoryLoaderWrites(bankIdx))
+        val oddWrite = Mux1H(oddSelect, memoryLoaderWrites(bankIdx))
+
+        evenBank.io.w.req.valid := evenSelect.asUInt.orR
+        evenBank.io.w.req.bits.setIdx := evenWrite.BankAddr.bits >> 1
+        evenBank.io.w.req.bits.waymask.get := evenWrite.ByteMask.bits
+        evenBank.io.w.req.bits.data := evenWrite.Data.bits.asTypeOf(Vec(ABMatrixRegEntryByteSize, UInt(8.W)))
+
+        oddBank.io.w.req.valid := oddSelect.asUInt.orR
+        oddBank.io.w.req.bits.setIdx := oddWrite.BankAddr.bits >> 1
+        oddBank.io.w.req.bits.waymask.get := oddWrite.ByteMask.bits
+        oddBank.io.w.req.bits.data := oddWrite.Data.bits.asTypeOf(Vec(ABMatrixRegEntryByteSize, UInt(8.W)))
+
+        if (YJPDebugEnable) {
+            when(RegNext(readGo)) {
+                printf(
+                    "[ABMatrixReg_Read(%d)]Bank(%d): debug_s1_bank_addr = %d, data = %x\n",
+                    scp_id.U,
+                    bankIdx.U,
+                    debugS1BankAddr(bankIdx),
+                    readData
+                )
+            }
+            for (lane <- 0 until 2) {
+                when(laneValid(bankIdx)(lane)) {
+                    printf(
+                        "[ABMatrixReg_Write(%d)]Bank(%d) Lane(%d): addr = %d, data = %x, mask = %x\n",
+                        scp_id.U,
+                        bankIdx.U,
+                        lane.U,
+                        memoryLoaderWrites(bankIdx)(lane).BankAddr.bits,
+                        memoryLoaderWrites(bankIdx)(lane).Data.bits,
+                        memoryLoaderWrites(bankIdx)(lane).ByteMask.bits
+                    )
+                }
             }
         }
-        
-        DataControllerData(i) := s1_bank_read_data
-        // 读取数据的fifo在DataController里面实现，MatrixReg尽可能减少逻辑
-        
-        // 写数据逻辑
-        val s0_bank_write_addr = MemoryLoaderBankAddr(i).bits
-        val s0_bank_write_data = MemoryLoaderData(i).bits
-        val s0_bank_write_mask = MemoryLoaderByteMask(i).bits
-        val s0_bank_write_valid = MemoryLoaderBankAddr(i).valid && MemoryLoaderData(i).valid && MemoryLoaderByteMask(i).valid
-        
-        // 最终的写入控制
-        val s0_final_write_valid = write_go && s0_bank_write_valid
-        val s0_final_write_addr = MemoryLoaderBankAddr(i).bits
-        val s0_final_write_data = MemoryLoaderData(i).bits
 
-        when(write_go && s0_bank_write_valid){
-            if (YJPDebugEnable)
-            {
-                printf("[ABMatrixReg_Write(%d)]Bank(%d): s0_bank_write_addr = %d, s0_bank_write_data = %x, mask = %x\n",
-                       scp_id.U, i.U, s0_bank_write_addr, s0_bank_write_data, s0_bank_write_mask)
-            }
-        }
-
-        // 连接SRAMTemplate的读接口
-        // 写优先：如果有写请求，就不允许读
-        val bank_read_valid = s0_bank_read_valid && !s0_final_write_valid
-        bank.io.r.req.valid := bank_read_valid
-        bank.io.r.req.bits.setIdx := s0_bank_read_addr
-        // 读响应在下一拍返回（latency=1）
-        s1_bank_read_data := bank.io.r.resp.data.asUInt
-        
-        // 连接SRAMTemplate的写接口
-        bank.io.w.req.valid := s0_final_write_valid
-        bank.io.w.req.bits.setIdx := s0_final_write_addr
-        bank.io.w.req.bits.waymask.get := s0_bank_write_mask
-        bank.io.w.req.bits.data := s0_final_write_data.asTypeOf(Vec(ABMatrixRegEntryByteSize, UInt(8.W)))
-
-        bank
+        (evenBank, oddBank)
     }
 }

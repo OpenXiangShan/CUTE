@@ -38,6 +38,8 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         decoded.MatrixRegisTail := source(CSourceIdTailOffset)
         decoded
     }
+
+
     val io = IO(new Bundle{
         val ToMatrixRegIO = Flipped(new CMemoryLoaderMatrixRegIO)
         val ConfigInfo = Flipped(new CMLMicroTaskConfigIO)
@@ -57,9 +59,11 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     io.ConfigInfo.LoadMicroTaskReady := false.B
     io.ConfigInfo.StoreMicroTaskReady := false.B
     io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.Data := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.Data)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask)
+    io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest :=
+        0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest)
+    io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest.foreach(_.foreach { write =>
+        write.ByteMask.bits := Fill(CMatrixRegEntryByteSize, true.B)
+    })
     for (i <- 0 until CMatrixRegNBanks) {
         io.LoadLocalMMUIO.Request(i).valid := false.B
         io.LoadLocalMMUIO.Request(i).bits := 0.U.asTypeOf(io.LoadLocalMMUIO.Request(i).bits)
@@ -70,7 +74,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         io.StoreLocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
         io.StoreLocalMMUIO.Response(i).ready := false.B
     }
-    
+
 
     val ConfigInfo = io.ConfigInfo
     val CurrentLoadMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
@@ -80,8 +84,9 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
 
     val LoadPcReg = if (EnableDifftest) Some(RegInit(0.U(64.W))) else None
     val StorePcReg = if (EnableDifftest) Some(RegInit(0.U(64.W))) else None
-    val LoadCoreidReg = if (EnableDifftest) Some(RegInit(0.U(8.W))) else None
-    val StoreCoreidReg = if (EnableDifftest) Some(RegInit(0.U(8.W))) else None
+
+    val LoadCoreidReg = Option.when(EnableDifftest)(RegInit(0.U(8.W)))
+    val StoreCoreidReg = Option.when(EnableDifftest)(RegInit(0.U(8.W)))
 
     if (EnableDifftest) {
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_C_WORDS_PER_BANK", CMatrixRegEntryBitSize / 64)
@@ -91,7 +96,8 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         val loadFinishAny = io.ConfigInfo.LoadMicroTaskEndValid && io.ConfigInfo.LoadMicroTaskEndReady
         val storeFinishAny = io.ConfigInfo.StoreMicroTaskEndValid && io.ConfigInfo.StoreMicroTaskEndReady
 
-        val difftestLoadFinish = MatrixHash(CMatrixRegNBanks, CMatrixRegEntryByteSize, CMatrixRegSize, Tensor_MN * ResultWidthByte)
+        val hashWrites = MatrixHash(CMatrixRegNBanks, CMatrixRegEntryByteSize, CMatrixRegSize, Tensor_MN * ResultWidthByte, ports = 2)
+        val difftestLoadFinish = hashWrites(0)
         difftestLoadFinish.coreid := LoadCoreidReg.get
         difftestLoadFinish.index := 2.U
         difftestLoadFinish.valid := loadWriteAny || loadFinishAny
@@ -117,6 +123,26 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
           }
         }
         difftestLoadFinish.finish := loadFinishAny
+
+        val difftestLoadFinishLane1 = hashWrites(1)
+        difftestLoadFinishLane1.coreid := difftestLoadFinish.coreid
+        difftestLoadFinishLane1.index := 2.U
+        difftestLoadFinishLane1.valid := io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest.map(_(1).BankAddr.valid).reduce(_ || _)
+        difftestLoadFinishLane1.pc := LoadPcReg.get
+        for (i <- 0 until CMatrixRegNBanks) {
+          val write = io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(i)(1)
+          difftestLoadFinishLane1.bankValid(i) := write.BankAddr.valid
+          difftestLoadFinishLane1.bankAddr(i) := write.BankAddr.bits
+          difftestLoadFinishLane1.bankMask(i) := write.ByteMask.bits
+          for (w <- 0 until eventWordsPerBank) {
+            if (w < cMRegWordsPerBank) {
+              difftestLoadFinishLane1.data(i * eventWordsPerBank + w) := write.Data.bits(w * 64 + 63, w * 64)
+            } else {
+              difftestLoadFinishLane1.data(i * eventWordsPerBank + w) := 0.U(64.W)
+            }
+          }
+        }
+        difftestLoadFinishLane1.finish := false.B
 
         val difftestStoreFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         difftestStoreFinish.coreid := StoreCoreidReg.get
@@ -194,9 +220,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         val peDataType = new FReducePEDataType
         C_DataWidth := peDataType.CdataByteWidth(io.ConfigInfo.ApplicationTensor_C.dataType)
         memoryload_state := s_load_init
-        if (YJPCMLDebugEnable) {
-            printf("[CMemoryLoader_Load<%d>]Load C Tensor Start, Tensor_Block_BaseAddr: %x, ApplicationTensor_C_Stride_M: %x, IsConherent: %x,MatrixRegTensor_M: %x,MatrixRegTensor_N: %x,C_DataWidth(zero,full,repeatrow) :(%d,%d,%d)\n", io.DebugInfo.DebugTimeStampe, io.ConfigInfo.ApplicationTensor_C.BlockTensor_C_BaseVaddr, io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_Stride_M, io.ConfigInfo.Conherent,io.ConfigInfo.MatrixRegTensor_M,io.ConfigInfo.MatrixRegTensor_N,io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad.asUInt,io.ConfigInfo.LoadTaskInfo.Is_FullLoad.asUInt,io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad.asUInt)
-        }
+
         if (EnableDifftest) {
             LoadPcReg.get := io.ConfigInfo.pc.get
             LoadCoreidReg.get := io.ConfigInfo.coreid.get
@@ -214,9 +238,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         D_DataType := io.ConfigInfo.ApplicationTensor_D.dataType
         StoreTraceTag.zip(io.ConfigInfo.StoreTraceTag).foreach { case (to, from) => to := from }
         memorystore_state := s_store_init
-        if (YJPCMLDebugEnable) {
-            printf("[CMemoryLoader_Start<%d>]Store D Tensor Start, Tensor_Block_BaseAddr: %x, ApplicationTensor_D_Stride_M: %x, IsConherent: %x, Is_Transpose: %x,MatrixRegTensor_M: %x,MatrixRegTensor_N: %x\n", io.DebugInfo.DebugTimeStampe, io.ConfigInfo.ApplicationTensor_D.BlockTensor_D_BaseVaddr, io.ConfigInfo.ApplicationTensor_D.ApplicationTensor_D_Stride_M, io.ConfigInfo.Conherent, io.ConfigInfo.Is_Transpose,io.ConfigInfo.MatrixRegTensor_M,io.ConfigInfo.MatrixRegTensor_N)
-        }
+
         if (EnableDifftest) {
             StorePcReg.get := io.ConfigInfo.pc.get
             StoreCoreidReg.get := io.ConfigInfo.coreid.get
@@ -245,38 +267,25 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     val TotalRequestSize = Seq.fill(CMatrixRegNBanks){RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))} //总发出的Memory请求的数据量
     val CurrentLoaded_BlockTensor_M_Iter = Seq.fill(CMatrixRegNBanks){RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))}
     val CurrentLoaded_BlockTensor_N_Iter = Seq.fill(CMatrixRegNBanks){RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))}
-    
+
     //一个cam来存储访存请求的source_id对应的MatrixReg的地址和bank号
     //用sourceid做索引，存储MatrixReg的地址和bank号，是一组寄存器
 
     val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
 
-    private val fillQueueMetaWidth = CSourceIdAddrWidth + 1
-    val fillDataQueues = Seq.tabulate(CMatrixRegNBanks) { bank =>
-        Module(new Queue(UInt(outsideDataWidth.W), CLoadMultiFillQueueDepth, pipe = true))
-            .suggestName(s"cml_bank${bank}_fill_data_queue")
+    class FillBundle extends Bundle {
+        val addr = UInt(log2Ceil(CMatrixRegBankNEntries).W)
+        val data = UInt(outsideDataWidth.W)
+        val isTail = Bool()
     }
-    val fillMetaQueues = Seq.tabulate(CMatrixRegNBanks) { bank =>
-        Module(new Queue(UInt(fillQueueMetaWidth.W), CLoadMultiFillQueueDepth, pipe = true))
-            .suggestName(s"cml_bank${bank}_fill_meta_queue")
-    }
-    // init fill queue input ports
+    val fillQueues = Seq.fill(CMatrixRegNBanks){Module(new Queue(new FillBundle, 8, pipe = true))}
+    // init fillQueues input ports
     for (i <- 0 until CMatrixRegNBanks) {
-        fillDataQueues(i).io.enq.valid := false.B
-        fillDataQueues(i).io.enq.bits := 0.U
-        fillDataQueues(i).io.deq.ready := false.B
-        fillMetaQueues(i).io.enq.valid := false.B
-        fillMetaQueues(i).io.enq.bits := 0.U
-        fillMetaQueues(i).io.deq.ready := false.B
-
-        assert(
-            fillDataQueues(i).io.enq.ready === fillMetaQueues(i).io.enq.ready,
-            s"CML bank $i fill enqueue queues diverged"
-        )
-        assert(
-            fillDataQueues(i).io.deq.valid === fillMetaQueues(i).io.deq.valid,
-            s"CML bank $i fill dequeue queues diverged"
-        )
+        fillQueues(i).io.enq.valid := false.B
+        fillQueues(i).io.enq.bits.addr := 0.U
+        fillQueues(i).io.enq.bits.data := 0.U
+        fillQueues(i).io.enq.bits.isTail := false.B
+        fillQueues(i).io.deq.ready := false.B
     }
 
     val MAX_Fill_Times = outsideDataWidthByte/CMatrixRegEntryByteSize
@@ -312,28 +321,28 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         //数据会先排N，再排M,这里每个都是4byte的数据，是一个全精度的数据，是一个element，和AML、BML里的不是一个概念
         //   N 0 1 2 3 4 5 6 7     CMatrixRegData里的排布
         // M                               {bank  [0] [1]     [2] [3] }
-        // 0   0 1 2 3 4 5 6 7   |addr    0 |    0123 89ab   ghij opgr 
-        // 1   8 9 a b c d e f   |        1 |    4567 cdef   klmn stuv 
-        // 2   g h i j k l m n   |        2 |    wxyz !...   @... #... 
+        // 0   0 1 2 3 4 5 6 7   |addr    0 |    0123 89ab   ghij opgr
+        // 1   8 9 a b c d e f   |        1 |    4567 cdef   klmn stuv
+        // 2   g h i j k l m n   |        2 |    wxyz !...   @... #...
         // 3   o p g r s t u v   |        3 |    .... ....   .... ....
-        // 4   w x y z .......   |        4 |    .... ....   .... .... 
+        // 4   w x y z .......   |        4 |    .... ....   .... ....
         // 5   !..............   |        5 |    .... ....   .... ....
         // 6   @..............   |        6 |    .... ....   .... ....
-        // 7   #..............   |        7 |    .... ....   .... .... 
+        // 7   #..............   |        7 |    .... ....   .... ....
         // 8   $..............   | ....................................
 
         //向量的访存顺序
         //01,89,gh,op,23,ab,ij,gr,45,cd,kl,st,67,ef,mn,uv,打散bank去填数据
         //   N 0 1 2 3 4 5 6 7     CMatrixRegData里的排布
         // M                               {bank  [0] [1]     [2] [3] }
-        // 0   0 1 2 3 4 5 6 7   |addr    0 |      0   8       g   o 
-        // 1   8 9 a b c d e f   |        1 |      1   9       h   p 
+        // 0   0 1 2 3 4 5 6 7   |addr    0 |      0   8       g   o
+        // 1   8 9 a b c d e f   |        1 |      1   9       h   p
         // 2   g h i j k l m n   |        2 |      2   a       i   q
         // 3   o p g r s t u v   |        3 |    ...沙莉花园. ....   .... ....
-        // 4   w x y z .......   |        4 |    .... ....   .... .... 
+        // 4   w x y z .......   |        4 |    .... ....   .... ....
         // 5   !..............   |        5 |    .... ....   .... ....
         // 6   @..............   |        6 |    .... ....   .... ....
-        // 7   #..............   |        7 |    .... ....   .... .... 
+        // 7   #..............   |        7 |    .... ....   .... ....
         // 8   $..............   | ....................................
         //
 
@@ -371,23 +380,8 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                 ReadRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
 
                 when(ReadRequest.fire){
-                    if (YJPCMLDebugEnable) {
-                        val cycle = io.DebugInfo.DebugTimeStampe
-                        printf(cf"[CMLWHZ<${cycle}>][channel ${bank}][LoadRequest] " +
-                        cf"Addr ${ReadRequest.bits.RequestAddr}%x, " +
-                        cf"cacheBank ${ReadRequest.bits.RequestAddr(8, 6)}, " +
-                        cf"bank ${csourceId.MatrixRegBankId}, " +
-                        cf"setAddr ${csourceId.MatrixRegAddr}, " +
-                        cf"CurrentLoaded_BlockTensor_M_Iter ${CurrentLoaded_BlockTensor_M_Iter}, " +
-                        cf"CMatrixRegNBanks ${CMatrixRegNBanks}, " +
-                        cf"CurrentLoaded_BlockTensor_N_Iter ${CurrentLoaded_BlockTensor_N_Iter}, " +
-                        cf"MatrixRegTensor_M ${LoadMatrixRegTensor_M}, " +
-                        cf"MatrixRegTensor_N ${LoadMatrixRegTensor_N}, " +
-                        cf"TotalRequestSize ${TotalRequestSize}, " +
-                        cf"MaxRequestIter ${MaxRequestIter}, " +
-                        cf"C_DataWidth ${C_DataWidth}, " +
-                        cf"\n")
-                    }
+                    val cycle = io.DebugInfo.DebugTimeStampe
+
 
                     N_Iter := N_Iter + 1.U
                     when(N_Iter === (N_Beat_Count - 1.U)){
@@ -396,10 +390,6 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                     }
 
                     //不过我们保证了数据是256bit对齐的～剩下的就是Tensor_M和Tensor_K不满足的情况思考好就行了
-                    if (YJPCMLDebugEnable)
-                    {
-                        printf("[CMemoryLoader_Load<%d>]RequestMatrixRegAddr: %x,RequestMatrixRegBankId: %x,CurrentLoaded_BlockTensor_N_Iter: %x,CurrentLoaded_BlockTensor_M_Iter: %x,RequestAddr: %x, RequestSourceID: %x, RequestConherent: %x, RequestType_isWrite: %x, RequestTimes: %d\n", io.DebugInfo.DebugTimeStampe, csourceId.MatrixRegAddr,csourceId.MatrixRegBankId,CurrentLoaded_BlockTensor_N_Iter(bank),CurrentLoaded_BlockTensor_M_Iter(bank),ReadRequest.bits.RequestAddr, ReadRequest.bits.RequestSourceID, ReadRequest.bits.RequestConherent, ReadRequest.bits.RequestType_isWrite, TotalRequestSize.reduce(_+_))
-                    }
                     when(TotalRequestSizeBank === MaxRequestIter){
                         //assert!
                         //error!
@@ -410,53 +400,46 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
 
 
                 // OmegaRouter 已保证 channel bank 上的 response 属于 bank bank，
-                // 因此直接使用 per-bank fill queues 是正确的。
+                // 因此直接使用 fillQueues(bank) 是正确的。
                 val resp = io.LoadLocalMMUIO.Response(bank)
                 val respSourceID = decodeCSourceId(resp.bits.ReseponseSourceID)
                 val MatrixRegBankId = respSourceID.MatrixRegBankId
                 val MatrixRegAddr = respSourceID.MatrixRegAddr
                 val ResponseData = resp.bits.ReseponseData
 
-                val fillDataQ = fillDataQueues(bank).io
-                val fillMetaQ = fillMetaQueues(bank).io
-                resp.ready := fillDataQ.enq.ready && fillMetaQ.enq.ready
-                fillDataQ.enq.valid := resp.valid
-                fillDataQ.enq.bits := ResponseData
-                fillMetaQ.enq.valid := resp.valid
-                fillMetaQ.enq.bits := Cat(respSourceID.MatrixRegisTail, MatrixRegAddr)
+                val fillq = fillQueues(bank).io
+                resp.ready := fillq.enq.ready
+                fillq.enq.valid := resp.valid
+                fillq.enq.bits.addr := MatrixRegAddr
+                fillq.enq.bits.data := ResponseData
+                fillq.enq.bits.isTail := respSourceID.MatrixRegisTail
+
+
 
                 when(resp.fire){
                     assert(MatrixRegBankId === bank.U,
                         cf"CMemoryLoader: response bankId mismatch on channel $bank, expected $bank but got $MatrixRegBankId. Router may be missing.")
-                    if (YJPCMLDebugEnable)
-                    {
-                        printf("[CMemoryLoader_Load<%d>]ResponseData: %x, MatrixRegBankId: %x, MatrixRegAddr: %x\n",io.DebugInfo.DebugTimeStampe, ResponseData, MatrixRegBankId, MatrixRegAddr)
-                    }
+
                 }
             }
 
             //检查每个bank是否有数据需要回填
-            HasScarhpadWrite := fillDataQueues.map(_.io.deq.valid).reduce(_ || _)
+            HasScarhpadWrite := fillQueues.map(_.io.deq.valid).reduce(_ || _)
 
-            val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(1.W))))
+            val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(2.W))))
             for (i <- 0 until CMatrixRegNBanks){
                 val fillTimes = RegInit(MAX_Fill_Times.U)
-                val fillDataQ = fillDataQueues(i).io
-                val fillMetaQ = fillMetaQueues(i).io
+                val fillq = fillQueues(i).io
                 val allowWrite = io.ToMatrixRegIO.LoadReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex) === true.B
                 when(allowWrite)
                 {
-                    fillDataQ.deq.ready := fillTimes === 1.U
-                    fillMetaQ.deq.ready := fillTimes === 1.U
-                    when(fillDataQ.deq.valid){
-                        Current_Fill_MReg_Time(i) := 1.U
+                    when(fillq.deq.valid){
+                        val rowsThisCycle = Mux(fillTimes > 1.U, 2.U, 1.U)
+                        Current_Fill_MReg_Time(i) := rowsThisCycle
                         val MatrixRegWriteRequest = io.ToMatrixRegIO.WriteRequestToMatrixReg
                         val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*CMatrixRegEntryByteSize).W)))))
-                        val meta = fillMetaQ.deq.bits
-                        val baseAddr = meta(CSourceIdAddrWidth - 1, 0)
-                        val addr = baseAddr + (MAX_Fill_Times.U - fillTimes)
                         val fillSlot = MAX_Fill_Times.U - fillTimes
-                        val currentIsTail = meta(fillQueueMetaWidth - 1)
+                        val currentIsTail = fillq.deq.bits.isTail
                         val fullByteMask = Fill(CMatrixRegEntryByteSize, true.B)
                         val tailByteMaskVec = Wire(Vec(MAX_Fill_Times, UInt(CMatrixRegEntryByteSize.W)))
                         for (j <- 0 until MAX_Fill_Times) {
@@ -464,29 +447,34 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                             val low = j * CMatrixRegEntryByteSize
                             tailByteMaskVec(j) := tailTaskMask(high, low)
                         }
-                        FIFOData := fillDataQ.deq.bits.asTypeOf(FIFOData)
-                        MatrixRegWriteRequest.BankAddr(i).bits := addr
-                        MatrixRegWriteRequest.BankAddr(i).valid := true.B
-                        MatrixRegWriteRequest.Data(i).bits := FIFOData(fillSlot)
-                        MatrixRegWriteRequest.Data(i).valid := true.B
-                        MatrixRegWriteRequest.ByteMask(i).bits := Mux(currentIsTail, tailByteMaskVec(fillSlot), fullByteMask)
-                        MatrixRegWriteRequest.ByteMask(i).valid := true.B
+                        FIFOData := fillq.deq.bits.data.asTypeOf(FIFOData)
+                        for (lane <- 0 until 2) {
+                            val laneValid = fillTimes > lane.U
+                            val laneSlot = if (MAX_Fill_Times == 1) 0.U else
+                                Mux(laneValid, fillSlot + lane.U, 0.U)(log2Ceil(MAX_Fill_Times) - 1, 0)
+                            val write = MatrixRegWriteRequest.WriteRequest(i)(lane)
+                            write.BankAddr.bits := fillq.deq.bits.addr + laneSlot
+                            write.BankAddr.valid := laneValid
+                            write.Data.bits := FIFOData(laneSlot)
+                            write.Data.valid := laneValid
+                            write.ByteMask.bits := Mux(currentIsTail, tailByteMaskVec(laneSlot), fullByteMask)
+                            write.ByteMask.valid := laneValid
 
-                        fillTimes := fillTimes - 1.U
-                        when(fillTimes === 1.U){
+                        }
+
+                        fillTimes := fillTimes - rowsThisCycle
+                        when(fillTimes <= 2.U){
                             fillTimes := MAX_Fill_Times.U
+                            fillq.deq.ready := true.B
                         }
 
-                        if (YJPCMLDebugEnable)
-                        {
-                            printf("[CMemoryLoader_Load<%d>][LoadWriteReg] bank: %d, regAddr: 0x%x, fillTimes: %d, writeData: 0x%x, byteMask: 0x%x\n", io.DebugInfo.DebugTimeStampe,i.U, addr, fillTimes, FIFOData(fillSlot), MatrixRegWriteRequest.ByteMask(i).bits)
-                        }
+
                     }
                 }
             }
 
             val Current_Load_Fill_Size = WireInit(0.U((log2Ceil(CMatrixRegNBanks)+1).W))
-            Current_Load_Fill_Size := PopCount(Current_Fill_MReg_Time.asUInt)
+            Current_Load_Fill_Size := Current_Fill_MReg_Time.reduce(_ +& _)
 
             TotalLoadSize := TotalLoadSize + Current_Load_Fill_Size
 
@@ -494,7 +482,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
             {
                 when(Current_Load_Fill_Size =/= 0.U)
                 {
-                    printf("[CMemoryLoader_Load<%d>]Current_Load_Fill_Size: %d, TotalLoadSize: %d, MaxLoadSize: %d\n",io.DebugInfo.DebugTimeStampe, Current_Load_Fill_Size, TotalLoadSize, MaxRequestIter * MAX_Fill_Times.U)
+
                 }
             }
             //状态机切换
@@ -502,7 +490,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                 memoryload_state := s_load_end
                 if (YJPCMLDebugEnable)
                 {
-                    printf("[CMemoryLoader_Load<%d>]LoadEnd\n",io.DebugInfo.DebugTimeStampe)
+
                 }
             }
         }.elsewhen(Is_ZeroLoad) {
@@ -525,14 +513,14 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                 TotalLoadSize := TotalLoadSize + 1.U
                 if (YJPCMLDebugEnable)
                 {
-                    printf("[CMemoryLoader_Load<%d>]ZeroLoad, TotalLoadSize: %d\n",io.DebugInfo.DebugTimeStampe, TotalLoadSize)
+
                 }
                 when(TotalLoadSize === (Max_ZeroLoad_Write_Times-1).U)
                 {
                     memoryload_state := s_load_end
                     if (YJPCMLDebugEnable)
                     {
-                        printf("[CMemoryLoader_Load<%d>]ZeroLoadEnd\n",io.DebugInfo.DebugTimeStampe)
+
                     }
                 }
             }
@@ -543,7 +531,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
             memoryload_state := s_load_idle
             if (YJPCMLDebugEnable)
             {
-                printf("[CMemoryLoader_Load<%d>]Load Finish\n",io.DebugInfo.DebugTimeStampe)
+
             }
         }
     }.otherwise{
@@ -599,7 +587,6 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     N_Get_IteratorMax := (StoreMatrixRegTensor_N / Matrix_MN.U)
 
     val transpose_scp_addr = WireInit(0.U(log2Ceil(CMatrixRegBankNEntries).W))
-    val DirectAckResponseCount = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
 
     class BankStore(bank: Int) {
         /**
@@ -611,7 +598,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
          * 总共读取的请求数据量，这个参数表示已经对ScartchPad发出的读请求次数
          */
         val TotalScpReadCount = Reg(UInt(log2Ceil(Tensor_MN*Tensor_MN).W))
-        
+
         val StoreQueueDepth = 4
         val StoreQueue = Module(new Queue(UInt(outsideDataWidth.W), StoreQueueDepth, pipe = false, flow = false))
         StoreQueue.io.enq.valid := false.B
@@ -652,13 +639,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
             WriteResponseCounter := 0.U
         }
 
-        def logger(msg: Printable): Unit = {
-            if (YJPCMLDebugEnable) {
-                printf(
-                  cf"[CMemoryLoader_Store<${io.DebugInfo.DebugTimeStampe}>][bank $bank][BankStore] " + msg + "\n"
-                )
-            }
-        }
+        def logger(msg: Printable): Unit = if (YJPCMLDebugEnable) printf(msg + "\n")
 
         def mainLogic(): Unit = {
             //根据MatrixReg的仲裁结果，我们可以读取数据了
@@ -724,6 +705,8 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
             WriteRequest.bits.RequestData := StoreQueue.io.deq.bits
             WriteRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
 
+
+
             when(WriteRequest.fire){
                 logger(
                     cf"WriteRequest.fire: {addr: 0x${WriteRequest.bits.RequestAddr}%x," +
@@ -743,7 +726,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                     CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
                     CurrentStore_BlockTensor_Major_DIM_Iter := CurrentStore_BlockTensor_Major_DIM_Iter + Matrix_MN.U
                 }
-            
+
                 // StoreQueue 出队，可同时写入 BusCollector 0 号位
                 when(stallRegRead) {
                     stallRegRead := false.B
@@ -759,6 +742,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         def onResponse() = {
             val resp = io.StoreLocalMMUIO.Response(bank)
             resp.ready := true.B
+
             when(resp.fire) {
                 WriteResponseCounter := WriteResponseCounter + 1.U
                 logger(cf"WriteResponse: sourceId: ${resp.bits.ReseponseSourceID}, CurrentCount(Include): ${WriteResponseCounter + 1.U}")
@@ -772,7 +756,6 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         memorystore_state := s_store_working
 
         BankStores.foreach(_.init())
-        DirectAckResponseCount := 0.U
 
         Max_Load_MReg_Time := StoreMatrixRegTensor_M * StoreMatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U
 
@@ -811,19 +794,14 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         }
     }.elsewhen(memorystore_state === s_store_end){
         val WriteResponseCountSum = BankStores.map(_.WriteResponseCounter).reduce(_ + _)
-        val StoreAckDone = Mux(
-            CStoreDirectAckCountMode.B,
-            DirectAckResponseCount === Max_Store_Memory_Time,
-            WriteResponseCountSum === Max_Store_Memory_Time
-        )
-        when(StoreAckDone) {
+        when(WriteResponseCountSum === Max_Store_Memory_Time) {
             io.ConfigInfo.StoreMicroTaskEndValid := true.B
         }
         when(io.ConfigInfo.StoreMicroTaskEndReady && io.ConfigInfo.StoreMicroTaskEndValid){
             memorystore_state := s_store_idle
             if (YJPCMLDebugEnable)
             {
-                printf("[CMemoryLoader_Store<%d>]Store Finish\n",io.DebugInfo.DebugTimeStampe)
+
             }
         }
     }.otherwise{
@@ -831,56 +809,14 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     }
 
     when(memorystore_state === s_store_working || memorystore_state === s_store_end){
-        if (CStoreDirectAckCountMode) {
-            val ackValids = io.StoreLocalMMUIO.Response.map(_.valid)
-            val ackReadies = Wire(Vec(Matrix_MN, Bool()))
-            val directAckFireVec = Wire(Vec(Matrix_MN, Bool()))
-            val anyAckValid = ackValids.reduce(_ || _)
-            val ackCanAccept = DirectAckResponseCount =/= Max_Store_Memory_Time
-            for (bank <- 0 until Matrix_MN) {
-                ackReadies(bank) := ackCanAccept
-                io.StoreLocalMMUIO.Response(bank).ready := ackReadies(bank)
-                directAckFireVec(bank) := io.StoreLocalMMUIO.Response(bank).fire
-            }
-            val firedAckCount = PopCount(directAckFireVec)
-            when(firedAckCount =/= 0.U) {
-                DirectAckResponseCount := DirectAckResponseCount + firedAckCount
-                if (YJPCMLDebugEnable) {
-                    printf(
-                        cf"[CMemoryLoader_Store<${io.DebugInfo.DebugTimeStampe}>][DirectAck] " +
-                        cf"ackFireVec=${directAckFireVec.asUInt} ackInc=${firedAckCount} " +
-                        cf"totalAck=${DirectAckResponseCount + firedAckCount}/${Max_Store_Memory_Time}\n"
-                    )
-                }
-            }.elsewhen(anyAckValid) {
-                if (YJPCMLDebugEnable) {
-                    printf(
-                        cf"[CMemoryLoader_Store<${io.DebugInfo.DebugTimeStampe}>][DirectAck] " +
-                        cf"ackValidNoFire validVec=${ackValids.asUInt} ready=${ackCanAccept}\n"
-                    )
-                }
-            }
-        } else {
-            for (bank <- 0 until Matrix_MN) {
-                BankStores(bank).onResponse()
-            }
+        for (bank <- 0 until Matrix_MN) {
+            BankStores(bank).onResponse()
         }
     }
 
     if (YJPCMLDebugEnable) {
         when(RegNext(memorystore_state === s_store_init)) {
-            printf(
-                cf"[CMemoryLoader_Store<${io.DebugInfo.DebugTimeStampe}>] Store D Tensor Start\n" +
-                cf"  Max_Load_MReg_Time: ${Max_Load_MReg_Time}\n" +
-                cf"  Max_Store_Memory_Time: ${Max_Store_Memory_Time}\n" +
-                cf"  MaxIncStoreScpRequestSize: ${MaxIncStoreScpRequestSize}\n" +
-                cf"  Per_LLC_Store_ReduceDim_Iter: ${Per_LLC_Store_ReduceDim_Iter}\n" +
-                cf"  Per_MReg_Load_ReduceDim_Iter: ${Per_MReg_Load_ReduceDim_Iter}\n" +
-                cf"  Max_SubReduce_DIM: ${Max_SubReduce_DIM}\n" +
-                cf"  Max_BlockTensor_Reduce_DIM: ${Max_BlockTensor_Reduce_DIM}\n" +
-                cf"  Max_BlockTensor_Request_Reduce_DIM: ${Max_BlockTensor_Request_Reduce_DIM}\n" +
-                cf"  Max_BlockTensor_Major_DIM: ${Max_BlockTensor_Major_DIM}\n"
-            )
+
         }
     }
 }

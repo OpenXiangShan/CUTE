@@ -26,6 +26,7 @@ class BSourceIdSearch(implicit p: Parameters) extends CuteBundle{
 // Convolution data uses [khkwoc][ic] layout; matrix multiplication uses [N][K].
 
 class BMemoryLoader(implicit p: Parameters) extends CuteModule{
+
     val io = IO(new Bundle{
         // MatrixReg interface.
         val ToMatrixRegIO = Flipped(new ABMemoryLoaderMatrixRegIO)
@@ -37,12 +38,10 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     // Use ToMatrixRegIO as the common external interface.
 
     io.ToMatrixRegIO.active := false.B
-    io.ToMatrixRegIO.BankAddr.map(_.valid := false.B)
-    io.ToMatrixRegIO.BankAddr.map(_.bits := DontCare)
-    io.ToMatrixRegIO.Data.map(_.valid := false.B)
-    io.ToMatrixRegIO.Data.map(_.bits := DontCare)
-    io.ToMatrixRegIO.ByteMask.map(_.valid := false.B)
-    io.ToMatrixRegIO.ByteMask.map(_.bits := Fill(ABMatrixRegEntryByteSize, true.B))
+    io.ToMatrixRegIO.WriteRequest := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequest)
+    io.ToMatrixRegIO.WriteRequest.foreach(_.foreach { write =>
+        write.ByteMask.bits := Fill(ABMatrixRegEntryByteSize, true.B)
+    })
 
     // Initialize all channels, but legacy BML only uses channel 0
     for (i <- 0 until ABMatrixRegNBanks) {
@@ -59,7 +58,8 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         when (io.ConfigInfo.MicroTaskValid) {
           pcReg := io.ConfigInfo.pc.get
         }
-        val difftestAmuFinish = MatrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K)
+        val hashWrites = MatrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K, ports = 2)
+        val difftestAmuFinish = hashWrites(0)
         // Initialize default values.
         difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
         difftestAmuFinish.index := 1.U
@@ -87,6 +87,26 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
           }
         }
         difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
+
+        val difftestAmuFinishLane1 = hashWrites(1)
+        difftestAmuFinishLane1.coreid := difftestAmuFinish.coreid
+        difftestAmuFinishLane1.index := 1.U
+        difftestAmuFinishLane1.valid := io.ToMatrixRegIO.WriteRequest.map(_(1).BankAddr.valid).reduce(_ || _)
+        difftestAmuFinishLane1.pc := pcReg
+        for (i <- 0 until ABMatrixRegNBanks) {
+          val write = io.ToMatrixRegIO.WriteRequest(i)(1)
+          difftestAmuFinishLane1.bankValid(i) := write.BankAddr.valid
+          difftestAmuFinishLane1.bankAddr(i) := write.BankAddr.bits
+          difftestAmuFinishLane1.bankMask(i) := write.ByteMask.bits
+          for (w <- 0 until eventWordsPerBank) {
+            if (w < abMRegWordsPerBank) {
+              difftestAmuFinishLane1.data(i * eventWordsPerBank + w) := write.Data.bits(w * 64 + 63, w * 64)
+            } else {
+              difftestAmuFinishLane1.data(i * eventWordsPerBank + w) := 0.U(64.W)
+            }
+          }
+        }
+        difftestAmuFinishLane1.finish := false.B
     }
 
     val MatrixRegBankAddr = io.ToMatrixRegIO.BankAddr
@@ -105,7 +125,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Tensor_B_BaseVaddr = RegInit(0.U(MMUAddrWidth.W))
     val ApplicationTensor_B_Stride_N = RegInit(0.U(MMUAddrWidth.W))
 
-    
+
     // Task state machine.
     val s_idle :: s_mm_task :: Nil = Enum(2)
     val state = RegInit(s_idle)
@@ -118,7 +138,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     val Conherent = RegInit(true.B) // Coherent-access flag supplied by TaskController.
 
-    
+
     // Accept a task when ConfigInfo is valid.
 
     when(state === s_idle){
@@ -176,7 +196,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     // A CAM maps each memory request source ID to a MatrixReg address and bank.
     // Source IDs index this register table.
-    
+
     // val SoureceIdSearchTable = VecInit(Seq.fill(SoureceMaxNum){RegInit(new BSourceIdSearch)})
     val SoureceIdSearchTable = RegInit(VecInit(Seq.fill(SoureceMaxNum)(0.U((new BSourceIdSearch).getWidth.W))))
     val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)).W))
@@ -244,7 +264,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             val RequestMatrixRegAddr = NormalRequestMatrixRegAddr
 
             Request.bits.RequestAddr := Tensor_Block_BaseAddr + RequestMatrixRegNIndex * ApplicationTensor_B_Stride_N + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))
-            
+
             val sourceId = Mux(Conherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
             Request.bits.RequestConherent := Conherent
             Request.bits.RequestSourceID := sourceId.bits
@@ -336,7 +356,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 //Alternatively, software can schedule traffic to keep the memory path stable and avoid that path.
                 //MatrixReg writes have priority, so a unique write port should not block and may not need a FIFO.
                 //Slow external-memory reads can wait; MatrixReg reads cannot, which motivates write priority.
-                
+
                 //Select the destination using the response ID.
                 //TODO: Generalize the fixed read quantity for boundary cases.
                 if (YJPBMLDebugEnable)
@@ -348,7 +368,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
 
             // Fill-table writeback has highest priority and runs whenever work is pending.
                 val HasScarhpadWrite = Have_Bank_Fill
-                val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(1.W))))
+                val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(2.W))))
                 if (ABMLNeedMRegFillTable)
                 {
                     for (i <- 0 until ABMatrixRegNBanks){
@@ -357,7 +377,8 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                             val fillSlot = MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex)
                             val fillSlotOH = UIntToOH(fillSlot, MAX_Fill_Times)
                             val currentIsTail = MReg_Fill_Table_IsTail(CurrentFIFOIndex)
-                            Current_Fill_MReg_Time(i) := 1.U
+                            val rowsThisCycle = Mux(MReg_Fill_Table_Time(CurrentFIFOIndex) > 1.U, 2.U, 1.U)
+                            Current_Fill_MReg_Time(i) := rowsThisCycle
                             val MatrixRegWriteRequest = io.ToMatrixRegIO
                             val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*ABMatrixRegEntryByteSize).W)))))
                             FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
@@ -365,18 +386,25 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                             val tailMaskSlots = VecInit((0 until MAX_Fill_Times).map { j =>
                                 tailTaskMask((j + 1) * ABMatrixRegEntryByteSize - 1, j * ABMatrixRegEntryByteSize)
                             })
-                            MatrixRegWriteRequest.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + fillSlot
-                            MatrixRegWriteRequest.BankAddr(i).valid := true.B
-                            MatrixRegWriteRequest.Data(i).bits := FIFOData(fillSlot)
-                            MatrixRegWriteRequest.Data(i).valid := true.B
-                            MatrixRegWriteRequest.ByteMask(i).bits := Mux(currentIsTail, tailMaskSlots(fillSlot), Fill(ABMatrixRegEntryByteSize, true.B))
-                            MatrixRegWriteRequest.ByteMask(i).valid := true.B
+                            for (lane <- 0 until 2) {
+                                val laneValid = MReg_Fill_Table_Time(CurrentFIFOIndex) > lane.U
+                                val laneSlot = if (MAX_Fill_Times == 1) 0.U else
+                                    Mux(laneValid, fillSlot + lane.U, 0.U)(log2Ceil(MAX_Fill_Times) - 1, 0)
+                                val write = MatrixRegWriteRequest.WriteRequest(i)(lane)
+                                write.BankAddr.bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + laneSlot
+                                write.BankAddr.valid := laneValid
+                                write.Data.bits := FIFOData(laneSlot)
+                                write.Data.valid := laneValid
+                                write.ByteMask.bits := Mux(currentIsTail, tailMaskSlots(laneSlot), Fill(ABMatrixRegEntryByteSize, true.B))
+                                write.ByteMask.valid := laneValid
+
+                            }
                             if (YJPBMLDebugEnable) {
                                 printf("[BML_MRegWriteHandshake<%d>] bankid: %d, CurrentFIFOIndex: %d, ScartchPadAddr: %x, BankAddr: %x, Data: %x, ByteMask: %x\n", io.DebugInfo.DebugTimeStampe,i.U, CurrentFIFOIndex, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), MatrixRegWriteRequest.BankAddr(i).bits, MatrixRegWriteRequest.Data(i).bits, MatrixRegWriteRequest.ByteMask(i).bits)
                             }
 
-                            MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - 1.U
-                            when(MReg_Fill_Table_Time(CurrentFIFOIndex) === 1.U){
+                            MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - rowsThisCycle
+                            when(MReg_Fill_Table_Time(CurrentFIFOIndex) <= 2.U){
                                 Bank_Fill_Search_FIFO_Tail(i) := WrapInc(Bank_Fill_Search_FIFO_Tail(i), BMemoryLoaderReadFromMemoryFIFODepth)
                             }
 
@@ -391,7 +419,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
                 }
 
                 val Current_Load_Fill_Size = WireInit(0.U((log2Ceil(ABMatrixRegNBanks)+1).W))
-                Current_Load_Fill_Size := PopCount(Current_Fill_MReg_Time.asUInt)
+                Current_Load_Fill_Size := Current_Fill_MReg_Time.reduce(_ +& _)
 
                 if (ABMLNeedMRegFillTable)
                 {

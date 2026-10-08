@@ -27,12 +27,10 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
     })
 
     io.ToMatrixRegIO.active := false.B
-    io.ToMatrixRegIO.BankAddr.map(_.valid := false.B)
-    io.ToMatrixRegIO.BankAddr.map(_.bits := DontCare)
-    io.ToMatrixRegIO.Data.map(_.valid := false.B)
-    io.ToMatrixRegIO.Data.map(_.bits := DontCare)
-    io.ToMatrixRegIO.ByteMask.map(_.valid := false.B)
-    io.ToMatrixRegIO.ByteMask.map(_.bits := Fill(ABMatrixRegEntryByteSize, true.B))
+    io.ToMatrixRegIO.WriteRequest := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequest)
+    io.ToMatrixRegIO.WriteRequest.foreach(_.foreach { write =>
+        write.ByteMask.bits := Fill(ABMatrixRegEntryByteSize, true.B)
+    })
 
     // Initialize all LocalMMUIO channels; the legacy AML only drives channel 0.
     for (i <- 0 until ABMatrixRegNBanks) {
@@ -63,7 +61,8 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
           pcReg := io.ConfigInfo.pc.get
           coreidReg := io.ConfigInfo.coreid.get
         }
-        val difftestAmuFinish = MatrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K)
+        val hashWrites = MatrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K, ports = 2)
+        val difftestAmuFinish = hashWrites(0)
         difftestAmuFinish.coreid := coreidReg
         difftestAmuFinish.index := 0.U
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
@@ -90,6 +89,26 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
           }
         }
         difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
+
+        val difftestAmuFinishLane1 = hashWrites(1)
+        difftestAmuFinishLane1.coreid := difftestAmuFinish.coreid
+        difftestAmuFinishLane1.index := 0.U
+        difftestAmuFinishLane1.valid := io.ToMatrixRegIO.WriteRequest.map(_(1).BankAddr.valid).reduce(_ || _)
+        difftestAmuFinishLane1.pc := pcReg
+        for (i <- 0 until ABMatrixRegNBanks) {
+          val write = io.ToMatrixRegIO.WriteRequest(i)(1)
+          difftestAmuFinishLane1.bankValid(i) := write.BankAddr.valid
+          difftestAmuFinishLane1.bankAddr(i) := write.BankAddr.bits
+          difftestAmuFinishLane1.bankMask(i) := write.ByteMask.bits
+          for (w <- 0 until eventWordsPerBank) {
+            if (w < abMRegWordsPerBank) {
+              difftestAmuFinishLane1.data(i * eventWordsPerBank + w) := write.Data.bits(w * 64 + 63, w * 64)
+            } else {
+              difftestAmuFinishLane1.data(i * eventWordsPerBank + w) := 0.U(64.W)
+            }
+          }
+        }
+        difftestAmuFinishLane1.finish := false.B
     }
 
     val ConfigInfo = io.ConfigInfo
@@ -300,7 +319,7 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
                     }
                 }
 
-                val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(1.W))))
+                val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(2.W))))
                     // Generic per-slot tail mask derived from tailTaskMask.
                     val tailByteMaskPerSlot = VecInit((0 until MAX_Fill_Times).map { j =>
                         tailTaskMask((j + 1) * ABMatrixRegEntryByteSize - 1, j * ABMatrixRegEntryByteSize)
@@ -310,20 +329,28 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
                             val CurrentFIFOIndex = Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Tail(i))
                             val fillSlot = MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex)
                             val currentIsTail = MReg_Fill_Table_IsTail(CurrentFIFOIndex)
-                            Current_Fill_MReg_Time(i) := 1.U
+                            val rowsThisCycle = Mux(MReg_Fill_Table_Time(CurrentFIFOIndex) > 1.U, 2.U, 1.U)
+                            Current_Fill_MReg_Time(i) := rowsThisCycle
                             val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*ABMatrixRegEntryByteSize).W)))))
                             FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
-                            io.ToMatrixRegIO.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + fillSlot
-                            io.ToMatrixRegIO.BankAddr(i).valid := true.B
-                            io.ToMatrixRegIO.Data(i).bits := FIFOData(fillSlot)
-                            io.ToMatrixRegIO.Data(i).valid := true.B
-                            io.ToMatrixRegIO.ByteMask(i).bits := Mux(currentIsTail, tailByteMaskPerSlot(fillSlot), Fill(ABMatrixRegEntryByteSize, true.B))
-                            io.ToMatrixRegIO.ByteMask(i).valid := true.B
+                            for (lane <- 0 until 2) {
+                                val laneValid = MReg_Fill_Table_Time(CurrentFIFOIndex) > lane.U
+                                val laneSlot = if (MAX_Fill_Times == 1) 0.U else
+                                    Mux(laneValid, fillSlot + lane.U, 0.U)(log2Ceil(MAX_Fill_Times) - 1, 0)
+                                val write = io.ToMatrixRegIO.WriteRequest(i)(lane)
+                                write.BankAddr.bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + laneSlot
+                                write.BankAddr.valid := laneValid
+                                write.Data.bits := FIFOData(laneSlot)
+                                write.Data.valid := laneValid
+                                write.ByteMask.bits := Mux(currentIsTail, tailByteMaskPerSlot(laneSlot), Fill(ABMatrixRegEntryByteSize, true.B))
+                                write.ByteMask.valid := laneValid
+
+                            }
                             if (YJPAMLDebugEnable) {
                                 printf("[AML_MRegWriteHandshake<%d>] bank:%d, RegAddr:%x, WriteAddr:%x, Data:%x, ByteMask:%x, Time:%d\n", io.DebugInfo.DebugTimeStampe, i.U, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), io.ToMatrixRegIO.BankAddr(i).bits, io.ToMatrixRegIO.Data(i).bits, io.ToMatrixRegIO.ByteMask(i).bits, MReg_Fill_Table_Time(CurrentFIFOIndex))
                             }
-                            MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - 1.U
-                            when(MReg_Fill_Table_Time(CurrentFIFOIndex) === 1.U){
+                            MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - rowsThisCycle
+                            when(MReg_Fill_Table_Time(CurrentFIFOIndex) <= 2.U){
                                 Bank_Fill_Search_FIFO_Tail(i) := WrapInc(Bank_Fill_Search_FIFO_Tail(i), AMemoryLoaderReadFromMemoryFIFODepth)
                             }
                             if (YJPAMLDebugEnable){
@@ -331,7 +358,7 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
                             }
                         }
                     }
-                    val Current_Load_Fill_Size = PopCount(Current_Fill_MReg_Time.asUInt)
+                    val Current_Load_Fill_Size = Current_Fill_MReg_Time.reduce(_ +& _)
                     TotalLoadSize := TotalLoadSize + Current_Load_Fill_Size
                     if(YJPAMLDebugEnable){
                         when(Current_Load_Fill_Size =/= 0.U) {

@@ -59,12 +59,11 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       inputChannelCount = bankCount,
       respChannelCount = respChannelCount,
       bankCount = bankCount,
-      queueDepth = queueDepth,
+      baseDepth = queueDepth,
       dataWidth = dataWidth,
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
-      hasDataPayload = true,
       debugEnable = false
     )(ResponseChannelBridgeTestConfig.params)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)
@@ -126,12 +125,11 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       inputChannelCount = bankCount,
       respChannelCount = 2,
       bankCount = bankCount,
-      queueDepth = queueDepth,
+      baseDepth = queueDepth,
       dataWidth = dataWidth,
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
-      hasDataPayload = true,
       debugEnable = false
     )(ResponseChannelBridgeTestConfig.params)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)
@@ -180,12 +178,11 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       inputChannelCount = bankCount,
       respChannelCount = 1,
       bankCount = bankCount,
-      queueDepth = queueDepth,
+      baseDepth = queueDepth,
       dataWidth = dataWidth,
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
-      hasDataPayload = true,
       debugEnable = false
     )(ResponseChannelBridgeTestConfig.params)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)

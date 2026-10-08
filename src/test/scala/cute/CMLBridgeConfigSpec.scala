@@ -25,7 +25,7 @@ class CMLBridgeConfigSpec extends AnyFlatSpec {
     assert(view.BMLUseLegacyLoader)
     assert(view.CLoadBridgeResponseChannelCount == 1)
     assert(view.CStoreBridgeResponseChannelCount == 2)
-    assert(view.CStoreDiffTestLaneCount == 2)
+    assert(view.CStoreBridgeResponseChannelCount == 2)
     assert(view.CMLUseMultiChannelLoader)
   }
 
@@ -37,7 +37,7 @@ class CMLBridgeConfigSpec extends AnyFlatSpec {
 
     assert(view.CLoadBridgeResponseChannelCount == 4)
     assert(view.CStoreBridgeResponseChannelCount == 4)
-    assert(view.CStoreDiffTestLaneCount == 4)
+    assert(view.CStoreBridgeResponseChannelCount == 4)
     assert(view.CMLUseMultiChannelLoader)
   }
 
@@ -53,7 +53,7 @@ class CMLBridgeConfigSpec extends AnyFlatSpec {
     assert(view.CStoreUseLegacyLoader)
     assert(view.CLoadBridgeResponseChannelCount == 1)
     assert(view.CStoreBridgeResponseChannelCount == 1)
-    assert(view.CStoreDiffTestLaneCount == 1)
+    assert(view.CStoreBridgeResponseChannelCount == 1)
     assert(!view.CMLUseMultiChannelLoader)
   }
 
@@ -69,8 +69,7 @@ class CMLBridgeConfigSpec extends AnyFlatSpec {
       ))
       val view = new ParamView
 
-      assert(view.CStoreDiffTestLaneCount == expectedLaneCount)
-      assert(view.CStoreDiffTestLaneCount == view.CStoreBridgeResponseChannelCount)
+      assert(view.CStoreBridgeResponseChannelCount == expectedLaneCount)
     }
   }
 
