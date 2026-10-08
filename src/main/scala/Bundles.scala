@@ -249,8 +249,16 @@ class LocalMMUPerfProbe(implicit p: Parameters) extends CuteBundle {
   val cLoadRefill = UInt(ABMatrixRegNBanks.W)
 }
 
+class CMLPerfProbe(implicit p: Parameters) extends CuteBundle {
+  val loadTotalFired = UInt(log2Ceil(Tensor_MN * Tensor_MN * 2).max(1).W)
+  val loadPerfectBatches = UInt(log2Ceil(Tensor_MN * Tensor_MN).max(1).W)
+  val loadPerfectRequests = UInt(log2Ceil(Tensor_MN * Tensor_MN * 2).max(1).W)
+  val loadPerfectBatch = Bool()
+}
+
 class CutePerfToCoreIO(implicit p: Parameters) extends CuteBundle {
-  val localMMU = new LocalMMUPerfProbe
   val backendEvents = Vec(CutePerfEventCounts.Backend, UInt(6.W))
   val memEvents = Vec(CutePerfEventCounts.Mem, UInt(6.W))
+  val localMMU = new LocalMMUPerfProbe
+  val cml = new CMLPerfProbe
 }

@@ -17,6 +17,61 @@ import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
 //在本地最基础的是完成整体Tensor的加载，依据MatrixReg的设计，完成Tensor的切分以及将数据的填入MatrixReg
 
+object CMLPerfectBatchSelector {
+    def select(
+      valid: Seq[Bool],
+      address: Seq[UInt],
+      destination: Seq[UInt],
+      retained: Seq[Bool],
+      seedPointer: UInt,
+      l2BankCount: Int
+    ): UInt = {
+        require(valid.nonEmpty && isPow2(valid.size))
+        require(address.size == valid.size && destination.size == valid.size && retained.size == valid.size)
+        require(isPow2(l2BankCount))
+        val laneCount = valid.size
+        val laneWidth = log2Ceil(laneCount max 2)
+        val validVec = VecInit(valid)
+        val validMask = validVec.asUInt
+        val retainedMask = VecInit(retained).asUInt
+        val rotatedValid = Wire(Vec(laneCount, Bool()))
+        for (offset <- 0 until laneCount) {
+            val lane = (seedPointer + offset.U)(laneWidth - 1, 0)
+            rotatedValid(offset) := validVec(lane)
+        }
+        val seedOffset = PriorityEncoder(rotatedValid.asUInt)
+        val seedLane = (seedPointer + seedOffset)(laneWidth - 1, 0)
+        val seedMask = Mux(retainedMask.orR || !validMask.orR, 0.U, UIntToOH(seedLane, laneCount))
+        val stages = Seq.fill(laneCount + 1)(Wire(UInt(laneCount.W)))
+        stages.head := retainedMask | seedMask
+        val banks = address.map(IdealL2Banking.bankOf(_, l2BankCount))
+
+        for (lane <- 0 until laneCount) {
+            val current = stages(lane)
+            val candidateBit = UIntToOH(lane.U, laneCount)
+            val tentative = current | candidateBit
+            val bankConflict = (0 until laneCount).map { selectedLane =>
+                current(selectedLane) && banks(selectedLane) === banks(lane)
+            }.reduce(_ || _)
+            val validByBank = Wire(Vec(laneCount, Bool()))
+            val destinationByBank = Wire(Vec(laneCount, UInt(destination.head.getWidth.W)))
+            for (sourceBank <- 0 until laneCount) {
+                val bankMatches = (0 until laneCount).map { selectedLane =>
+                    tentative(selectedLane) && banks(selectedLane) === sourceBank.U
+                }
+                validByBank(sourceBank) := bankMatches.reduce(_ || _)
+                destinationByBank(sourceBank) := Mux1H(bankMatches, destination)
+            }
+            val survivor = OmegaTopology.survivorMask(validByBank, destinationByBank)
+            val routeCompatible = (survivor & validByBank.asUInt) === validByBank.asUInt
+            val add = valid(lane) && !current(lane) && !bankConflict && routeCompatible
+            stages(lane + 1) := Mux(add, tentative, current)
+        }
+
+        Mux(stages.last.orR, stages.last, PriorityEncoderOH(validMask))
+    }
+}
+
 class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     class CSourceId(implicit p: Parameters) extends CuteBundle{
         val MatrixRegBankId =UInt(log2Ceil(CMatrixRegNBanks).W)
@@ -47,6 +102,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         val DebugInfo = Input(new DebugInfoIO)
         val LoadMatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
         val StoreMatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
+        val perfProbe = Output(new CMLPerfProbe)
     })
 
     println(s"[CUTE] CMatrix: RegBanks ${CMatrixRegNBanks} BankEntries ${CMatrixRegBankNEntries}")
@@ -57,6 +113,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     io.ConfigInfo.StoreMicroTaskEndValid := false.B
     io.ConfigInfo.LoadMicroTaskReady := false.B
     io.ConfigInfo.StoreMicroTaskReady := false.B
+    io.perfProbe := 0.U.asTypeOf(new CMLPerfProbe)
     io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr)
     io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest :=
         0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest)
@@ -198,11 +255,13 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
 
     val C_DataWidth = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
     val D_DataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
+    val CLoadTaskStartCycle = RegInit(0.U(64.W))
 
     io.ConfigInfo.LoadMicroTaskReady := memoryload_state === s_load_idle
     io.ConfigInfo.StoreMicroTaskReady := memorystore_state === s_store_idle
 
     when(io.ConfigInfo.LoadMicroTaskValid && io.ConfigInfo.LoadMicroTaskReady) {
+        CLoadTaskStartCycle := io.DebugInfo.DebugTimeStampe
         CurrentLoadMatrixRegId := io.ConfigInfo.MatrixRegId
         LoadTensorBlockBaseAddr := io.ConfigInfo.ApplicationTensor_C.BlockTensor_C_BaseVaddr
         ApplicationTensor_C_Stride_M := io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_Stride_M
@@ -268,7 +327,34 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
     val TotalRequestSize = Seq.fill(CMatrixRegNBanks){RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))} //总发出的Memory请求的数据量
     val CurrentLoaded_BlockTensor_M_Iter = Seq.fill(CMatrixRegNBanks){RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))}
     val CurrentLoaded_BlockTensor_N_Iter = Seq.fill(CMatrixRegNBanks){RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))}
+    val CLoadTotalFired = RegInit(0.U((log2Ceil(Tensor_MN * Tensor_MN * 2).max(1)).W))
+    val CLoadPerfectBatches = RegInit(0.U((log2Ceil(Tensor_MN * Tensor_MN).max(1)).W))
+    val CLoadPerfectRequests = RegInit(0.U((log2Ceil(Tensor_MN * Tensor_MN * 2).max(1)).W))
+    val CLoadFireVec = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(false.B)))
+    val CLoadPerfectBatch = WireInit(false.B)
+    val CLoadRetainedValid = RegInit(VecInit(Seq.fill(CMatrixRegNBanks)(false.B)))
+    val CLoadSeedPointer = RegInit(0.U(log2Ceil(CMatrixRegNBanks max 2).W))
+    // The C response queues are per register bank and accept out-of-order
+    // responses.  Keep an issued bitmap per lane instead of deriving progress
+    // from a single head iterator.  The combinational reducer only looks at a
+    // bounded four-entry window; a retained entry is immutable until fire.
+    val CScoreboardDepth = Tensor_MN * 8
+    val CScoreboardIndexWidth = log2Ceil(CScoreboardDepth max 2)
+    val CLoadIssued = Seq.fill(CMatrixRegNBanks) {
+        RegInit(VecInit(Seq.fill(CScoreboardDepth)(false.B)))
+    }
+    val CLoadRetainedIndex = Seq.fill(CMatrixRegNBanks) {
+        RegInit(0.U(CScoreboardIndexWidth.W))
+    }
+    val CLoadWindowBase = Seq.fill(CMatrixRegNBanks) {
+        RegInit(0.U(CScoreboardIndexWidth.W))
+    }
 
+    io.perfProbe.loadTotalFired := CLoadTotalFired
+    io.perfProbe.loadPerfectBatches := CLoadPerfectBatches
+    io.perfProbe.loadPerfectRequests := CLoadPerfectRequests
+    io.perfProbe.loadPerfectBatch := CLoadPerfectBatch
+    
     //一个cam来存储访存请求的source_id对应的MatrixReg的地址和bank号
     //用sourceid做索引，存储MatrixReg的地址和bank号，是一组寄存器
 
@@ -319,6 +405,14 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         TotalRequestSize.foreach(_ := 0.U)
         CurrentLoaded_BlockTensor_M_Iter.foreach(_ := 0.U)
         CurrentLoaded_BlockTensor_N_Iter.foreach(_ := 0.U)
+        CLoadTotalFired := 0.U
+        CLoadPerfectBatches := 0.U
+        CLoadPerfectRequests := 0.U
+        CLoadRetainedValid.foreach(_ := false.B)
+        CLoadIssued.foreach(_.foreach(_ := false.B))
+        CLoadRetainedIndex.foreach(_ := 0.U)
+        CLoadWindowBase.foreach(_ := 0.U)
+        CLoadSeedPointer := 0.U
         MaxRequestIter := LoadMatrixRegTensor_M * N_Beat_Count //总共要发出的访存请求的次数
         Repeat_Fill_Times := 0.U
         Repeat_Fill_Group_Times := 0.U
@@ -364,22 +458,71 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         {
             val tailTaskMask = UIntToOH(TailByteMask, outsideDataWidthByte + 1).asUInt - 1.U(outsideDataWidthByte.W)
             val fullTaskMask = Fill(outsideDataWidthByte, true.B)
+            val candidateValid = Wire(Vec(CMatrixRegNBanks, Bool()))
+            val candidateAddress = Wire(Vec(CMatrixRegNBanks, UInt(MMUAddrWidth.W)))
+            val candidateDestination = Wire(Vec(CMatrixRegNBanks, UInt(log2Ceil(CMatrixRegNBanks max 2).W)))
+            val candidateIndex = Wire(Vec(CMatrixRegNBanks, UInt(CScoreboardIndexWidth.W)))
+            val candidateBeat = Wire(Vec(CMatrixRegNBanks, UInt(MatrixRegMaxTensorDimBitSize.W)))
+            val candidateGroup = Wire(Vec(CMatrixRegNBanks, UInt(MatrixRegMaxTensorDimBitSize.W)))
+            val usePerfectBatchOrder = N_Beat_Count === 8.U
+            // Eight legal Omega templates form an 8-cycle.  For the zames
+            // stride, each lane visits every beat exactly once while every
+            // cycle is a legal permutation.  The bitmap still guards replay
+            // and makes the mechanism safe when ready is asymmetric.
+            val beatLut = Seq(
+              Seq(0, 1, 2, 3, 5, 6, 7, 0),
+              Seq(1, 2, 3, 4, 4, 5, 6, 7),
+              Seq(2, 7, 4, 1, 7, 4, 1, 6),
+              Seq(3, 0, 5, 2, 6, 3, 0, 5),
+              Seq(4, 5, 6, 7, 1, 2, 3, 4),
+              Seq(5, 6, 7, 0, 0, 1, 2, 3),
+              Seq(6, 3, 0, 5, 3, 0, 5, 2),
+              Seq(7, 4, 1, 6, 2, 7, 4, 1))
+            for (bank <- 0 until CMatrixRegNBanks) {
+                val cycle = CLoadWindowBase(bank)(2, 0)
+                val beat = VecInit(beatLut.map(row => row(bank).U(3.W)))(cycle)
+                val group = CLoadWindowBase(bank) >> 3
+                val generatedIndex = (group << 3) + beat
+                candidateIndex(bank) := Mux(CLoadRetainedValid(bank), CLoadRetainedIndex(bank), generatedIndex)
+                val idx = candidateIndex(bank)
+                val perfectBeat = idx(2, 0)
+                val perfectGroup = idx >> 3
+                val fallbackBeat = CurrentLoaded_BlockTensor_N_Iter(bank)
+                val fallbackGroup = CurrentLoaded_BlockTensor_M_Iter(bank)
+                candidateBeat(bank) := Mux(usePerfectBatchOrder, perfectBeat, fallbackBeat)
+                candidateGroup(bank) := Mux(usePerfectBatchOrder, perfectGroup, fallbackGroup)
+                val row = candidateGroup(bank) * CMatrixRegNBanks.U + bank.U
+                val perfectValid = (idx < (LoadMatrixRegTensor_M * N_Beat_Count / CMatrixRegNBanks.U)) &&
+                  !CLoadIssued(bank)(idx)
+                val fallbackValid = row < LoadMatrixRegTensor_M && fallbackBeat < N_Beat_Count
+                candidateValid(bank) := Mux(usePerfectBatchOrder, perfectValid, fallbackValid)
+                candidateAddress(bank) := LoadTensorBlockBaseAddr +
+                  row * ApplicationTensor_C_Stride_M +
+                  (candidateBeat(bank) << log2Ceil(outsideDataWidthByte))
+                candidateDestination(bank) := bank.U
+                when(usePerfectBatchOrder && CLoadRetainedValid(bank)) {
+                    assert(candidateValid(bank), s"CML retained lane $bank lost its legal candidate")
+                }
+            }
+            val selectedMask = CMLPerfectBatchSelector.select(
+              candidateValid,
+              candidateAddress,
+              candidateDestination,
+              CLoadRetainedValid,
+              CLoadSeedPointer,
+              L2NBanks)
             for (bank <- 0 until CMatrixRegNBanks) {
                 val ReadRequest = io.LoadLocalMMUIO.Request(bank)
-                val M_Iter = CurrentLoaded_BlockTensor_M_Iter(bank)
-                val N_Iter = CurrentLoaded_BlockTensor_N_Iter(bank)
                 val TotalRequestSizeBank = TotalRequestSize(bank)
-                val M_cursor = M_Iter + bank.U
-                val M_byte_offset = M_cursor * ApplicationTensor_C_Stride_M
-                val N_byte_offset = N_Iter << log2Ceil(outsideDataWidthByte)
-                ReadRequest.bits.RequestAddr := LoadTensorBlockBaseAddr + M_byte_offset + N_byte_offset
+                ReadRequest.bits.RequestAddr := candidateAddress(bank)
 
                 val csourceId = Wire(new CSourceId)
                 csourceId.MatrixRegBankId := bank.U
-                csourceId.MatrixRegAddr := (M_Iter / CMatrixRegNBanks.U * (Tensor_MN.U / Matrix_MN.U)) + (N_Iter << log2Ceil(MAX_Fill_Times)) //该访存请求的第零号数据，落在哪个MatrixRegBank的哪个地址上
-                csourceId.MatrixRegisTail := HasTail && (N_Iter === (N_Beat_Count - 1.U))
+                csourceId.MatrixRegAddr := candidateGroup(bank) * (Tensor_MN.U / Matrix_MN.U) +
+                  (candidateBeat(bank) << log2Ceil(MAX_Fill_Times))
+                csourceId.MatrixRegisTail := HasTail && (candidateBeat(bank) === (N_Beat_Count - 1.U))
 
-                ReadRequest.valid := (M_cursor < LoadMatrixRegTensor_M) && (N_Beat_Count =/= 0.U) && (TotalRequestSizeBank < MaxRequestIter)
+                ReadRequest.valid := candidateValid(bank) && selectedMask(bank)
                 ReadRequest.bits.RequestConherent := IsLoadConherent
                 ReadRequest.bits.RequestSourceID := encodeCSourceId(csourceId.MatrixRegBankId, csourceId.MatrixRegAddr, csourceId.MatrixRegisTail)
                 ReadRequest.bits.RequestType_isWrite := false.B
@@ -392,17 +535,33 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                   )
                 }
                 ReadRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
-                ReadRequest.bits.IsTranspose := false.B
+                CLoadFireVec(bank) := ReadRequest.fire
+
+                when(ReadRequest.fire) {
+                    CLoadRetainedValid(bank) := false.B
+                    when(usePerfectBatchOrder) {
+                        CLoadIssued(bank)(candidateIndex(bank)) := true.B
+                        CLoadWindowBase(bank) := CLoadWindowBase(bank) + 1.U
+                    }.otherwise {
+                        when(CurrentLoaded_BlockTensor_N_Iter(bank) === (N_Beat_Count - 1.U)) {
+                            CurrentLoaded_BlockTensor_N_Iter(bank) := 0.U
+                            CurrentLoaded_BlockTensor_M_Iter(bank) := CurrentLoaded_BlockTensor_M_Iter(bank) + 1.U
+                        }.otherwise {
+                            CurrentLoaded_BlockTensor_N_Iter(bank) := CurrentLoaded_BlockTensor_N_Iter(bank) + 1.U
+                        }
+                    }
+                }.elsewhen(ReadRequest.valid && !ReadRequest.ready) {
+                    CLoadRetainedValid(bank) := true.B
+                    when(usePerfectBatchOrder) {
+                        CLoadRetainedIndex(bank) := candidateIndex(bank)
+                    }
+                }
 
                 when(ReadRequest.fire){
+                    assert(decodeCSourceId(ReadRequest.bits.RequestSourceID).MatrixRegBankId === bank.U,
+                        s"CML channel $bank fired a request owned by another C register bank")
                     val cycle = io.DebugInfo.DebugTimeStampe
 
-
-                    N_Iter := N_Iter + 1.U
-                    when(N_Iter === (N_Beat_Count - 1.U)){
-                        N_Iter := 0.U
-                        M_Iter := M_Iter + CMatrixRegNBanks.U
-                    }
 
                     //不过我们保证了数据是256bit对齐的～剩下的就是Tensor_M和Tensor_K不满足的情况思考好就行了
                     when(TotalRequestSizeBank === MaxRequestIter){
@@ -411,6 +570,14 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                     }.otherwise{
                         TotalRequestSizeBank := TotalRequestSizeBank + 1.U
                     }
+                }
+
+                val requestStalled = ReadRequest.valid && !ReadRequest.ready
+                when(RegNext(requestStalled, false.B)) {
+                    assert(ReadRequest.valid,
+                        s"CML channel $bank dropped a stalled request")
+                    assert(ReadRequest.bits === RegEnable(ReadRequest.bits, requestStalled),
+                        s"CML channel $bank changed a stalled request payload")
                 }
 
 
@@ -434,6 +601,46 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                     assert(MatrixRegBankId === bank.U,
                         cf"CMemoryLoader: response bankId mismatch on channel $bank, expected $bank but got $MatrixRegBankId. Router may be missing.")
 
+                }
+            }
+
+            val firedBanks = CLoadFireVec.zipWithIndex.map { case (fired, bank) =>
+                Mux(fired, IdealL2Banking.bankOf(io.LoadLocalMMUIO.Request(bank).bits.RequestAddr, L2NBanks), 0.U)
+            }
+            val firedValid = CLoadFireVec
+            val distinctBanks = (0 until CMatrixRegNBanks).flatMap { i =>
+                ((i + 1) until CMatrixRegNBanks).map { j =>
+                    !firedValid(i) || !firedValid(j) || firedBanks(i) =/= firedBanks(j)
+                }
+            }.reduceOption(_ && _).getOrElse(true.B)
+            val firedByBank = Wire(Vec(CMatrixRegNBanks, Bool()))
+            val destinationByBank = Wire(Vec(CMatrixRegNBanks, UInt(log2Ceil(CMatrixRegNBanks max 2).W)))
+            for (sourceBank <- 0 until CMatrixRegNBanks) {
+                val bankMatches = (0 until CMatrixRegNBanks).map { lane =>
+                    firedValid(lane) && firedBanks(lane) === sourceBank.U
+                }
+                firedByBank(sourceBank) := bankMatches.reduce(_ || _)
+                destinationByBank(sourceBank) := Mux1H(bankMatches, candidateDestination)
+            }
+            val survivors = OmegaTopology.survivorMask(firedByBank, destinationByBank)
+            CLoadPerfectBatch := usePerfectBatchOrder && CLoadFireVec.asUInt.andR && distinctBanks &&
+                (survivors === firedByBank.asUInt)
+            for (i <- 0 until CMatrixRegNBanks; j <- (i + 1) until CMatrixRegNBanks) {
+                assert(!(CLoadFireVec(i) && CLoadFireVec(j) &&
+                    io.LoadLocalMMUIO.Request(i).bits.RequestSourceID ===
+                      io.LoadLocalMMUIO.Request(j).bits.RequestSourceID),
+                  s"CML fired duplicate source IDs on channels $i and $j")
+            }
+            assert(!CLoadPerfectBatch ||
+                (CLoadFireVec.asUInt.andR && distinctBanks && survivors === firedByBank.asUInt),
+              "CML perfect-batch classification disagrees with the exact route predicates")
+            when(CLoadFireVec.asUInt.orR) {
+                CLoadSeedPointer := CLoadSeedPointer + 1.U
+                CLoadTotalFired := CLoadTotalFired + PopCount(CLoadFireVec)
+                when(CLoadPerfectBatch) {
+                    CLoadPerfectBatches := CLoadPerfectBatches + 1.U
+                    CLoadPerfectRequests := CLoadPerfectRequests + CMatrixRegNBanks.U
+                    
                 }
             }
 
@@ -502,12 +709,18 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                 }
             }
             //状态机切换
+            val perfectRequestPermille = Mux(
+              CLoadTotalFired === 0.U,
+              0.U,
+              (CLoadPerfectRequests * 1000.U) / CLoadTotalFired)
             when(TotalLoadSize === (MaxRequestIter * MAX_Fill_Times.U)){
                 memoryload_state := s_load_end
-                if (YJPCMLDebugEnable)
-                {
-
-                }
+                printf(
+                  p"[CML][${io.DebugInfo.DebugTimeStampe}][CML-LOAD-END] matrixRegId=${CurrentLoadMatrixRegId} " +
+                    p"startCycle=${CLoadTaskStartCycle} totalFired=${CLoadTotalFired} " +
+                    p"perfectBatches=${CLoadPerfectBatches} perfectRequests=${CLoadPerfectRequests} " +
+                    p"perfectRequestPermille=${perfectRequestPermille}\n"
+                )
             }
         }.elsewhen(Is_ZeroLoad) {
             //给所有的bank发出写0的请求
@@ -686,7 +899,9 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
             val NextQueueCount = StoreQueue.io.count + StoreQueue.io.enq.fire.asUInt - StoreQueue.io.deq.fire.asUInt
 
             when (RegReadResp_Valid) {
-                BusDataCollector(collectIter) := RegReadResp_Data
+                val collectIndex = if (CollectTimes == 1) 0.U else
+                    collectIter(log2Ceil(CollectTimes) - 1, 0)
+                BusDataCollector(collectIndex) := RegReadResp_Data
                 logger(cf"BusDataCollector($collectIter) := 0x$RegReadResp_Data%x")
                 // 设 collectIter === (CollectTimes -2).U 这个周期为 C.
                 // 此时指向 BusDataCollector(CollectTimes - 1) 的 RegReadReq 是 valid, C+1 必然写入 BusDataCollector(CollectTimes - 1).

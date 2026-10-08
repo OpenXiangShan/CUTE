@@ -4,13 +4,20 @@ import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.chipsalliance.cde.config.{Config, Parameters}
+import utility._
 
 object ResponseChannelBridgeTestConfig {
-  val params: Parameters = new Config((_, _, _) => {
+  def params(queueEnabled: Boolean = false): Parameters = new Config((_, _, _) => {
+    case PerfCounterOptionsKey => PerfCounterOptions(
+      enablePerfPrint = false,
+      enablePerfDB = false,
+      perfLevel = XSPerfLevel.NORMAL,
+      perfDBHartID = 0)
     case CuteParamsKey => CuteParams.baseParams.copy(
       outsideDataWidth = 256,
       ReduceWidthByte = 32,
-      Matrix_MN = 8
+      Matrix_MN = 8,
+      EnableOmegaInputQueue = queueEnabled
     )
   })
 }
@@ -64,9 +71,8 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
-      hasDataPayload = true,
-      debugEnable = false
-    )(ResponseChannelBridgeTestConfig.params)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+        debugEnable = false
+    )(ResponseChannelBridgeTestConfig.params())).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)
 
       for (i <- 0 until bankCount) {
@@ -131,9 +137,8 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
-      hasDataPayload = true,
-      debugEnable = false
-    )(ResponseChannelBridgeTestConfig.params)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+        debugEnable = false
+    )(ResponseChannelBridgeTestConfig.params())).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)
 
       dut.io.out(0).ready.poke(false.B)
@@ -185,9 +190,8 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
-      hasDataPayload = true,
-      debugEnable = false
-    )(ResponseChannelBridgeTestConfig.params)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+        debugEnable = false
+    )(ResponseChannelBridgeTestConfig.params())).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)
       for (i <- 0 until bankCount) {
         dut.io.out(i).ready.poke(false.B)
@@ -217,5 +221,95 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "restore grouped responses back to the correct bank outputs in 8-channel mode" in {
     runGroupedBridgeRoutingTest(respChannelCount = 8, banksToSend = Seq(0, 1, 2, 3, 4, 5, 6, 7))
+  }
+
+  it should "buffer two responses independently at every enabled Omega input" in {
+    test(new ResponseChannelBridge(
+      inputChannelCount = bankCount,
+      respChannelCount = 8,
+      bankCount = bankCount,
+      queueDepth = queueDepth,
+      dataWidth = dataWidth,
+      sourceIdWidth = sourceIdWidth,
+      bankIdWidth = bankIdWidth,
+      bankIdOffset = bankIdOffset
+    )(ResponseChannelBridgeTestConfig.params(queueEnabled = true)))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      initBridge(dut)
+      // Input 0 continuously wins the first switch, preventing input 1 from
+      // reaching Omega while input 1's private queue absorbs two responses.
+      driveResp(dut, channel = 0, bankId = 0, data = 10)
+      driveResp(dut, channel = 1, bankId = 2, data = 20)
+      dut.io.in(1).ready.expect(true.B)
+      dut.clock.step()
+      driveResp(dut, channel = 1, bankId = 2, data = 21, regAddr = 1)
+      dut.io.in(1).ready.expect(true.B)
+      dut.clock.step()
+      driveResp(dut, channel = 1, bankId = 2, data = 22, regAddr = 2)
+      dut.io.in(1).ready.expect(false.B)
+      driveResp(dut, channel = 0, bankId = 0, data = 0, valid = false)
+      dut.io.in(1).ready.expect(true.B)
+    }
+  }
+
+  it should "preserve exact FIFO delivery across full pipe and long stalls" in {
+    test(new ResponseChannelBridge(
+      inputChannelCount = bankCount,
+      respChannelCount = 8,
+      bankCount = bankCount,
+      queueDepth = queueDepth,
+      dataWidth = dataWidth,
+      sourceIdWidth = sourceIdWidth,
+      bankIdWidth = bankIdWidth,
+      bankIdOffset = bankIdOffset
+    )(ResponseChannelBridgeTestConfig.params(queueEnabled = true)))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      initBridge(dut)
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.out.foreach(_.valid.expect(false.B))
+
+      dut.io.out.foreach(_.ready.poke(false.B))
+      for (cycle <- 0 until 2) {
+        driveResp(dut, channel = 0, bankId = 0, data = 10 + cycle, regAddr = cycle)
+        driveResp(dut, channel = 1, bankId = 0, data = 20 + cycle, regAddr = cycle + 2)
+        dut.io.in(1).ready.expect(true.B)
+        dut.clock.step()
+      }
+      driveResp(dut, channel = 0, bankId = 0, data = 0, valid = false)
+
+      // The post-Omega bank queue and input 1's private queue are both full.
+      driveResp(dut, channel = 1, bankId = 0, data = 22, regAddr = 4)
+      dut.io.in(1).ready.expect(false.B)
+      for (_ <- 0 until 10) {
+        dut.io.in(1).ready.expect(false.B)
+        dut.clock.step()
+      }
+
+      dut.io.out(0).ready.poke(true.B)
+      // pipe=true permits replacing the departing full input-queue head.
+      dut.io.in(1).ready.expect(true.B)
+
+      val received = scala.collection.mutable.ArrayBuffer.empty[Int]
+      var replacementAccepted = false
+      var cycles = 0
+      while ((received.size < 5 || !replacementAccepted) && cycles < 24) {
+        val acceptedThisCycle = dut.io.in(1).valid.peek().litToBoolean &&
+          dut.io.in(1).ready.peek().litToBoolean
+        if (dut.io.out(0).valid.peek().litToBoolean) {
+          received += dut.io.out(0).bits.ReseponseData.peek().litValue.toInt
+        }
+        dut.clock.step()
+        replacementAccepted ||= acceptedThisCycle
+        if (acceptedThisCycle) {
+          dut.io.in(1).valid.poke(false.B)
+        }
+        cycles += 1
+      }
+
+      assert(replacementAccepted, "full input queue did not accept a same-cycle replacement")
+      assert(received == Seq(10, 11, 20, 21, 22), s"unexpected delivery sequence: $received")
+    }
   }
 }

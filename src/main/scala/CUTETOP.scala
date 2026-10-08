@@ -110,6 +110,7 @@ class CMLWrapper(contextName: String = "CML")(implicit p: Parameters) extends Cu
         val DebugInfo = Input(new DebugInfoIO)
         val LoadMatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
         val StoreMatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
+        val perfProbe = Output(new CMLPerfProbe)
     })
 
     if (!CLoadUseLegacyLoader) {
@@ -121,6 +122,7 @@ class CMLWrapper(contextName: String = "CML")(implicit p: Parameters) extends Cu
         inner.io.DebugInfo <> io.DebugInfo
         io.LoadMatrixRegId := inner.io.LoadMatrixRegId
         io.StoreMatrixRegId := inner.io.StoreMatrixRegId
+        io.perfProbe := inner.io.perfProbe
     } else {
         val inner = Module(new CMemoryLoader).suggestName(s"${nameContext}_legacy_loader")
         inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
@@ -130,6 +132,7 @@ class CMLWrapper(contextName: String = "CML")(implicit p: Parameters) extends Cu
         inner.io.DebugInfo <> io.DebugInfo
         io.LoadMatrixRegId := inner.io.LoadMatrixRegId
         io.StoreMatrixRegId := inner.io.StoreMatrixRegId
+        io.perfProbe := 0.U.asTypeOf(new CMLPerfProbe)
     }
 }
 
@@ -145,7 +148,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             s"AML=${summarizeLoaderMode(config.a)}",
             s"BML=${summarizeLoaderMode(config.b)}",
             s"CLoad=${summarizeLoaderMode(config.cLoad)}",
-            s"CStore=${summarizeLoaderMode(config.cStore)}"
+            s"CStore=${summarizeLoaderMode(config.cStore)}",
+            s"omegaInputQueue=$EnableOmegaInputQueue"
         ).mkString(s"${config.render} [", ", ", "]")
     }
 
@@ -627,10 +631,11 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     perf.memEvents(6) := TaskCtrl.io.perfProbe.cmlLoadActive
     perf.memEvents(7) := TaskCtrl.io.perfProbe.cmlStoreActive
     perf.memEvents(8) := MMU.io.perfProbe.rdReq
-    perf.localMMU := MMU.io.perfProbe
     perf.memEvents(9) := MMU.io.perfProbe.wrReq
     perf.memEvents(10) := MMU.io.perfProbe.rd32BReq
     perf.memEvents(11) := MMU.io.perfProbe.wr32BReq
+    perf.localMMU := MMU.io.perfProbe
+    perf.cml := CML.io.perfProbe
     io.perf := RegNext(perf, 0.U.asTypeOf(new CutePerfToCoreIO))
 
     // Assign default inputs for each MatrixReg.

@@ -55,6 +55,84 @@ class CMLBridgeConfigSpec extends AnyFlatSpec {
     assert(view.CStoreBridgeResponseChannelCount == 1)
     assert(view.CStoreDiffTestLaneCount == 1)
     assert(!view.CMLUseMultiChannelLoader)
+    assert(view.EnableOmegaInputQueue)
+  }
+
+  it should "allow the Omega input queue to be disabled globally" in {
+    implicit val p: Parameters = paramsWith(CuteParams.baseParams.copy(
+      EnableOmegaInputQueue = false
+    ))
+    assert(!(new ParamView).EnableOmegaInputQueue)
+  }
+
+  it should "derive route descriptors for every supported parameterized width" in {
+    Seq(1, 2, 4, 8).foreach { width =>
+      implicit val p: Parameters = paramsWith(CuteParams.baseParams.copy(
+        LoaderBridgeChannelConfig = s"A${width}B${width}CL${width}CS${width}"
+      ))
+      val view = new ParamView
+      assert(view.AMLRouteDescriptor.responseChannelCount == width)
+      assert(view.BMLRouteDescriptor.responseChannelCount == width)
+      assert(view.CLoadRouteDescriptor.responseChannelCount == width)
+      assert(view.CStoreRouteDescriptor.responseChannelCount == width)
+      assert(view.AMLRouteDescriptor.collisionProne)
+    }
+  }
+
+  it should "keep legacy descriptors outside collision prediction" in {
+    implicit val p: Parameters = paramsWith(CuteParams.baseParams.copy(
+      LoaderBridgeChannelConfig = "ALBLCLLCSL"
+    ))
+    val view = new ParamView
+    assert(!view.AMLRouteDescriptor.collisionProne)
+    assert(!view.BMLRouteDescriptor.collisionProne)
+    assert(!view.CLoadRouteDescriptor.collisionProne)
+    assert(!view.CStoreRouteDescriptor.collisionProne)
+  }
+
+  it should "derive every loader independently in representative mixed configurations" in {
+    val expected = Seq(
+      "ALBLCLLCSL" -> Seq(1, 1, 1, 1),
+      "A8B8CL8CS8" -> Seq(8, 8, 8, 8),
+      "A1BLCL2CS4" -> Seq(1, 1, 2, 4),
+      "A1B2CL4CS8" -> Seq(1, 2, 4, 8)
+    )
+    expected.foreach { case (config, widths) =>
+      implicit val p: Parameters = paramsWith(CuteParams.baseParams.copy(
+        LoaderBridgeChannelConfig = config
+      ))
+      val view = new ParamView
+      assert(Seq(
+        view.AMLRouteDescriptor.responseChannelCount,
+        view.BMLRouteDescriptor.responseChannelCount,
+        view.CLoadRouteDescriptor.responseChannelCount,
+        view.CStoreRouteDescriptor.responseChannelCount
+      ) == widths, config)
+    }
+  }
+
+  it should "accept legal response widths 1/2/4/8 when the MatrixReg has eight banks" in {
+    Seq(1, 2, 4, 8).foreach { width =>
+      val params = CuteParams.baseParams.copy(
+        Matrix_MN = 8,
+        L2NBanks = 8,
+        LoaderBridgeChannelConfig = s"A${width}B${width}CL${width}CS${width}"
+      )
+      assert(params.parsedLoaderBridgeChannelConfig.a.responseChannelCount == width)
+    }
+  }
+
+  it should "reject invalid L2 bank counts and eight-bank lane/destination mismatches" in {
+    assertThrows[IllegalArgumentException] {
+      CuteParams.baseParams.copy(L2NBanks = 6)
+    }
+    assertThrows[IllegalArgumentException] {
+      CuteParams.baseParams.copy(
+        Matrix_MN = 4,
+        L2NBanks = 8,
+        LoaderBridgeChannelConfig = "A8B8CL8CS8"
+      )
+    }
   }
 
   it should "derive difftest lane count from the C-store channel mode" in {

@@ -3,6 +3,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
+import utility._
 
 class ResponseChannelBridge(
   val inputChannelCount: Int,
@@ -56,12 +57,47 @@ class ResponseChannelBridge(
   )).suggestName(s"${nameContext}_omega_router")
   router.io.timeStamp := io.timeStamp
 
+  val omegaInputs = Seq.tabulate(inputChannelCount) { channel =>
+    val routed = Wire(Decoupled(new RoutedResponse(dataWidth, sourceIdWidth)))
+    routed.valid := io.in(channel).valid
+    routed.bits.data := Mux(hasDataPayload.B, io.in(channel).bits.ReseponseData, 0.U)
+    routed.bits.sourceId := io.in(channel).bits.ReseponseSourceID
+    routed.bits.coherent := Mux(hasDataPayload.B, io.in(channel).bits.ReseponseConherent, false.B)
+    if (EnableOmegaInputQueue) {
+      val queue = Module(new Queue(new RoutedResponse(dataWidth, sourceIdWidth), 2, pipe = true, flow = true))
+        .suggestName(s"${nameContext}_omega_input${channel}_queue")
+      queue.io.enq <> routed
+      io.in(channel).ready := routed.ready
+      XSPerfAccumulate(s"CUTE_${nameContext}_omega_input_head_stall_$channel",
+        queue.io.deq.valid && !queue.io.deq.ready)
+      XSPerfAccumulate(s"CUTE_${nameContext}_omega_input_occupancy_$channel", queue.io.count)
+      XSPerfAccumulate(s"CUTE_${nameContext}_omega_input_full_$channel", queue.io.count === 2.U)
+      queue.io.deq
+    } else {
+      io.in(channel).ready := routed.ready
+      routed
+    }
+  }
+
   for (channel <- 0 until inputChannelCount) {
-    router.io.in(channel).valid := io.in(channel).valid
-    router.io.in(channel).bits.data := Mux(hasDataPayload.B, io.in(channel).bits.ReseponseData, 0.U)
-    router.io.in(channel).bits.sourceId := io.in(channel).bits.ReseponseSourceID
-    router.io.in(channel).bits.coherent := Mux(hasDataPayload.B, io.in(channel).bits.ReseponseConherent, false.B)
-    io.in(channel).ready := router.io.in(channel).ready
+    router.io.in(channel) <> omegaInputs(channel)
+
+    when(io.in(channel).valid) {
+      assert(extractBankId(io.in(channel).bits.ReseponseSourceID) < bankCount.U,
+        cf"ResponseChannelBridge: input $channel has illegal bank id")
+    }
+    when(io.in(channel).valid && !io.in(channel).ready) {
+      assert(RegNext(io.in(channel).valid && !io.in(channel).ready, false.B) === false.B ||
+        io.in(channel).bits === RegEnable(io.in(channel).bits, io.in(channel).valid && !io.in(channel).ready),
+        s"ResponseChannelBridge input $channel payload changed while stalled")
+    }
+
+    
+
+    XSPerfAccumulate(s"CUTE_${nameContext}_omega_input_offer_$channel", io.in(channel).valid)
+    XSPerfAccumulate(s"CUTE_${nameContext}_omega_input_accept_$channel", io.in(channel).fire)
+    XSPerfAccumulate(s"CUTE_${nameContext}_omega_accept_$channel", router.io.in(channel).fire)
+    XSPerfAccumulate(s"CUTE_${nameContext}_omega_input_stall_$channel", io.in(channel).valid && !io.in(channel).ready)
   }
 
   val bankDataQueues = Option.when(hasDataPayload) {
