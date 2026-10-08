@@ -36,6 +36,7 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
         io.LocalMMUIO.Request(i).valid := false.B
         io.LocalMMUIO.Request(i).bits := DontCare
         io.LocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.LocalMMUIO.Request(i).bits.IsTranspose := false.B
         io.LocalMMUIO.Request(i).bits.MatrixPrefetchTag.foreach(_ := 0.U)
         io.LocalMMUIO.Response(i).ready := false.B
     }
@@ -253,6 +254,7 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
                   )
                 }
                 Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+                Request.bits.IsTranspose := false.B
                 Request.valid := TotalRequestSize < MaxRequestIter
 
                 when(Request.fire){

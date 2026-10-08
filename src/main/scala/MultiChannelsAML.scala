@@ -232,6 +232,7 @@ class MultiChannelsABMemLoader(
                 request.bits.isA := false.B
                 request.bits.MatrixIsAcc := false.B
                 request.bits.RequestMask := reqQueue.io.deq.bits.mask
+                request.bits.IsTranspose := false.B
                 reqQueue.io.deq.ready := request.ready
 
                 val requestDeqFire = request.valid && request.ready
@@ -320,6 +321,7 @@ class MultiChannelsABMemLoader(
         io.LocalMMUIO.Request(i).valid := false.B
         io.LocalMMUIO.Request(i).bits := 0.U.asTypeOf(io.LocalMMUIO.Request(i).bits)
         io.LocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+        io.LocalMMUIO.Request(i).bits.IsTranspose := false.B
         io.LocalMMUIO.Response(i).ready := false.B
 
         normalReqQueues(i).io.enq.valid := false.B

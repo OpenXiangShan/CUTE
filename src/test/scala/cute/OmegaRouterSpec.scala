@@ -140,6 +140,104 @@ class OmegaRouterSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
+  private case class PermutationCase(
+    name: String,
+    targetBanksByInput: Seq[Int],
+    expectedInputFiresByCycle: Seq[Seq[Int]]
+  )
+
+  private val permutationCases = Seq(
+    PermutationCase("identity",    Seq(0, 1, 2, 3, 4, 5, 6, 7), Seq(Seq(0, 2, 5, 7),       Seq(1, 3, 4, 6))),
+    PermutationCase("reverse",     Seq(7, 6, 5, 4, 3, 2, 1, 0), Seq(Seq(1, 3, 4, 6),       Seq(0, 2, 5, 7))),
+    PermutationCase("bit-reverse", Seq(0, 4, 2, 6, 1, 5, 3, 7), Seq(Seq(0, 1, 6, 7),       Seq(2, 3, 4, 5))),
+    PermutationCase("rotate-left", Seq(1, 2, 3, 4, 5, 6, 7, 0), Seq(Seq(0, 2, 3, 5, 6, 7), Seq(1, 4))),
+    PermutationCase("pair-swap",   Seq(1, 0, 3, 2, 5, 4, 7, 6), Seq(Seq(0, 2, 5, 7),       Seq(1, 3, 4, 6))),
+    PermutationCase("mixed",       Seq(3, 0, 6, 5, 1, 7, 2, 4), Seq(Seq(0, 3, 4, 5, 6),    Seq(1, 2, 7)))
+  )
+
+  it should "match the staged survivor oracle for documented permutations" in {
+    test(new OmegaSurvivorHarness()).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      permutationCases.foreach { testCase =>
+        for (lane <- 0 until 8) {
+          dut.io.valid(lane).poke(true.B)
+          dut.io.bank(lane).poke(testCase.targetBanksByInput(lane).U)
+        }
+        val expected = LocalMMUSchedulerTestUtils.survivorMask(
+          Seq.fill(8)(true), testCase.targetBanksByInput, responseChannels = 8)
+        dut.io.survivor.expect(expected.U, testCase.name)
+        assert(testCase.expectedInputFiresByCycle.head.toSet ==
+          (0 until 8).filter(expected.testBit).toSet)
+      }
+    }
+  }
+
+  it should "match the independent oracle for sparse randomized assignments at every width" in {
+    val random = new scala.util.Random(0x5eed)
+    test(new OmegaSurvivorWidthHarness()).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      for (_ <- 0 until 100) {
+        val valid = Seq.fill(8)(random.nextBoolean())
+        val banks = Seq.fill(8)(random.nextInt(8))
+        for (lane <- 0 until 8) {
+          dut.io.valid(lane).poke(valid(lane).B)
+          dut.io.bank(lane).poke(banks(lane).U)
+        }
+        Seq(1, 2, 4, 8).zipWithIndex.foreach { case (width, index) =>
+          val expected = LocalMMUSchedulerTestUtils.survivorMask(valid, banks, width).U
+          dut.io.survivor(index).expect(
+            expected,
+            s"width=$width valid=$valid banks=$banks"
+          )
+          dut.io.routerReady(index).expect(expected,
+            s"router width=$width valid=$valid banks=$banks")
+        }
+      }
+    }
+  }
+
+  private def runPermutationCase(dut: OmegaResponseRouter, testCase: PermutationCase): Unit = {
+    require(testCase.targetBanksByInput.sorted == (0 until 8),
+      s"${testCase.name} must contain every target bank exactly once")
+
+    var pendingInputs = (0 until 8).toSet
+
+    for ((expectedFires, cycle) <- testCase.expectedInputFiresByCycle.zipWithIndex) {
+      for (input <- 0 until 8) {
+        dut.io.in(input).valid.poke(pendingInputs.contains(input).B)
+        dut.io.in(input).bits.data.poke(input.U)
+        dut.io.in(input).bits.sourceId.poke(encodeSourceId(testCase.targetBanksByInput(input)).U)
+        dut.io.in(input).bits.coherent.poke(true.B)
+      }
+
+      val firedInputs = pendingInputs.toSeq.sorted.filter(input => dut.io.in(input).ready.peek().litToBoolean)
+      val firedBanks = (0 until 8).filter(output => dut.io.out(output).valid.peek().litToBoolean)
+      val outputInputs = firedBanks.map(output => dut.io.out(output).bits.data.peek().litValue.toInt)
+
+      assert(firedInputs == expectedFires,
+        s"${testCase.name} cycle $cycle: input fires=$firedInputs, expected=$expectedFires")
+      assert(outputInputs.sorted == expectedFires.sorted,
+        s"${testCase.name} cycle $cycle: output payload inputs=$outputInputs, expected=$expectedFires")
+      assert(firedBanks.sorted == expectedFires.map(testCase.targetBanksByInput).sorted,
+        s"${testCase.name} cycle $cycle: output banks=$firedBanks")
+
+      val firedRoutes = expectedFires.map(input => s"$input->${testCase.targetBanksByInput(input)}")
+      val blockedInputs = (pendingInputs -- firedInputs).toSeq.sorted
+      println(f"[OmegaPermutation] ${testCase.name}%-11s cycle=$cycle " +
+        s"input->bank=${firedRoutes.mkString("[", ", ", "]")} " +
+        s"blocked=${blockedInputs.mkString("[", ", ", "]")}")
+
+      dut.clock.step()
+      pendingInputs --= firedInputs
+    }
+
+    assert(pendingInputs.isEmpty, s"${testCase.name}: inputs still blocked after expected cycles: $pendingInputs")
+    for (input <- 0 until 8) {
+      dut.io.in(input).valid.poke(false.B)
+    }
+    for (output <- 0 until 8) {
+      dut.io.out(output).valid.expect(false.B, s"${testCase.name}: unexpected extra response on output $output")
+    }
+  }
+
   it should "route all responses correctly without loss or duplication" in {
     test(new OmegaRouterTestTop)
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
@@ -175,6 +273,22 @@ class OmegaRouterSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "preserve blocking omega behavior for different 8-channel outputs" in {
     runOmegaBlockingTest(outCount = 8, bank0 = 0, bank1 = 2, expectedOut0 = 0)
+  }
+
+  it should "show internal blocking for distinct-bank permutations" in {
+    test(new OmegaResponseRouter(
+      n = 8,
+      dataWidth = unitDataWidth,
+      sourceIdWidth = unitSourceIdWidth,
+      bankIdWidth = unitBankIdWidth,
+      bankIdOffset = unitBankIdOffset,
+      outCount = 8,
+      bankCount = 8,
+      debugEnable = false
+    )).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      initRouterInputs(dut, outCount = 8)
+      permutationCases.foreach(runPermutationCase(dut, _))
+    }
   }
 
   it should "preserve blocking omega behavior for different 4-channel grouped outputs" in {
