@@ -27,9 +27,10 @@ class LocalMMUSchedulerCandidate(val bankCount: Int)(implicit p: Parameters) ext
 }
 
 /**
-  * Predicts each parameterized response fabric independently, then fills every
-  * free LLC lane in CLoad > A > AScale > B > BScale > CStore order. A selected
-  * transaction that meets backpressure is retained in full until it fires.
+ * Predicts C response fabrics, then fills every free LLC lane in
+ * CLoad > A > AScale > B > BScale > CStore order. A/B are guaranteed i-to-i
+ * by their software layout and use only physical-bank deduplication here. A
+ * selected transaction that meets backpressure is retained until it fires.
   */
 class CollisionAwareLocalMMUScheduler(
   laneCount: Int,
@@ -146,6 +147,19 @@ class CollisionAwareLocalMMUScheduler(
     }).asUInt
   }
 
+  /** First-owner physical-bank deduplication for guaranteed i-to-i AB traffic. */
+  private def identityMask(source: Int, candidateEligible: Seq[Bool]): UInt = {
+    val accepted = (0 until laneCount).map { lane =>
+      val candidate = io.candidates(source)(lane)
+      val duplicate = (0 until lane).map { earlier =>
+        io.candidates(source)(earlier).valid && candidateEligible(earlier) &&
+          io.candidates(source)(earlier).bits.physicalInput === candidate.bits.physicalInput
+      }.reduceOption(_ || _).getOrElse(false.B)
+      candidate.valid && candidateEligible(lane) && !duplicate
+    }
+    VecInit(accepted).asUInt
+  }
+
   val priorityOrder = Seq(
     LocalMMUSourceClass.CLoad,
     LocalMMUSourceClass.A,
@@ -182,9 +196,11 @@ class CollisionAwareLocalMMUScheduler(
       case LocalMMUSourceClass.CStore =>
         domainMask(source, cStoreResponseChannels, cStoreLegacy, tierEligible)
       case LocalMMUSourceClass.A =>
-        domainMask(source, aResponseChannels, aLegacy, tierEligible)
+        if (!aLegacy && aResponseChannels == laneCount) identityMask(source, tierEligible)
+        else domainMask(source, aResponseChannels, aLegacy, tierEligible)
       case LocalMMUSourceClass.B =>
-        domainMask(source, bResponseChannels, bLegacy, tierEligible)
+        if (!bLegacy && bResponseChannels == laneCount) identityMask(source, tierEligible)
+        else domainMask(source, bResponseChannels, bLegacy, tierEligible)
       case _ => VecInit((0 until laneCount).map(lane =>
         io.candidates(source)(lane).valid && tierEligible(lane))).asUInt
     }

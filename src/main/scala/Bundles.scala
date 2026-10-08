@@ -163,7 +163,7 @@ object Bundles {
 
   class AmuArithIO extends Bundle {
     // Only support mzero1r currently
-    
+
     // dest matrix register index
     val md     = UInt(4.W) // 12 : 9
     // operation type
@@ -183,7 +183,7 @@ object Bundles {
     // 1: Load/Store
     // 2: Release
     val op = UInt(2.W)
-    
+
     def isMma()     : Bool = op === AmuCtrlIO.mmaOp()
     def isMls()     : Bool = op === AmuCtrlIO.mlsOp()
     def isRelease() : Bool = op === AmuCtrlIO.releaseOp()
@@ -256,9 +256,25 @@ class CMLPerfProbe(implicit p: Parameters) extends CuteBundle {
   val loadPerfectBatch = Bool()
 }
 
+class ABMLPerfProbe(implicit p: Parameters) extends CuteBundle {
+  val loadTotalFired = UInt(log2Ceil(Tensor_MN * Tensor_K * 2).max(1).W)
+  val loadPerfectBatches = UInt(log2Ceil(Tensor_MN * Tensor_K).max(1).W)
+  val loadPerfectRequests = UInt(log2Ceil(Tensor_MN * Tensor_K * 2).max(1).W)
+  val loadPerfectBatch = Bool()
+  val seedStatus = UInt(3.W)
+  val seedVector = Vec(ABMatrixRegNBanks,
+    UInt(log2Ceil(((Tensor_MN + ABMatrixRegNBanks - 1) / ABMatrixRegNBanks) * Tensor_K).max(2).W))
+  val seedAttempts = UInt(log2Ceil(Tensor_MN * Tensor_K * 2).max(1).W)
+  val seedSuccesses = UInt(log2Ceil(Tensor_MN * Tensor_K * 2).max(1).W)
+  val seedFallbacks = UInt(log2Ceil(Tensor_MN * Tensor_K * 2).max(1).W)
+  val windowRepairs = UInt(log2Ceil(Tensor_MN * Tensor_K).max(1).W)
+}
+
 class CutePerfToCoreIO(implicit p: Parameters) extends CuteBundle {
   val backendEvents = Vec(CutePerfEventCounts.Backend, UInt(6.W))
   val memEvents = Vec(CutePerfEventCounts.Mem, UInt(6.W))
   val localMMU = new LocalMMUPerfProbe
+  val aml = new ABMLPerfProbe
+  val bml = new ABMLPerfProbe
   val cml = new CMLPerfProbe
 }

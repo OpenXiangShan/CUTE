@@ -643,10 +643,22 @@ case class CuteParams(
 
     // User-facing loader response mode selector.
     // L means legacy single-channel loader; 1/2/4/8 mean parameterized bridge width.
-    val LoaderBridgeChannelConfig: String = "ALBLCL2CS4",
+    val LoaderBridgeChannelConfig: String = "A8B8CL8CS8",
 
     // Elastic safety buffer on every parameterized Omega input.
-    val EnableOmegaInputQueue: Boolean = true
+    val EnableOmegaInputQueue: Boolean = true,
+
+    // Bounded AB normal-load lookahead, independent of the task K beat count.
+    val ABPerfectBatchWindowDepth: Int = 8,
+
+    // Enable deterministic task-start seed selection for AB normal loads.
+    val ABPerfectBatchSeedEnable: Boolean = true,
+
+    // Shared AML/BML request-side C-tail mitigation; transpose and legacy paths stay natural.
+    val ABBatchScheduleEnable: Boolean = true,
+    val ABBatchScheduleMode: String = ABBatchSchedule.Rotate,
+    val ABBatchRotateOffset: Int = 1,
+    val ABBatchPermutationMul: Int = 17
 ) {
     val parsedLoaderBridgeChannelConfig = ResponseChannelHelper.parseLoaderBridgeChannelConfig(LoaderBridgeChannelConfig)
     val AMLChannelMode = parsedLoaderBridgeChannelConfig.a
@@ -667,8 +679,26 @@ case class CuteParams(
       CLoadChannelMode.isLegacy == CStoreChannelMode.isLegacy,
       s"mixed legacy/parameterized C loader modes are not supported now: ${parsedLoaderBridgeChannelConfig.render}"
     )
+    require(ABMatrixRegNBanks >= 1 && isPow2(ABMatrixRegNBanks),
+      s"ABMatrixRegNBanks ($ABMatrixRegNBanks) must be a positive power of two")
+    require(CMatrixRegNBanks >= 1 && isPow2(CMatrixRegNBanks),
+      s"CMatrixRegNBanks ($CMatrixRegNBanks) must be a positive power of two")
     require(L2NBanks >= 1 && isPow2(L2NBanks),
       s"L2NBanks ($L2NBanks) must be a positive power of two")
+    Seq(
+      "A" -> AMLChannelMode,
+      "B" -> BMLChannelMode,
+      "CLoad" -> CLoadChannelMode,
+      "CStore" -> CStoreChannelMode
+    ).foreach { case (name, mode) =>
+      require(Seq(1, 2, 4, 8).contains(mode.responseChannelCount),
+        s"$name response channel count (${mode.responseChannelCount}) must be one of 1/2/4/8")
+    }
+    require(ABPerfectBatchWindowDepth >= 1 && isPow2(ABPerfectBatchWindowDepth),
+        s"ABPerfectBatchWindowDepth ($ABPerfectBatchWindowDepth) must be a positive power of two")
+    require(ABBatchSchedule.modes.contains(ABBatchScheduleMode), "unsupported AB batch schedule mode")
+    require(ABBatchRotateOffset >= 0 && ABBatchPermutationMul > 0,
+        "AB batch offset must be non-negative and multiplier must be positive")
     if (L2NBanks == 8 && parsedLoaderBridgeChannelConfig ==
       ResponseChannelHelper.LoaderBridgeChannelConfig(
         ResponseChannelHelper.ParameterizedLoaderMode(8),
@@ -899,6 +929,12 @@ trait HasCuteParams {
     def L2NBanks = cuteParams.L2NBanks
     def LoaderBridgeChannelConfig = cuteParams.LoaderBridgeChannelConfig
     def EnableOmegaInputQueue = cuteParams.EnableOmegaInputQueue
+    def ABPerfectBatchWindowDepth = cuteParams.ABPerfectBatchWindowDepth
+    def ABPerfectBatchSeedEnable = cuteParams.ABPerfectBatchSeedEnable
+    def ABBatchScheduleEnable: Boolean = cuteParams.ABBatchScheduleEnable
+    def ABBatchScheduleMode: String = cuteParams.ABBatchScheduleMode
+    def ABBatchRotateOffset: Int = cuteParams.ABBatchRotateOffset
+    def ABBatchPermutationMul: Int = cuteParams.ABBatchPermutationMul
     def parsedLoaderBridgeChannelConfig = cuteParams.parsedLoaderBridgeChannelConfig
     def AMLChannelMode = cuteParams.AMLChannelMode
     def BMLChannelMode = cuteParams.BMLChannelMode
@@ -1160,8 +1196,6 @@ class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
 }
 
 class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    val PrefetchTaskId = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchTagCodec.taskIdWidth.W))
-    val PrefetchStream = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchStream.width.W))
 
     val ApplicationTensor_A = new ApplicationTensor_A_Info
 
@@ -1173,6 +1207,8 @@ class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val Conherent                           = (Bool())      //whether coherence is needed
     val Is_Transpose                        = (Bool())      //whether transpose is needed
+    val PrefetchTaskId = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchTagCodec.taskIdWidth.W))
+    val PrefetchStream = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchStream.width.W))
 
     val MicroTaskReady                      = Flipped(Bool())//can configure the next task
     val MicroTaskValid                      = (Bool())       //current task configuration is valid
@@ -1199,8 +1235,6 @@ class ASLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 }
 
 class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    val PrefetchTaskId = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchTagCodec.taskIdWidth.W))
-    val PrefetchStream = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchStream.width.W))
 
     val ApplicationTensor_B = (new ApplicationTensor_B_Info)
 
@@ -1210,6 +1244,8 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val Conherent                           = (Bool())      //whether coherence is needed
     val Is_Transpose                        = (Bool())      //whether transpose is needed
+    val PrefetchTaskId = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchTagCodec.taskIdWidth.W))
+    val PrefetchStream = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchStream.width.W))
 
     val MicroTaskReady                      = Flipped(Bool())//can configure the next task
     val MicroTaskValid                      = (Bool())       //current task configuration is valid
@@ -1274,9 +1310,6 @@ class LoadTask_Info()(implicit p: Parameters) extends CuteBundle{
     val Is_FullLoad = (Bool())
 }
 class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    val PrefetchTaskId = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchTagCodec.taskIdWidth.W))
-    val PrefetchStream = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchStream.width.W))
-    val StoreTraceTag = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchTagCodec.width.W))
     //this is Tensor C, the invariant part from the accumulator-register perspective
 
     val ApplicationTensor_C = (new ApplicationTensor_C_Info)
@@ -1287,6 +1320,9 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val Conherent                           = (Bool())      //whether coherence is needed
     val Is_Transpose                        = (Bool())      //whether transpose is needed
+    val PrefetchTaskId = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchTagCodec.taskIdWidth.W))
+    val PrefetchStream = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchStream.width.W))
+    val StoreTraceTag = Option.when(EnableMatrixPrefetch)(UInt(xscache.coupledL2.prefetch.MatrixPrefetchTagCodec.width.W))
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
@@ -1428,12 +1464,14 @@ class MMUResponseIO(implicit p: Parameters) extends CuteBundle{
 object MemTraceId {
     val Width = 64
     val SourceTagWidth = 3
+    val SourceTagMask: BigInt = (BigInt(1) << SourceTagWidth) - 1
+    val CWriteTag: Int = 4
     val AllocatedOrigIdFlagBit = 60
 
     def aReadTag: UInt = 1.U(SourceTagWidth.W)
     def bReadTag: UInt = 2.U(SourceTagWidth.W)
     def cReadTag: UInt = 3.U(SourceTagWidth.W)
-    def cWriteTag: UInt = 4.U(SourceTagWidth.W)
+    def cWriteTag: UInt = CWriteTag.U(SourceTagWidth.W)
     def asReadTag: UInt = 5.U(SourceTagWidth.W)
     def bsReadTag: UInt = 6.U(SourceTagWidth.W)
 

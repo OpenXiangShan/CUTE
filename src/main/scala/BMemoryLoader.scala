@@ -55,13 +55,15 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     if (EnableDifftest) {
       val pcReg = RegInit(0.U(64.W))
-        when (io.ConfigInfo.MicroTaskValid) {
+      val coreidReg = RegInit(0.U(io.ConfigInfo.coreid.get.getWidth.W))
+        when (io.ConfigInfo.MicroTaskValid && io.ConfigInfo.MicroTaskReady) {
           pcReg := io.ConfigInfo.pc.get
+          coreidReg := io.ConfigInfo.coreid.get
         }
         val hashWrites = MatrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K, ports = 2)
         val difftestAmuFinish = hashWrites(0)
         // Initialize default values.
-        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        difftestAmuFinish.coreid := coreidReg
         difftestAmuFinish.index := 1.U
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
           (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))

@@ -15,6 +15,7 @@ class LocalMMUL2BankRouteHarness(implicit p: Parameters) extends CuteModule {
       Decoupled(new LocalMMUSchedulerCandidate(laneCount))))
     val bankOut = Vec(laneCount, Decoupled(new MMURequestIO))
     val collisionMasked = Output(UInt(laneCount.W))
+    val aPriorityBlocked = Output(UInt(laneCount.W))
     val cLoadRefill = Output(UInt(laneCount.W))
   })
 
@@ -43,6 +44,7 @@ class LocalMMUL2BankRouteHarness(implicit p: Parameters) extends CuteModule {
   bankRouter.io.in <> scheduler.io.llc
   io.bankOut <> bankRouter.io.out
   io.collisionMasked := scheduler.io.collisionMasked(0)
+  io.aPriorityBlocked := scheduler.io.priorityBlocked(LocalMMUSourceClass.A)
   io.cLoadRefill := scheduler.io.cLoadRefill
 }
 
@@ -68,6 +70,19 @@ class LocalMMUL2BankRouteSpec extends AnyFlatSpec with ChiselScalatestTester {
       }
       dut.io.bankOut(lane).ready.poke(true.B)
     }
+  }
+
+  private def incrementalMask(returnBanks: Seq[Int]): BigInt = {
+    var accepted = BigInt(0)
+    for (physicalInput <- returnBanks.indices) {
+      val tentative = accepted | (BigInt(1) << physicalInput)
+      val survivors = LocalMMUSchedulerTestUtils.survivorMask(
+        returnBanks.indices.map(tentative.testBit), returnBanks, responseChannels = 8)
+      if ((survivors & accepted) == accepted && survivors.testBit(physicalInput)) {
+        accepted = tentative
+      }
+    }
+    accepted
   }
 
   Seq(true, false).foreach { transparent =>
@@ -120,6 +135,52 @@ class LocalMMUL2BankRouteSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.cLoadRefill.expect("b00000010".U)
       dut.io.bankOut(0).valid.expect(true.B)
       dut.io.bankOut(7).valid.expect(true.B)
+    }
+  }
+
+  it should "apply the exact Omega admission mask to unique seeded-window routes" in {
+    implicit val p: Parameters = LocalMMUSchedulerTestUtils.parameters(transparent = false)
+    test(new LocalMMUL2BankRouteHarness).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      init(dut)
+      val physicalInputs = 0 until 8
+      val returnBanks = 0 until 8
+      val expectedMask = incrementalMask(returnBanks)
+      assert(expectedMask != 0xff, "fixture must exercise an exact Omega conflict")
+
+      for (lane <- 0 until 8) {
+        val candidate = dut.io.cLoad(lane)
+        candidate.valid.poke(true.B)
+        candidate.bits.physicalInput.poke(physicalInputs(lane).U)
+        candidate.bits.returnBank.poke(returnBanks(lane).U)
+        candidate.bits.request.RequestAddr.poke((BigInt(physicalInputs(lane)) << 6).U)
+        candidate.bits.request.RequestSourceID.poke(lane.U)
+        candidate.ready.expect(expectedMask.testBit(lane).B)
+      }
+      dut.io.collisionMasked.expect(((BigInt(1) << 8) - 1 - expectedMask).U)
+      for (bank <- 0 until 8) {
+        dut.io.bankOut(bank).valid.expect(expectedMask.testBit(bank).B)
+      }
+    }
+  }
+
+  it should "preserve C-load priority in the final admission mask" in {
+    implicit val p: Parameters = LocalMMUSchedulerTestUtils.parameters(transparent = false)
+    test(new LocalMMUL2BankRouteHarness).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      init(dut)
+      dut.io.cLoad(3).valid.poke(true.B)
+      dut.io.cLoad(3).bits.physicalInput.poke(5.U)
+      dut.io.cLoad(3).bits.returnBank.poke(3.U)
+      dut.io.cLoad(3).bits.request.RequestAddr.poke((BigInt(5) << 6).U)
+      dut.io.a(3).valid.poke(true.B)
+      dut.io.a(3).bits.physicalInput.poke(5.U)
+      dut.io.a(3).bits.returnBank.poke(3.U)
+      dut.io.a(3).bits.request.RequestAddr.poke((BigInt(5) << 6).U)
+
+      dut.io.cLoad(3).ready.expect(true.B)
+      dut.io.a(3).ready.expect(false.B)
+      dut.io.aPriorityBlocked.expect("b00001000".U)
+      dut.io.bankOut(5).valid.expect(true.B)
+      dut.io.bankOut(5).bits.RequestAddr.expect((BigInt(5) << 6).U)
     }
   }
 }

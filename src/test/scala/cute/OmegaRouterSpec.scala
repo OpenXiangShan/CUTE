@@ -4,6 +4,38 @@ import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
 
+class IdentityFriendlyOmegaSpec extends AnyFlatSpec with ChiselScalatestTester {
+  behavior of "identity-friendly OmegaResponseRouter"
+
+  it should "route bank i to output i without blocking" in {
+    test(new OmegaResponseRouter(
+      n = 8,
+      dataWidth = 32,
+      sourceIdWidth = 16,
+      bankIdWidth = 3,
+      bankIdOffset = 8,
+      outCount = 8,
+      bankCount = 8,
+      identityFriendlyInput = true
+    )).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      dut.io.timeStamp.poke(0.U)
+      for (i <- 0 until 8) {
+        dut.io.in(i).valid.poke(true.B)
+        dut.io.in(i).bits.data.poke(i.U)
+        dut.io.in(i).bits.sourceId.poke((BigInt(i) << 8 | i).U)
+        dut.io.in(i).bits.coherent.poke(true.B)
+        dut.io.out(i).ready.poke(true.B)
+      }
+
+      for (i <- 0 until 8) {
+        dut.io.in(i).ready.expect(true.B, s"input $i should be accepted")
+        dut.io.out(i).valid.expect(true.B, s"output $i should be valid")
+        dut.io.out(i).bits.data.expect(i.U, s"output $i received wrong token")
+      }
+    }
+  }
+}
+
 /**
   * Smoke test: ML -> L2 -> ML direct connect (no router).
   * addrBank == sendBank, so responses return on the same channel.

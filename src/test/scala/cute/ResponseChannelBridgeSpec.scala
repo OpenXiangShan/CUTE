@@ -38,6 +38,8 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   private def initBridge(dut: ResponseChannelBridge): Unit = {
     dut.io.timeStamp.poke(0.U)
+    dut.io.serviceTraceActive.poke(false.B)
+    dut.io.releaseDebug.poke(false.B)
     for (i <- 0 until bankCount) {
       dut.io.in(i).valid.poke(false.B)
       dut.io.in(i).bits.ReseponseData.poke(0.U)
@@ -71,7 +73,7 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
-        debugEnable = false
+      debugEnable = false
     )(ResponseChannelBridgeTestConfig.params())).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)
 
@@ -137,7 +139,7 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
-        debugEnable = false
+      debugEnable = false
     )(ResponseChannelBridgeTestConfig.params())).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)
 
@@ -190,7 +192,7 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       sourceIdWidth = sourceIdWidth,
       bankIdWidth = bankIdWidth,
       bankIdOffset = bankIdOffset,
-        debugEnable = false
+      debugEnable = false
     )(ResponseChannelBridgeTestConfig.params())).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       initBridge(dut)
       for (i <- 0 until bankCount) {
@@ -249,6 +251,41 @@ class ResponseChannelBridgeSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.in(1).ready.expect(false.B)
       driveResp(dut, channel = 0, bankId = 0, data = 0, valid = false)
       dut.io.in(1).ready.expect(true.B)
+    }
+  }
+
+  it should "count each Omega-blocked response once while accumulating its stall cycles" in {
+    test(new ResponseChannelBridge(
+      inputChannelCount = bankCount,
+      respChannelCount = 8,
+      bankCount = bankCount,
+      baseDepth = queueDepth,
+      dataWidth = dataWidth,
+      sourceIdWidth = sourceIdWidth,
+      bankIdWidth = bankIdWidth,
+      bankIdOffset = bankIdOffset
+    )(ResponseChannelBridgeTestConfig.params(queueEnabled = false)))
+      .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      initBridge(dut)
+      dut.io.out.foreach(_.ready.poke(false.B))
+
+      // Inputs 0 and 1 target the same first-switch output. Input 1 remains
+      // the same blocked response while input 0 wins or is downstream-stalled.
+      driveResp(dut, channel = 0, bankId = 0, data = 10, regAddr = 0)
+      driveResp(dut, channel = 1, bankId = 0, data = 20, regAddr = 1)
+      dut.clock.step(3)
+      dut.io.omegaBlockedCycles.expect(3.U)
+      dut.io.omegaBlockedRespCycles.expect(3.U)
+      dut.io.omegaBlockedResponses.expect(1.U)
+
+      // Release prints a snapshot but does not clear any counter.
+      dut.io.in.foreach(_.valid.poke(false.B))
+      dut.io.releaseDebug.poke(true.B)
+      dut.clock.step()
+      dut.io.releaseDebug.poke(false.B)
+      dut.io.omegaBlockedCycles.expect(3.U)
+      dut.io.omegaBlockedRespCycles.expect(3.U)
+      dut.io.omegaBlockedResponses.expect(1.U)
     }
   }
 
