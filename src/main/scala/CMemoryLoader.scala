@@ -40,12 +40,11 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     io.ConfigInfo.StoreMicroTaskReady := false.B
     io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr.map(_.valid := false.B)
     io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr.map(_.bits := DontCare)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr.map(_.valid := false.B)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr.map(_.bits := DontCare)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.Data.map(_.valid := false.B)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.Data.map(_.bits := DontCare)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask.map(_.valid := false.B)
-    io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask.map(_.bits := Fill(CMatrixRegEntryByteSize, true.B))
+    io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest :=
+        0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest)
+    io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest.foreach(_.foreach { write =>
+        write.ByteMask.bits := Fill(CMatrixRegEntryByteSize, true.B)
+    })
     io.ToMatrixRegIO.LoadReadWriteRequest := 0.U
     io.ToMatrixRegIO.StoreReadWriteRequest := 0.U
     for (i <- 0 until ABMatrixRegNBanks) {
@@ -76,8 +75,9 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
 
     val LoadPcReg = if (EnableDifftest) Some(RegInit(0.U(64.W))) else None
     val StorePcReg = if (EnableDifftest) Some(RegInit(0.U(64.W))) else None
-    val LoadCoreidReg = if (EnableDifftest) Some(RegInit(0.U(8.W))) else None
-    val StoreCoreidReg = if (EnableDifftest) Some(RegInit(0.U(8.W))) else None
+
+    val LoadCoreidReg = Option.when(EnableDifftest)(RegInit(0.U(8.W)))
+    val StoreCoreidReg = Option.when(EnableDifftest)(RegInit(0.U(8.W)))
 
     // Difftest interface
     if (EnableDifftest) {
@@ -88,7 +88,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         val loadFinishAny = io.ConfigInfo.LoadMicroTaskEndValid && io.ConfigInfo.LoadMicroTaskEndReady
         val storeFinishAny = io.ConfigInfo.StoreMicroTaskEndValid && io.ConfigInfo.StoreMicroTaskEndReady
 
-        val difftestLoadFinish = CuteDifftest.matrixHash(CMatrixRegNBanks, CMatrixRegEntryByteSize, CMatrixRegSize, Tensor_MN * ResultWidthByte)
+        val hashWrites = CuteDifftest.matrixHash(CMatrixRegNBanks, CMatrixRegEntryByteSize, CMatrixRegSize, Tensor_MN * ResultWidthByte, ports = 2)
+        val difftestLoadFinish = hashWrites(0)
         difftestLoadFinish.coreid := LoadCoreidReg.get
         difftestLoadFinish.index := 2.U
         difftestLoadFinish.valid := loadWriteAny || loadFinishAny
@@ -114,6 +115,26 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
           }
         }
         difftestLoadFinish.finish := loadFinishAny
+
+        val difftestLoadFinishLane1 = hashWrites(1)
+        difftestLoadFinishLane1.coreid := difftestLoadFinish.coreid
+        difftestLoadFinishLane1.index := 2.U
+        difftestLoadFinishLane1.valid := io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest.map(_(1).BankAddr.valid).reduce(_ || _)
+        difftestLoadFinishLane1.pc := LoadPcReg.get
+        for (i <- 0 until CMatrixRegNBanks) {
+          val write = io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(i)(1)
+          difftestLoadFinishLane1.bankValid(i) := write.BankAddr.valid
+          difftestLoadFinishLane1.bankAddr(i) := write.BankAddr.bits
+          difftestLoadFinishLane1.bankMask(i) := write.ByteMask.bits
+          for (w <- 0 until eventWordsPerBank) {
+            if (w < cMRegWordsPerBank) {
+              difftestLoadFinishLane1.data(i * eventWordsPerBank + w) := write.Data.bits(w * 64 + 63, w * 64)
+            } else {
+              difftestLoadFinishLane1.data(i * eventWordsPerBank + w) := 0.U(64.W)
+            }
+          }
+        }
+        difftestLoadFinishLane1.finish := false.B
 
         // Store path has no per-bank writeback payload, only finish handshake.
         val difftestStoreFinish = CuteDifftest(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
@@ -464,7 +485,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                 }
 
                 //检查每个bank是否有数据需要回填
-                val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(1.W))))
+                val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(2.W))))
                 when(IsLoadTranspose) {
                     HasScarhpadWrite := MReg_Fill_Table_Not_Empty
                     when(MReg_Fill_Table_Not_Empty && io.ToMatrixRegIO.LoadReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex)) {
@@ -520,7 +541,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                             val CurrentFIFOIndex = Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Tail(i))
                             when(io.ToMatrixRegIO.LoadReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex) === true.B)
                             {
-                                Current_Fill_MReg_Time(i) := 1.U
+                            val rowsThisCycle = Mux(MReg_Fill_Table_Time(CurrentFIFOIndex) > 1.U, 2.U, 1.U)
+                            Current_Fill_MReg_Time(i) := rowsThisCycle
                                 val MatrixRegWriteRequest = io.ToMatrixRegIO.WriteRequestToMatrixReg
                                 val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*CMatrixRegEntryByteSize).W)))))
                                 val fillSlot = MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex)
@@ -533,15 +555,22 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                                     tailByteMaskVec(j) := tailTaskMask(high, low)
                                 }
                                 FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
-                                MatrixRegWriteRequest.BankAddr(i).bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + fillSlot
-                                MatrixRegWriteRequest.BankAddr(i).valid := true.B
-                                MatrixRegWriteRequest.Data(i).bits := FIFOData(fillSlot)
-                                MatrixRegWriteRequest.Data(i).valid := true.B
-                                MatrixRegWriteRequest.ByteMask(i).bits := Mux(currentIsTail, tailByteMaskVec(fillSlot), fullByteMask)
-                                MatrixRegWriteRequest.ByteMask(i).valid := true.B
+                            for (lane <- 0 until 2) {
+                                val laneValid = MReg_Fill_Table_Time(CurrentFIFOIndex) > lane.U
+                                val laneSlot = if (MAX_Fill_Times == 1) 0.U else
+                                    Mux(laneValid, fillSlot + lane.U, 0.U)(log2Ceil(MAX_Fill_Times) - 1, 0)
+                                val write = MatrixRegWriteRequest.WriteRequest(i)(lane)
+                                write.BankAddr.bits := MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex) + laneSlot
+                                write.BankAddr.valid := laneValid
+                                write.Data.bits := FIFOData(laneSlot)
+                                write.Data.valid := laneValid
+                                write.ByteMask.bits := Mux(currentIsTail, tailByteMaskVec(laneSlot), fullByteMask)
+                                write.ByteMask.valid := laneValid
 
-                                MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - 1.U
-                                when(MReg_Fill_Table_Time(CurrentFIFOIndex) === 1.U){
+                            }
+
+                            MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - rowsThisCycle
+                            when(MReg_Fill_Table_Time(CurrentFIFOIndex) <= 2.U){
                                     Bank_Fill_Search_FIFO_Tail(i) := WrapInc(Bank_Fill_Search_FIFO_Tail(i), CMemoryLoaderReadFromMemoryFIFODepth)
                                 }
 
@@ -562,8 +591,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
                     }
                 }
 
-                val Current_Load_Fill_Size = WireInit(0.U((log2Ceil(CMatrixRegNBanks)+1).W))
-                Current_Load_Fill_Size := PopCount(Current_Fill_MReg_Time.asUInt)
+                val Current_Load_Fill_Size = WireInit(0.U(log2Ceil(2 * CMatrixRegNBanks + 1).W))
+                Current_Load_Fill_Size := Current_Fill_MReg_Time.reduce(_ +& _)
 
                 TotalLoadSize := TotalLoadSize + Current_Load_Fill_Size
 

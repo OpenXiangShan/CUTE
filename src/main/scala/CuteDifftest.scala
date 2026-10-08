@@ -72,11 +72,21 @@ object CuteDifftest {
     bankBytes: Int,
     regBytes: Int,
     rowBytes: Int
-  )(implicit p: Parameters): DiffAmuFinishEvent = {
-    val module = Module(new MatrixHash(banks, bankBytes, regBytes, rowBytes))
-    val writes = Wire(new DiffAmuFinishEvent(banks, bankBytes / 8))
+  )(implicit p: Parameters): DiffAmuFinishEvent =
+    matrixHash(banks, bankBytes, regBytes, rowBytes, ports = 1).head
+
+  def matrixHash(
+    banks: Int,
+    bankBytes: Int,
+    regBytes: Int,
+    rowBytes: Int,
+    ports: Int
+  )(implicit p: Parameters): Vec[DiffAmuFinishEvent] = {
+    val module = Module(new MatrixHash(banks, bankBytes, regBytes, rowBytes, ports))
+    val writes = Wire(Vec(ports, new DiffAmuFinishEvent(banks, bankBytes / 8)))
     module.io.in := writes
-    // Hash in the accelerator domain, then transport only the completion event.
+    // Combine concurrent writes in the accelerator domain, then transport
+    // only the instruction's compact completion event across the clock boundary.
     apply(new DiffAmuHashEvent) := module.io.out
     writes
   }

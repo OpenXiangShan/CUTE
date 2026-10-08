@@ -348,6 +348,7 @@ trait HasTransposeLoadEngine { this: CuteModule =>
     when(busy && transpose) {
       targetId := regId
       target.active := true.B
+      target.WriteRequest := 0.U.asTypeOf(target.WriteRequest)
       for (bank <- 0 until ABMatrixRegNBanks) {
         val valid = engine.io.writeback.valid && engine.io.writeback.bits.mask(bank).orR
         target.BankAddr(bank).valid := valid
@@ -364,20 +365,24 @@ trait HasTransposeLoadEngine { this: CuteModule =>
       DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", ABMatrixRegSize)
       val pc = RegEnable(config.pc.get, accepted)
       val coreid = RegEnable(config.coreid.get, accepted)
-      val event = CuteDifftest.matrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K)
-      event.index := diffIndex.U
-      event.pc := pc
-      event.coreid := coreid
-      event.finish := config.MicroTaskEndValid && config.MicroTaskEndReady
-      event.valid := target.BankAddr.map(_.valid).reduce(_ || _) || event.finish
-      val words = event.data.length / ABMatrixRegNBanks
-      for (bank <- 0 until ABMatrixRegNBanks) {
-        event.bankValid(bank) := target.BankAddr(bank).valid
-        event.bankAddr(bank) := target.BankAddr(bank).bits
-        event.bankMask(bank) := target.ByteMask(bank).bits
-        for (word <- 0 until words) {
-          event.data(bank * words + word) := (if (word < ABMatrixRegEntryBitSize / 64)
-            target.Data(bank).bits(word * 64 + 63, word * 64) else 0.U)
+      val events = CuteDifftest.matrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K, ports = 2)
+      for (port <- 0 until 2) {
+        val event = events(port)
+        event.index := diffIndex.U
+        event.pc := pc
+        event.coreid := coreid
+        event.finish := (if (port == 0) config.MicroTaskEndValid && config.MicroTaskEndReady else false.B)
+        event.valid := target.WriteRequest.map(_(port).BankAddr.valid).reduce(_ || _) || event.finish
+        val words = event.data.length / ABMatrixRegNBanks
+        for (bank <- 0 until ABMatrixRegNBanks) {
+          val write = target.WriteRequest(bank)(port)
+          event.bankValid(bank) := write.BankAddr.valid
+          event.bankAddr(bank) := write.BankAddr.bits
+          event.bankMask(bank) := write.ByteMask.bits
+          for (word <- 0 until words) {
+            event.data(bank * words + word) := (if (word < ABMatrixRegEntryBitSize / 64)
+              write.Data.bits(word * 64 + 63, word * 64) else 0.U)
+          }
         }
       }
     }

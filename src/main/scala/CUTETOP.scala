@@ -639,10 +639,9 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         // DataController requests.
         ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
         ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
-        // MemoryLoader requests.
-        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.BankAddr)
-        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.Data)
-        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ByteMask := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ByteMask)
+        //MemoryLoader的请求
+        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequest :=
+            0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequest)
     }
 
     if (cuteMatrixExtension.enableScalingFactor) {
@@ -723,23 +722,23 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     def disableABLoaderPort(dest: ABMemoryLoaderMatrixRegIO): Unit = {
         for (b <- 0 until ABMatrixRegNBanks) {
-            dest.BankAddr(b).valid := false.B
-            dest.BankAddr(b).bits := DontCare
-            dest.Data(b).valid := false.B
-            dest.Data(b).bits := DontCare
-            dest.ByteMask(b).valid := false.B
-            dest.ByteMask(b).bits := Fill(ABMatrixRegEntryByteSize, true.B)
+            for (lane <- 0 until 2) {
+                val write = dest.WriteRequest(b)(lane)
+                write.BankAddr.valid := false.B
+                write.BankAddr.bits := DontCare
+                write.Data.valid := false.B
+                write.Data.bits := DontCare
+                write.ByteMask.valid := false.B
+                write.ByteMask.bits := Fill(ABMatrixRegEntryByteSize, true.B)
+            }
         }
     }
 
     def copyABLoaderPort(dest: ABMemoryLoaderMatrixRegIO, src: ABMemoryLoaderMatrixRegIO): Unit = {
         for (b <- 0 until ABMatrixRegNBanks) {
-            dest.BankAddr(b).valid := src.BankAddr(b).valid
-            dest.BankAddr(b).bits := src.BankAddr(b).bits
-            dest.Data(b).valid := src.Data(b).valid
-            dest.Data(b).bits := src.Data(b).bits
-            dest.ByteMask(b).valid := src.ByteMask(b).valid
-            dest.ByteMask(b).bits := src.ByteMask(b).bits
+            for (lane <- 0 until 2) {
+                dest.WriteRequest(b)(lane) := src.WriteRequest(b)(lane)
+            }
         }
     }
     
@@ -822,13 +821,17 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
         for (bank <- 0 until CMatrixRegNBanks) {
             dest.ReadRequestToMatrixReg.BankAddr(bank).valid := storeSel && CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).valid
-            dest.WriteRequestToMatrixReg.BankAddr(bank).valid := loadSel && CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(bank).valid
-            dest.WriteRequestToMatrixReg.Data(bank).valid := loadSel && CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(bank).valid
-            dest.WriteRequestToMatrixReg.ByteMask(bank).valid := loadSel && CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask(bank).valid
             dest.ReadRequestToMatrixReg.BankAddr(bank).bits := CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).bits
-            dest.WriteRequestToMatrixReg.BankAddr(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(bank).bits
-            dest.WriteRequestToMatrixReg.Data(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.Data(bank).bits
-            dest.WriteRequestToMatrixReg.ByteMask(bank).bits := CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask(bank).bits
+            for (lane <- 0 until 2) {
+                val destWrite = dest.WriteRequestToMatrixReg.WriteRequest(bank)(lane)
+                val srcWrite = CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(bank)(lane)
+                destWrite.BankAddr.valid := loadSel && srcWrite.BankAddr.valid
+                destWrite.Data.valid := loadSel && srcWrite.Data.valid
+                destWrite.ByteMask.valid := loadSel && srcWrite.ByteMask.valid
+                destWrite.BankAddr.bits := srcWrite.BankAddr.bits
+                destWrite.Data.bits := srcWrite.Data.bits
+                destWrite.ByteMask.bits := srcWrite.ByteMask.bits
+            }
         }
 
         val loadReqForThisReg = Mux(loadSel, CML.io.ToMatrixRegIO.LoadReadWriteRequest, 0.U)

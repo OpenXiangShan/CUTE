@@ -1322,16 +1322,26 @@ class ABScaleControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // val Chosen = Input(Bool())
 }
 
+class MatrixRegLoaderWriteLane(addrWidth: Int, dataWidth: Int, maskWidth: Int)(implicit p: Parameters)
+  extends CuteBundle {
+    val BankAddr = Valid(UInt(addrWidth.W))
+    val Data = Valid(UInt(dataWidth.W))
+    val ByteMask = Valid(UInt(maskWidth.W))
+}
+
 // unified AB MemoryLoader interface, with ZeroFill support
 class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // When MemLoader is working, active will be true.
     // Otherwise, active will be false.
     val active = Input(Bool())
-    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(ABMatrixRegBankNLines), and it is input data that requires handshaking
-    val BankAddr = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(log2Ceil(ABMatrixRegBankNEntries).W))))
-    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
-    val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))
-    val ByteMask = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryByteSize.W))))
+    val WriteRequest = Flipped(Vec(ABMatrixRegNBanks, Vec(2, new MatrixRegLoaderWriteLane(
+        log2Ceil(ABMatrixRegBankNEntries),
+        ABMatrixRegEntryBitSize,
+        ABMatrixRegEntryByteSize
+    ))))
+    def BankAddr: Seq[Valid[UInt]] = WriteRequest.map(_(0).BankAddr)
+    def Data: Seq[Valid[UInt]] = WriteRequest.map(_(0).Data)
+    def ByteMask: Seq[Valid[UInt]] = WriteRequest.map(_(0).ByteMask)
 }
 
 class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
@@ -1356,16 +1366,23 @@ class CDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // val Chosen = Input(Bool())
 }
 
+class CMemoryLoaderWriteRequestIO(implicit p: Parameters) extends CuteBundle {
+    val WriteRequest = Flipped(Vec(CMatrixRegNBanks, Vec(2, new MatrixRegLoaderWriteLane(
+        log2Ceil(CMatrixRegBankNEntries),
+        CMatrixRegEntryBitSize,
+        CMatrixRegEntryByteSize
+    ))))
+    def BankAddr: Seq[Valid[UInt]] = WriteRequest.map(_(0).BankAddr)
+    def Data: Seq[Valid[UInt]] = WriteRequest.map(_(0).Data)
+    def ByteMask: Seq[Valid[UInt]] = WriteRequest.map(_(0).ByteMask)
+}
+
 class CMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val ReadRequestToMatrixReg = (new Bundle{
         val BankAddr = Flipped(Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W))))
         val ReadResponseData = ((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W)))))
     })
-    val WriteRequestToMatrixReg = (new Bundle{
-        val BankAddr = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W)))))
-        val Data = Flipped(Vec(CMatrixRegNBanks, (Valid(UInt(CMatrixRegEntryBitSize.W)))))
-        val ByteMask = Flipped(Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryByteSize.W))))
-    })
+    val WriteRequestToMatrixReg = new CMemoryLoaderWriteRequestIO
     val LoadReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     val StoreReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     val LoadReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))

@@ -107,8 +107,8 @@ class MultiChannelsABMemLoader(
             log(cf"Response[$bankIdx] enqueue sourceId=$sourceId isTail=$isTail")
         }
 
-        def stepWriteback(toMReg: ABMemoryLoaderMatrixRegIO, tailMask: Vec[UInt]): Bool = {
-            val haveWritten = WireInit(false.B)
+        def stepWriteback(toMReg: ABMemoryLoaderMatrixRegIO, tailMask: Vec[UInt]): UInt = {
+            val rowsWritten = WireInit(0.U(2.W))
             val sliceIdx = MAX_Fill_Times.U - curRemain
             val slices = Wire(Vec(MAX_Fill_Times, UInt((8 * ABMatrixRegEntryByteSize).W)))
             val meta = metaQ.io.deq.bits
@@ -117,26 +117,31 @@ class MultiChannelsABMemLoader(
             slices := dataQ.io.deq.bits.asTypeOf(slices)
 
             when (dataQ.io.deq.valid) {
-                toMReg.BankAddr(bankIdx).bits := baseAddr + sliceIdx
-                toMReg.BankAddr(bankIdx).valid := true.B
-                toMReg.Data(bankIdx).bits := slices(sliceIdx)
-                toMReg.Data(bankIdx).valid := true.B
-                toMReg.ByteMask(bankIdx).valid := true.B
-                toMReg.ByteMask(bankIdx).bits := Mux(isTail, tailMask(sliceIdx), Fill(ABMatrixRegEntryByteSize, true.B))
-                haveWritten := true.B
-                when (curRemain > 1.U) {
-                    curRemain := curRemain - 1.U
-                }.elsewhen (curRemain === 1.U) {
+                val rowsThisCycle = Mux(curRemain > 1.U, 2.U, 1.U)
+                for (lane <- 0 until 2) {
+                    val laneValid = curRemain > lane.U
+                    val laneSlice = if (MAX_Fill_Times == 1) 0.U else
+                        Mux(laneValid, sliceIdx + lane.U, 0.U)(log2Ceil(MAX_Fill_Times) - 1, 0)
+                    val write = toMReg.WriteRequest(bankIdx)(lane)
+                    write.BankAddr.bits := baseAddr + laneSlice
+                    write.BankAddr.valid := laneValid
+                    write.Data.bits := slices(laneSlice)
+                    write.Data.valid := laneValid
+                    write.ByteMask.valid := laneValid
+                    write.ByteMask.bits := Mux(isTail, tailMask(laneSlice), Fill(ABMatrixRegEntryByteSize, true.B))
+
+                }
+                rowsWritten := rowsThisCycle
+                when (curRemain > 2.U) {
+                    curRemain := curRemain - rowsThisCycle
+                }.otherwise {
                     curRemain := MAX_Fill_Times.U
+                    dataQ.io.deq.ready := true.B
+                    metaQ.io.deq.ready := true.B
                 }
             }
 
-            when (curRemain === 1.U) {
-                dataQ.io.deq.ready := true.B
-                metaQ.io.deq.ready := true.B
-            }
-
-            haveWritten
+            rowsWritten
         }
     }
 
@@ -170,7 +175,7 @@ class MultiChannelsABMemLoader(
           cf"stride=$Stride tail=$HasTail totalReq=$TotalRequestSize totalLoad=$TotalLoadSize"
         )
 
-        val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(1.W))))
+                val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(2.W))))
 
         val tailTaskMask = UIntToOH(TailByteMask, outsideDataWidthByte + 1).asUInt - 1.U(outsideDataWidthByte.W)
         val tailByteMaskPerSlot = VecInit((0 until MAX_Fill_Times).map { j =>
@@ -255,12 +260,10 @@ class MultiChannelsABMemLoader(
                     }
                 }
 
-                when(bankFifos(i).stepWriteback(io.ToMatrixRegIO, tailByteMaskPerSlot)) {
-                    Current_Fill_MReg_Time(i) := 1.U
-                }
+                Current_Fill_MReg_Time(i) := bankFifos(i).stepWriteback(io.ToMatrixRegIO, tailByteMaskPerSlot)
             }
 
-            val Load_Size = PopCount(Current_Fill_MReg_Time.asUInt)
+            val Load_Size = Current_Fill_MReg_Time.reduce(_ +& _)
             TotalLoadSize := TotalLoadSize + Load_Size
             val ExpectedLoadSize = MatrixRegTensor_M * K_Beat_Count * MAX_Fill_Times.U
             when(TotalLoadSize === ExpectedLoadSize) {
@@ -308,10 +311,10 @@ class MultiChannelsABMemLoader(
     }
 
     io.ToMatrixRegIO.active := false.B
-    io.ToMatrixRegIO.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.BankAddr)
-    io.ToMatrixRegIO.Data := 0.U.asTypeOf(io.ToMatrixRegIO.Data)
-    io.ToMatrixRegIO.ByteMask.map(_.valid := false.B)
-    io.ToMatrixRegIO.ByteMask.map(_.bits := Fill(ABMatrixRegEntryByteSize, true.B))
+    io.ToMatrixRegIO.WriteRequest := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequest)
+    io.ToMatrixRegIO.WriteRequest.foreach(_.foreach { write =>
+        write.ByteMask.bits := Fill(ABMatrixRegEntryByteSize, true.B)
+    })
 
     for (i <- 0 until ABMatrixRegNBanks) {
         io.LocalMMUIO.Request(i).valid := false.B
@@ -334,11 +337,14 @@ class MultiChannelsABMemLoader(
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_WORDS_PER_BANK", ABMatrixRegEntryBitSize / 64)
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", ABMatrixRegSize)
         val pcReg = RegInit(0.U(64.W))
-        when (io.ConfigInfo.MicroTaskValid) {
+        val coreidReg = RegInit(0.U(8.W))
+        when (io.ConfigInfo.MicroTaskValid && io.ConfigInfo.MicroTaskReady) {
           pcReg := io.ConfigInfo.pc.get
+          coreidReg := io.ConfigInfo.coreid.get
         }
-        val difftestAmuFinish = CuteDifftest.matrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K)
-        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        val hashWrites = CuteDifftest.matrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K, ports = 2)
+        val difftestAmuFinish = hashWrites(0)
+        difftestAmuFinish.coreid := coreidReg
         val diffIndexMap = Map(
             "AML" -> 0,
             "BML" -> 1
@@ -367,6 +373,26 @@ class MultiChannelsABMemLoader(
           }
         }
         difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
+
+        val difftestAmuFinishLane1 = hashWrites(1)
+        difftestAmuFinishLane1.coreid := difftestAmuFinish.coreid
+        difftestAmuFinishLane1.index := (if (label == "BML") 1.U else 0.U)
+        difftestAmuFinishLane1.valid := io.ToMatrixRegIO.WriteRequest.map(_(1).BankAddr.valid).reduce(_ || _)
+        difftestAmuFinishLane1.pc := pcReg
+        for (i <- 0 until ABMatrixRegNBanks) {
+          val write = io.ToMatrixRegIO.WriteRequest(i)(1)
+          difftestAmuFinishLane1.bankValid(i) := write.BankAddr.valid
+          difftestAmuFinishLane1.bankAddr(i) := write.BankAddr.bits
+          difftestAmuFinishLane1.bankMask(i) := write.ByteMask.bits
+          for (w <- 0 until eventWordsPerBank) {
+            if (w < abMRegWordsPerBank) {
+              difftestAmuFinishLane1.data(i * eventWordsPerBank + w) := write.Data.bits(w * 64 + 63, w * 64)
+            } else {
+              difftestAmuFinishLane1.data(i * eventWordsPerBank + w) := 0.U(64.W)
+            }
+          }
+        }
+        difftestAmuFinishLane1.finish := false.B
     }
 
     io.running := false.B
