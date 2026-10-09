@@ -1601,7 +1601,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val releaseIssueOwnerEntry = issueSlot.entry
 
     releaseFinish.coreid := Mux(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release, releaseIssueOwnerEntry.ctrl.coreid.get, 0.U)
-    releaseFinish.index := 4.U
+    releaseFinish.index := 1.U
     releaseFinish.valid := issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
     releaseFinish.pc := Mux(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release, releaseIssueOwnerEntry.ctrl.pc.get, 0.U)
     releaseFinish.bankValid.foreach(_ := false.B)

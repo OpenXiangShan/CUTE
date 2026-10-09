@@ -4,6 +4,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import difftest._
+import difftest.util.MatrixHash
 import org.chipsalliance.cde.config._
 
 // Loads matrix B into MatrixReg from the configured memory source.
@@ -58,7 +59,7 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         when (io.ConfigInfo.MicroTaskValid) {
           pcReg := io.ConfigInfo.pc.get
         }
-        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestAmuFinish = MatrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K)
         // Initialize default values.
         difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
         difftestAmuFinish.index := 1.U

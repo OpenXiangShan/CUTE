@@ -3,6 +3,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import difftest._
+import difftest.util.MatrixHash
 import org.chipsalliance.cde.config.Parameters
 
 /** Coordinates are source-memory coordinates, in elements (never beat counts). */
@@ -364,8 +365,7 @@ trait HasTransposeLoadEngine { this: CuteModule =>
       DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", ABMatrixRegSize)
       val pc = RegEnable(config.pc.get, accepted)
       val coreid = RegEnable(config.coreid.get, accepted)
-      val event = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank),
-        delay = 0, dontCare = true)
+      val event = MatrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K)
       event.index := diffIndex.U
       event.pc := pc
       event.coreid := coreid
