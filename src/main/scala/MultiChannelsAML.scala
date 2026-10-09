@@ -4,6 +4,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import difftest._
+import difftest.util.MatrixHash
 import org.chipsalliance.cde.config._
 import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
@@ -578,7 +579,7 @@ class MultiChannelsABMemLoader(
           pcReg := io.ConfigInfo.pc.get
           coreidReg := io.ConfigInfo.coreid.get
         }
-        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestAmuFinish = MatrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K)
         difftestAmuFinish.coreid := coreidReg
         val diffIndexMap = Map(
             "AML" -> 0,
