@@ -1,8 +1,9 @@
 package cute
 
 import chisel3._
-import difftest.{DifftestBundle, DifftestModule}
+import difftest.{DiffAmuFinishEvent, DiffAmuHashEvent, DifftestBundle, DifftestModule}
 import difftest.common.DifftestWiring
+import difftest.util.MatrixHash
 import freechips.rocketchip.util.{AsyncQueueParams, AsyncQueueSink, AsyncQueueSource}
 import org.chipsalliance.cde.config.Parameters
 
@@ -64,5 +65,19 @@ object CuteDifftest {
     delay: Int = 0
   )(implicit p: Parameters): Seq[T] = {
     gens.map(gen => apply(gen, dontCare = dontCare, delay = delay))
+  }
+
+  def matrixHash(
+    banks: Int,
+    bankBytes: Int,
+    regBytes: Int,
+    rowBytes: Int
+  )(implicit p: Parameters): DiffAmuFinishEvent = {
+    val module = Module(new MatrixHash(banks, bankBytes, regBytes, rowBytes))
+    val writes = Wire(new DiffAmuFinishEvent(banks, bankBytes / 8))
+    module.io.in := writes
+    // Hash in the accelerator domain, then transport only the completion event.
+    apply(new DiffAmuHashEvent) := module.io.out
+    writes
   }
 }
