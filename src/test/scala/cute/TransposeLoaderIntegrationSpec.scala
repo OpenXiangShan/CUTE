@@ -28,6 +28,7 @@ class TransposeLoaderIntegrationHarness(implicit p: Parameters) extends CuteModu
   val b = Module(new BMLWrapper)
   tc.io.DebugTimeStampe := 0.U
   tc.io.ygjkctrl.reset := false.B
+  tc.io.ygjkctrl.mrelease.ready := true.B
   tc.io.ygjkctrl.amuCtrl.valid := io.command.valid
   tc.io.ygjkctrl.amuCtrl.bits.op := Bundles.AmuCtrlIO.mlsOp()
   tc.io.ygjkctrl.amuCtrl.bits.data := io.command.bits.asUInt

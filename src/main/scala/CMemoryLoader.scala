@@ -3,7 +3,6 @@ package cute
 import chisel3._
 import chisel3.util._
 import difftest._
-import difftest.util.MatrixHash
 import org.chipsalliance.cde.config._
 import freechips.rocketchip.util.SeqToAugmentedSeq
 import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
@@ -89,7 +88,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         val loadFinishAny = io.ConfigInfo.LoadMicroTaskEndValid && io.ConfigInfo.LoadMicroTaskEndReady
         val storeFinishAny = io.ConfigInfo.StoreMicroTaskEndValid && io.ConfigInfo.StoreMicroTaskEndReady
 
-        val difftestLoadFinish = MatrixHash(CMatrixRegNBanks, CMatrixRegEntryByteSize, CMatrixRegSize, Tensor_MN * ResultWidthByte)
+        val difftestLoadFinish = CuteDifftest.matrixHash(CMatrixRegNBanks, CMatrixRegEntryByteSize, CMatrixRegSize, Tensor_MN * ResultWidthByte)
         difftestLoadFinish.coreid := LoadCoreidReg.get
         difftestLoadFinish.index := 2.U
         difftestLoadFinish.valid := loadWriteAny || loadFinishAny
@@ -117,7 +116,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         difftestLoadFinish.finish := loadFinishAny
 
         // Store path has no per-bank writeback payload, only finish handshake.
-        val difftestStoreFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestStoreFinish = CuteDifftest(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
         difftestStoreFinish.coreid := StoreCoreidReg.get
         difftestStoreFinish.index := 2.U
         difftestStoreFinish.valid := storeFinishAny

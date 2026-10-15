@@ -4,7 +4,6 @@ package cute
 import chisel3._
 import chisel3.util._
 import difftest._
-import difftest.util.MatrixHash
 import org.chipsalliance.cde.config._
 
 class MultiChannelsABMemLoader(
@@ -338,7 +337,7 @@ class MultiChannelsABMemLoader(
         when (io.ConfigInfo.MicroTaskValid) {
           pcReg := io.ConfigInfo.pc.get
         }
-        val difftestAmuFinish = MatrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K)
+        val difftestAmuFinish = CuteDifftest.matrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K)
         difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
         val diffIndexMap = Map(
             "AML" -> 0,
