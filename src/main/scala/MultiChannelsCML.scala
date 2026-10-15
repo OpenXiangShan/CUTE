@@ -640,7 +640,7 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
                 when(CLoadPerfectBatch) {
                     CLoadPerfectBatches := CLoadPerfectBatches + 1.U
                     CLoadPerfectRequests := CLoadPerfectRequests + CMatrixRegNBanks.U
-                    
+
                 }
             }
 

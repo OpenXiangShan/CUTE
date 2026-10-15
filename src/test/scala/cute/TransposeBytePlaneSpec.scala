@@ -10,6 +10,9 @@ import scala.util.Random
 object TransposeTestParams {
   def apply(banks: Int, mode: String = "8", diff: Boolean = false): Parameters =
     new Config((_, _, _) => {
+      case utility.PerfCounterOptionsKey => utility.PerfCounterOptions(
+        enablePerfPrint = false, enablePerfDB = false,
+        perfLevel = utility.XSPerfLevel.NORMAL, perfDBHartID = 0)
       case CuteParamsKey => (if (banks == 8) CuteParams.CUTE_8Tops_128SCP else CuteParams.CUTE_2Tops).copy(
         Debug = CuteDebugParams.NoDebug, EnableDifftest = diff,
         LoaderBridgeChannelConfig = s"A${mode}B${mode}CLLCSL")
