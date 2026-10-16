@@ -35,6 +35,12 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val BSL_MicroTask_Config = Option.when(cuteMatrixExtension.enableScalingFactor)(new BSLMicroTaskConfigIO)
   val CML_MicroTask_Config = new CMLMicroTaskConfigIO
   val MTE_MicroTask_Config = new MTEMicroTaskConfigIO
+  val BitADC_MicroTask_Config = Option.when(cuteMatrixExtension.enableBitMTE)(new BitMicroTaskConfigIO)
+  val BitBDC_MicroTask_Config = Option.when(cuteMatrixExtension.enableBitMTE)(new BitMicroTaskConfigIO)
+  val BitCDC_MicroTask_Config = Option.when(cuteMatrixExtension.enableBitMTE)(new BitMicroTaskConfigIO)
+  val BMTE_MicroTask_Config = Option.when(cuteMatrixExtension.enableBitMTE)(new BitMicroTaskConfigIO)
+  val mteOwnerActive = Output(Bool())
+  val bmteOwnerActive = Output(Bool())
   val DebugTimeStampe = Input(UInt(32.W))
   val perfProbe = Output(new TaskControllerPerfProbe)
   val matrixPrefetch = Option.when(EnableMatrixPrefetch)(Output(new MatrixPrefetchControl))
@@ -211,6 +217,17 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   io.MTE_MicroTask_Config.MicroTaskValid := false.B
   io.MTE_MicroTask_Config.computeType := MteComputeType.ComputeTypeUndef
+  (io.BitADC_MicroTask_Config.toSeq ++ io.BitBDC_MicroTask_Config.toSeq ++
+    io.BitCDC_MicroTask_Config.toSeq ++ io.BMTE_MicroTask_Config.toSeq).foreach { cfg =>
+    cfg.MatrixRegId := 0.U
+    cfg.packedMode := 0.U
+    cfg.isInt4 := false.B
+    cfg.kslice := 0.U
+    cfg.MicroTaskValid := false.B
+    cfg.MicroTaskEndReady := false.B
+    cfg.pc.foreach(_ := 0.U)
+    cfg.coreid.foreach(_ := 0.U)
+  }
   io.perfProbe := 0.U.asTypeOf(new TaskControllerPerfProbe)
   io.matrixPrefetch.foreach(_ := 0.U.asTypeOf(new MatrixPrefetchControl))
 
@@ -402,6 +419,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val fuBML = RegInit(0.U.asTypeOf(new FuTracker))
   val fuCMLLoad = RegInit(0.U.asTypeOf(new FuTracker))
   val fuCompute = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuBMTE = RegInit(0.U.asTypeOf(new FuTracker))
   val fuCMLStore = RegInit(0.U.asTypeOf(new FuTracker))
 
   private def slotOH(idx: UInt): UInt = UIntToOH(idx, WinDepth)
@@ -413,33 +431,40 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private def decodeArith(ctrl: AmuCtrlIO): AmuArithIO = ctrl.data.asTypeOf(new AmuArithIO)
   private def isMzeroLike(arith: AmuArithIO): Bool = arith.opType(8, 2) === "b1101110".U
 
-  private def isReadAB(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, lsu: AmuLsuIO, reg: UInt, treatStoreAsABRead: Bool): Bool = {
-    (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms1) === abIdx(reg) || abIdx(mma.ms2) === abIdx(reg)) ||
-      (op === TaskCtrlOpKind.Store) && treatStoreAsABRead && (abIdx(lsu.ms) === abIdx(reg))
+  // A pair involving BMTE uses the architectural TR/ACC namespace. Ordinary
+  // pairs retain the baseline low-index comparisons and dependency behavior.
+  private def sameAB(x: UInt, reg: UInt, packed: Bool): Bool =
+    Mux(packed, x === reg, abIdx(x) === abIdx(reg))
+  private def sameC(x: UInt, reg: UInt, packed: Bool): Bool =
+    Mux(packed, x === reg, cIdx(x) === cIdx(reg))
+
+  private def isReadAB(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, lsu: AmuLsuIO, reg: UInt, treatStoreAsABRead: Bool, packed: Bool): Bool = {
+    (op === TaskCtrlOpKind.Compute) && (sameAB(mma.ms1, reg, packed) || sameAB(mma.ms2, reg, packed)) ||
+      (op === TaskCtrlOpKind.Store) && treatStoreAsABRead && sameAB(lsu.ms, reg, packed)
   }
 
-  private def isReadC(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, lsu: AmuLsuIO, reg: UInt, treatStoreAsCRead: Bool): Bool = {
-    ((op === TaskCtrlOpKind.Compute) && (cIdx(mma.md) === cIdx(reg))) ||
-      ((op === TaskCtrlOpKind.Store) && treatStoreAsCRead && (cIdx(lsu.ms) === cIdx(reg)))
+  private def isReadC(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, lsu: AmuLsuIO, reg: UInt, treatStoreAsCRead: Bool, packed: Bool): Bool = {
+    ((op === TaskCtrlOpKind.Compute) && sameC(mma.md, reg, packed)) ||
+      ((op === TaskCtrlOpKind.Store) && treatStoreAsCRead && sameC(lsu.ms, reg, packed))
   }
 
-  private def isWriteAB(op: TaskCtrlOpKind.Type, lsu: AmuLsuIO, arith: AmuArithIO, reg: UInt): Bool = {
-    ((op === TaskCtrlOpKind.LoadA || op === TaskCtrlOpKind.LoadB) && (abIdx(lsu.ms) === abIdx(reg))) ||
-      ((op === TaskCtrlOpKind.ZeroTr) && (abIdx(arith.md) === abIdx(reg)))
+  private def isWriteAB(op: TaskCtrlOpKind.Type, lsu: AmuLsuIO, arith: AmuArithIO, reg: UInt, packed: Bool): Bool = {
+    ((op === TaskCtrlOpKind.LoadA || op === TaskCtrlOpKind.LoadB) && sameAB(lsu.ms, reg, packed)) ||
+      ((op === TaskCtrlOpKind.ZeroTr) && sameAB(arith.md, reg, packed))
   }
 
-  private def isWriteC(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, lsu: AmuLsuIO, arith: AmuArithIO, reg: UInt): Bool = {
-    ((op === TaskCtrlOpKind.Compute) && (cIdx(mma.md) === cIdx(reg))) ||
-      ((op === TaskCtrlOpKind.LoadC) && (cIdx(lsu.ms) === cIdx(reg))) ||
-      ((op === TaskCtrlOpKind.ZeroAcc) && (cIdx(arith.md) === cIdx(reg)))
+  private def isWriteC(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, lsu: AmuLsuIO, arith: AmuArithIO, reg: UInt, packed: Bool): Bool = {
+    ((op === TaskCtrlOpKind.Compute) && sameC(mma.md, reg, packed)) ||
+      ((op === TaskCtrlOpKind.LoadC) && sameC(lsu.ms, reg, packed)) ||
+      ((op === TaskCtrlOpKind.ZeroAcc) && sameC(arith.md, reg, packed))
   }
 
-  private def isReadAOfCompute(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, reg: UInt): Bool = {
-    (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms1) === abIdx(reg))
+  private def isReadAOfCompute(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, reg: UInt, packed: Bool): Bool = {
+    (op === TaskCtrlOpKind.Compute) && sameAB(mma.ms1, reg, packed)
   }
 
-  private def isReadBOfCompute(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, reg: UInt): Bool = {
-    (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms2) === abIdx(reg))
+  private def isReadBOfCompute(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, reg: UInt, packed: Bool): Bool = {
+    (op === TaskCtrlOpKind.Compute) && sameAB(mma.ms2, reg, packed)
   }
 
   // ===================== Done handshakes (level-ready) =====================
@@ -448,6 +473,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val cmlLoadOwnerValid = fuCMLLoad.busy && slots(fuCMLLoad.ownerSlot).valid
   val cmlStoreOwnerValid = fuCMLStore.busy && slots(fuCMLStore.ownerSlot).valid
   val computeOwnerValid = fuCompute.busy && slots(fuCompute.ownerSlot).valid
+  val bitOwnerValid = fuBMTE.busy && slots(fuBMTE.ownerSlot).valid
+  io.mteOwnerActive := computeOwnerValid
+  io.bmteOwnerActive := bitOwnerValid
+  (io.BitADC_MicroTask_Config.toSeq ++ io.BitBDC_MicroTask_Config.toSeq ++
+    io.BitCDC_MicroTask_Config.toSeq).foreach(_.MicroTaskEndReady := bitOwnerValid)
 
   io.AML_MicroTask_Config.MicroTaskEndReady := amlOwnerValid
   io.BML_MicroTask_Config.MicroTaskEndReady := bmlOwnerValid
@@ -464,6 +494,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val adcDone = io.ADC_MicroTask_Config.MicroTaskEndValid && io.ADC_MicroTask_Config.MicroTaskEndReady
   val bdcDone = io.BDC_MicroTask_Config.MicroTaskEndValid && io.BDC_MicroTask_Config.MicroTaskEndReady
   val cdcDone = io.CDC_MicroTask_Config.MicroTaskEndValid && io.CDC_MicroTask_Config.MicroTaskEndReady
+  val bitAdcDone = io.BitADC_MicroTask_Config.map(c => c.MicroTaskEndValid && c.MicroTaskEndReady).getOrElse(false.B)
+  val bitBdcDone = io.BitBDC_MicroTask_Config.map(c => c.MicroTaskEndValid && c.MicroTaskEndReady).getOrElse(false.B)
+  val bitCdcDone = io.BitCDC_MicroTask_Config.map(c => c.MicroTaskEndValid && c.MicroTaskEndReady).getOrElse(false.B)
+  when(bitAdcDone || bitBdcDone || bitCdcDone) { assert(bitOwnerValid, "BMTE completion without owner") }
 
   when(io.AML_MicroTask_Config.MicroTaskEndValid) {
     assert(amlOwnerValid, "TaskController: AML done without valid owner")
@@ -550,6 +584,25 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       false.B
     )
 
+    val mma = decodeMma(slot.entry.ctrl)
+    val packed = mma.packedMode =/= 0.U
+    val otherBusy = Mux(packed, fuCompute.busy, fuBMTE.busy)
+    val otherSlot = Mux(packed, fuCompute.ownerSlot, fuBMTE.ownerSlot)
+    val otherMma = decodeMma(slots(otherSlot).entry.ctrl)
+    // Compute-to-compute leases last until CDC completion, including shared
+    // read-only TRs. Loader WAR dependencies may still use the last A/B read.
+    val leaseConflict = otherBusy && (
+      abIdx(mma.ms1) === abIdx(otherMma.ms1) || abIdx(mma.ms1) === abIdx(otherMma.ms2) ||
+      abIdx(mma.ms2) === abIdx(otherMma.ms1) || abIdx(mma.ms2) === abIdx(otherMma.ms2) ||
+      cIdx(mma.md) === cIdx(otherMma.md))
+    val bitReady = io.BitADC_MicroTask_Config.zip(io.BitBDC_MicroTask_Config)
+      .zip(io.BitCDC_MicroTask_Config).zip(io.BMTE_MicroTask_Config).map {
+        case (((a, b), c), te) => !fuBMTE.busy && a.MicroTaskReady && b.MicroTaskReady && c.MicroTaskReady && te.MicroTaskReady
+      }.getOrElse(false.B)
+    val mteReady = !fuCompute.busy && io.ADC_MicroTask_Config.MicroTaskReady &&
+      io.BDC_MicroTask_Config.MicroTaskReady && io.CDC_MicroTask_Config.MicroTaskReady
+    val computeReady = !leaseConflict && Mux(packed, bitReady, mteReady)
+
     val slotFuReady = Mux(
       slotCanConsider,
       MuxLookup(slot.opKind.asUInt, true.B)(Seq(
@@ -561,7 +614,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         TaskCtrlOpKind.ZeroAcc.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
         TaskCtrlOpKind.ZeroTr.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
         TaskCtrlOpKind.Store.asUInt -> (!fuCMLStore.busy && io.CML_MicroTask_Config.StoreMicroTaskReady),
-        TaskCtrlOpKind.Compute.asUInt -> (!fuCompute.busy && io.ADC_MicroTask_Config.MicroTaskReady && io.BDC_MicroTask_Config.MicroTaskReady && io.CDC_MicroTask_Config.MicroTaskReady),
+        TaskCtrlOpKind.Compute.asUInt -> computeReady,
         TaskCtrlOpKind.Release.asUInt -> true.B,
         TaskCtrlOpKind.NopLike.asUInt -> true.B
       )),
@@ -610,7 +663,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     (bmlDone && fuBML.busy && fuBML.ownerSlot === winHead) ||
     (cmlLoadDone && fuCMLLoad.busy && fuCMLLoad.ownerSlot === winHead) ||
     (cmlStoreDone && fuCMLStore.busy && fuCMLStore.ownerSlot === winHead) ||
-    (cdcDone && fuCompute.busy && fuCompute.ownerSlot === winHead)
+    (cdcDone && fuCompute.busy && fuCompute.ownerSlot === winHead) ||
+    (bitCdcDone && fuBMTE.busy && fuBMTE.ownerSlot === winHead)
 
   val headCompletedAfterDone = headSlot.completed || headDoneByFu
   val retireFire = headSlot.valid && headCompletedAfterDone
@@ -1070,6 +1124,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         val kVal = computeKFromMsew(issueMma.mtilek, issueMma.types1)
         val mmaComputeType = decodeMmaComputeType(issueMma)
 
+        when(issueMma.packedMode === 0.U) {
         io.ADC_MicroTask_Config.MicroTaskValid := true.B
         io.BDC_MicroTask_Config.MicroTaskValid := true.B
         io.CDC_MicroTask_Config.MicroTaskValid := true.B
@@ -1102,6 +1157,22 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
         io.MTE_MicroTask_Config.MicroTaskValid := true.B
         io.MTE_MicroTask_Config.computeType := mmaComputeType
+        }.otherwise {
+          assert(cuteMatrixExtension.enableBitMTE.B && issueMma.packedMode =/= 3.U)
+          assert(aReg =/= bReg, "BMTE requires distinct A/B TRs")
+          (io.BitADC_MicroTask_Config.toSeq ++ io.BitBDC_MicroTask_Config.toSeq ++
+            io.BitCDC_MicroTask_Config.toSeq ++ io.BMTE_MicroTask_Config.toSeq).foreach { cfg =>
+            cfg.MicroTaskValid := true.B
+            cfg.packedMode := issueMma.packedMode
+            cfg.isInt4 := issueMma.types1 === 7.U
+            cfg.kslice := issueMma.kslice
+            cfg.pc.foreach(_ := issueCtrl.pc.get)
+            cfg.coreid.foreach(_ := issueCtrl.coreid.get)
+          }
+          io.BitADC_MicroTask_Config.foreach(_.MatrixRegId := aReg)
+          io.BitBDC_MicroTask_Config.foreach(_.MatrixRegId := bReg)
+          io.BitCDC_MicroTask_Config.foreach(_.MatrixRegId := cReg)
+        }
 
         computeIssueEvent.eventType := 0.U
         computeIssueEvent.aReg := aReg
@@ -1297,6 +1368,25 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     assert(slots(owner).readBDone || bdcDone, "TaskController: CDC done before BDC done")
   }
 
+  // Independent state updates allow both engines to complete on the same edge.
+  when(bitAdcDone) {
+    val owner = fuBMTE.ownerSlot
+    assert(!slots(owner).readADone)
+    slots(owner).readADone := true.B
+  }
+  when(bitBdcDone) {
+    val owner = fuBMTE.ownerSlot
+    assert(!slots(owner).readBDone)
+    slots(owner).readBDone := true.B
+  }
+  when(bitCdcDone) {
+    val owner = fuBMTE.ownerSlot
+    assert(slots(owner).readADone || bitAdcDone)
+    assert(slots(owner).readBDone || bitBdcDone)
+    slots(owner).completed := true.B
+    fuBMTE.busy := false.B
+  }
+
   when(retireFire) {
     val retireOH = slotOH(winHead)
 
@@ -1391,21 +1481,25 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       val olderStoreReadsAB = olderIsStore && !olderLsu.isacc
       val olderStoreReadsC = olderIsStore && olderLsu.isacc
 
+      val packedDependency = cuteMatrixExtension.enableBitMTE.B && (
+        (deqOpKind === TaskCtrlOpKind.Compute && decodeMma(deqCtrl).packedMode =/= 0.U) ||
+        (older.opKind === TaskCtrlOpKind.Compute && olderMma.packedMode =/= 0.U))
+
       val olderReadABHit =
-        isReadAB(older.opKind, olderMma, olderLsu, deqEntry.writeRegs(0), olderStoreReadsAB)
+        isReadAB(older.opKind, olderMma, olderLsu, deqEntry.writeRegs(0), olderStoreReadsAB, packedDependency)
       val olderReadCHit =
-        isReadC(older.opKind, olderMma, olderLsu, deqEntry.writeRegs(0), olderStoreReadsC)
+        isReadC(older.opKind, olderMma, olderLsu, deqEntry.writeRegs(0), olderStoreReadsC, packedDependency)
 
       val olderWriteABHitForNewRead =
-        (deqEntry.readValid(0) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.readRegs(0))) ||
-        (deqEntry.readValid(1) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.readRegs(1))) ||
-        (deqEntry.readValid(2) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.readRegs(2)))
+        (deqEntry.readValid(0) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.readRegs(0), packedDependency)) ||
+        (deqEntry.readValid(1) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.readRegs(1), packedDependency)) ||
+        (deqEntry.readValid(2) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.readRegs(2), packedDependency))
       val olderWriteCHitForNewRead =
-        (deqEntry.readValid(0) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.readRegs(0))) ||
-        (deqEntry.readValid(1) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.readRegs(1))) ||
-        (deqEntry.readValid(2) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.readRegs(2)))
-      val olderWriteABHitForNewWrite = deqEntry.writeValid(0) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.writeRegs(0))
-      val olderWriteCHitForNewWrite = deqEntry.writeValid(0) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.writeRegs(0))
+        (deqEntry.readValid(0) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.readRegs(0), packedDependency)) ||
+        (deqEntry.readValid(1) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.readRegs(1), packedDependency)) ||
+        (deqEntry.readValid(2) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.readRegs(2), packedDependency))
+      val olderWriteABHitForNewWrite = deqEntry.writeValid(0) && isWriteAB(older.opKind, olderLsu, olderArith, deqEntry.writeRegs(0), packedDependency)
+      val olderWriteCHitForNewWrite = deqEntry.writeValid(0) && isWriteC(older.opKind, olderMma, olderLsu, olderArith, deqEntry.writeRegs(0), packedDependency)
 
       val olderWritesAB =
         older.opKind === TaskCtrlOpKind.LoadA ||
@@ -1416,8 +1510,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         older.opKind === TaskCtrlOpKind.ZeroAcc ||
         older.opKind === TaskCtrlOpKind.Compute
 
-      val olderReadsABByComputeA = isReadAOfCompute(older.opKind, olderMma, deqEntry.writeRegs(0))
-      val olderReadsABByComputeB = isReadBOfCompute(older.opKind, olderMma, deqEntry.writeRegs(0))
+      val olderReadsABByComputeA = isReadAOfCompute(older.opKind, olderMma, deqEntry.writeRegs(0), packedDependency)
+      val olderReadsABByComputeB = isReadBOfCompute(older.opKind, olderMma, deqEntry.writeRegs(0), packedDependency)
 
       val depCompleteJ = Mux(
         deqOpKind === TaskCtrlOpKind.Release,
@@ -1474,8 +1568,13 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         fuAML.ownerSlot := issueSlotIdx
       }
       is(TaskCtrlOpKind.Compute) {
-        fuCompute.busy := true.B
-        fuCompute.ownerSlot := issueSlotIdx
+        when(issueMma.packedMode === 0.U) {
+          fuCompute.busy := true.B
+          fuCompute.ownerSlot := issueSlotIdx
+        }.otherwise {
+          fuBMTE.busy := true.B
+          fuBMTE.ownerSlot := issueSlotIdx
+        }
       }
       is(TaskCtrlOpKind.Store) {
         fuCMLStore.busy := true.B
@@ -1668,7 +1767,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.perfProbe.loadBDone := loadBFinishEventEn
   io.perfProbe.loadCDone := loadCFinishEventEn
   io.perfProbe.storeDone := storeFinishEventEn
-  io.perfProbe.compDone := computeWriteCFinishEventEn
+  io.perfProbe.compDone := computeWriteCFinishEventEn || bitCdcDone
   io.perfProbe.releaseDone := releaseDone
   io.perfProbe.mmaNonfpDone := computeWriteCFinishEventEn && !decodeMma(slots(fuCompute.ownerSlot).entry.ctrl).isfp
   io.perfProbe.mmaFp16Done := computeWriteCFinishEventEn && (mmaDoneType === MteComputeType.F16F16F32)

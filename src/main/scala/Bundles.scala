@@ -79,6 +79,9 @@ object Bundles {
   }
 
   class AmuMmaIO extends Bundle {
+    // Append above the original packed payload so bits 52:0 stay unchanged.
+    val packedMode = UInt(2.W) // 57:56: ordinary / ternary / binary
+    val kslice     = UInt(3.W) // 55:53
     // rounding mode (xmfrm/xmxrm)
     val rm       = UInt(3.W) // 52 : 50
     // dest matrix register index

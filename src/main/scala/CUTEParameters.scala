@@ -188,12 +188,13 @@ case class MatrixIsaParams(
     enableMxfp4Fp32: Boolean = false,
     enableMxfp8Fp32: Boolean = false,
     enableNvfp4Fp32: Boolean = false,
+    enableBitMTE: Boolean = false,
 ) {
     assert(enableInt84Int32 == false, "enableInt84Int32 is not supported now")
     assert(enableFp32Fp32 == false, "enableFp32Fp32 is not supported now")
 
     def enableMatrix: Boolean =
-        enableInt4Int32 || enableInt8Int32 || enableInt84Int32 ||
+        enableBitMTE || enableInt4Int32 || enableInt8Int32 || enableInt84Int32 ||
         enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16 ||
         enableFp16Fp16 || enableBf16Fp32 || enableFp16Fp32 ||
         enableFp32Fp32 || enableTf32Fp32 ||

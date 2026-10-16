@@ -412,6 +412,23 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     io.matrixPrefetch.zip(TaskCtrl.io.matrixPrefetch).foreach { case (to, from) => to := from }
     
     val MTE = Module(new MatrixTE)
+    val BitADC = Option.when(cuteMatrixExtension.enableBitMTE)(Module(new BitADataController))
+    val BitBDC = Option.when(cuteMatrixExtension.enableBitMTE)(Module(new BitBDataController))
+    val BitCDC = Option.when(cuteMatrixExtension.enableBitMTE)(Module(new BitCDataController))
+    val BMTE = Option.when(cuteMatrixExtension.enableBitMTE)(Module(new BitMatrixTE))
+    BitADC.foreach(_.io.ConfigInfo <> TaskCtrl.io.BitADC_MicroTask_Config.get)
+    BitBDC.foreach(_.io.ConfigInfo <> TaskCtrl.io.BitBDC_MicroTask_Config.get)
+    BitCDC.foreach(_.io.ConfigInfo <> TaskCtrl.io.BitCDC_MicroTask_Config.get)
+    BMTE.foreach { te =>
+      te.io.ConfigInfo <> TaskCtrl.io.BMTE_MicroTask_Config.get
+      te.io.VectorA <> BitADC.get.io.VectorA
+      te.io.VectorB <> BitBDC.get.io.VectorB
+      te.io.MatrixC <> BitCDC.get.io.Matrix_C
+      te.io.MatrixD <> BitCDC.get.io.ResultMatrix_D
+      BitADC.get.io.ComputeGo := te.io.ComputeGo
+      BitBDC.get.io.ComputeGo := te.io.ComputeGo
+      BitCDC.get.io.ComputeGo := te.io.ComputeGo
+    }
 
     val MMU = Module(new LocalMMU)
 
@@ -762,6 +779,22 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         }
     }
 
+    if (cuteMatrixExtension.enableBitMTE) {
+      val sources = Seq(
+        (TaskCtrl.io.mteOwnerActive, ADC.io.MatrixRegId, ADC.io.FromMatrixRegIO),
+        (TaskCtrl.io.mteOwnerActive, BDC.io.MatrixRegId, BDC.io.FromMatrixRegIO),
+        (TaskCtrl.io.bmteOwnerActive, BitADC.get.io.MatrixRegId, BitADC.get.io.FromMatrixRegIO),
+        (TaskCtrl.io.bmteOwnerActive, BitBDC.get.io.MatrixRegId, BitBDC.get.io.FromMatrixRegIO))
+      val router = Module(new ComputeReadRouter(sources.length))
+      for (((owner, regId, port), source) <- sources.zipWithIndex) {
+        router.io.ownerActive(source) := owner
+        router.io.regId(source) := regId
+        router.io.source(source) <> port
+      }
+      for (regIdx <- 0 until ABMatrixRegCount) {
+        router.io.registers(regIdx) <> ABMatrixRegs(regIdx).io.MatrixRegIO.FromDataController
+      }
+    } else {
     for (regIdx <- 0 until ABMatrixRegCount) {
         val dest = ABMatrixRegs(regIdx).io.MatrixRegIO.FromDataController
         dest.BankAddr.valid := false.B
@@ -807,6 +840,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             bdcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.Data.bits(bank)
         )
         BDC.io.FromMatrixRegIO.Data.bits(bank) := Mux1H(bdcDataBitsChoices)
+    }
+
     }
 
     for (regIdx <- 0 until CMatrixRegCount) {
@@ -855,6 +890,55 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     CML.io.ToMatrixRegIO.LoadReadWriteResponse := Mux1H(cmlLoadRwRespChoices)
     CML.io.ToMatrixRegIO.StoreReadWriteResponse := Mux1H(cmlStoreRwRespChoices)
 
+    if (cuteMatrixExtension.enableBitMTE) {
+      val sources = Seq(
+        (TaskCtrl.io.mteOwnerActive, CDC.io.MatrixRegId, CDC.io.FromMatrixRegIO),
+        (TaskCtrl.io.bmteOwnerActive, BitCDC.get.io.MatrixRegId, BitCDC.get.io.FromMatrixRegIO))
+      val responseSource = Seq.fill(CMatrixRegCount)(RegInit(0.U(1.W)))
+      for (regIdx <- 0 until CMatrixRegCount) {
+        val dest = CMatrixRegs(regIdx).io.MatrixRegIO.FromDataController
+        val selected = sources.map { case (owner, regId, _) => owner && regId === regIdx.U }
+        assert(PopCount(VecInit(selected)) <= 1.U, "ACC has multiple compute owners")
+        dest.ReadWriteRequest := Mux1H(selected zip sources.map(_._3.ReadWriteRequest))
+        val readers = sources.zip(selected).map { case ((_, _, port), sel) =>
+          sel && port.ReadBankAddr.map(_.valid).reduce(_ || _) &&
+            dest.ReadWriteResponse(MatrixRegTaskType.ReadFromDataControllerIndex)
+        }
+        when(readers.reduce(_ || _)) { responseSource(regIdx) := OHToUInt(VecInit(readers)) }
+        for (bank <- 0 until CMatrixRegNBanks) {
+          dest.ReadBankAddr(bank).valid := sources.zip(selected).map {
+            case ((_, _, port), sel) => sel && port.ReadBankAddr(bank).valid
+          }.reduce(_ || _)
+          dest.WriteBankAddr(bank).valid := sources.zip(selected).map {
+            case ((_, _, port), sel) => sel && port.WriteBankAddr(bank).valid
+          }.reduce(_ || _)
+          dest.WriteRequestData(bank).valid := sources.zip(selected).map {
+            case ((_, _, port), sel) => sel && port.WriteRequestData(bank).valid
+          }.reduce(_ || _)
+          dest.ReadBankAddr(bank).bits := Mux1H(selected zip sources.map(_._3.ReadBankAddr(bank).bits))
+          dest.WriteBankAddr(bank).bits := Mux1H(selected zip sources.map(_._3.WriteBankAddr(bank).bits))
+          dest.WriteRequestData(bank).bits := Mux1H(selected zip sources.map(_._3.WriteRequestData(bank).bits))
+        }
+        when(selected(1)) {
+          val loader = CMatrixRegs(regIdx).io.MatrixRegIO.FromMemoryLoader
+          assert(loader.LoadReadWriteRequest === 0.U && loader.StoreReadWriteRequest === 0.U,
+            "ACC loader conflicts with a BMTE lease")
+        }
+      }
+      for (((owner, regId, port), source) <- sources.zipWithIndex) {
+        for (bank <- 0 until CMatrixRegNBanks) {
+          val responses = (0 until CMatrixRegCount).map { regIdx =>
+            val response = CMatrixRegs(regIdx).io.MatrixRegIO.FromDataController.ReadResponseData(bank)
+            (responseSource(regIdx) === source.U && response.valid) -> response.bits
+          }
+          port.ReadResponseData(bank).valid := responses.map(_._1).reduce(_ || _)
+          port.ReadResponseData(bank).bits := Mux1H(responses)
+        }
+        port.ReadWriteResponse := Mux1H((0 until CMatrixRegCount).map { regIdx =>
+          (owner && regId === regIdx.U) -> CMatrixRegs(regIdx).io.MatrixRegIO.FromDataController.ReadWriteResponse
+        })
+      }
+    } else {
     for (regIdx <- 0 until CMatrixRegCount) {
         val dest = CMatrixRegs(regIdx).io.MatrixRegIO.FromDataController
         
@@ -895,4 +979,6 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
         cdcSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteResponse
       )
     CDC.io.FromMatrixRegIO.ReadWriteResponse := Mux1H(cdcRwRespChoices)
+    }
+
 }
