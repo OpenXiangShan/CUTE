@@ -94,10 +94,12 @@ class BitMatrixTE(implicit p: Parameters) extends CuteModule {
     }
     when(valid(0)) {
       for (node <- 0 until 16) {
-        val sum8 = terms8(node * 2) +& terms8(node * 2 + 1)
-        val sum4 = (terms4(node * 4) +& terms4(node * 4 + 1)) +&
-          (terms4(node * 4 + 2) +& terms4(node * 4 + 3))
-        pipe0(pe)(node) := Mux(isInt4, sum4.pad(10), sum8)
+        val pair4Lo = terms4(node * 4) +& terms4(node * 4 + 1)
+        val pair4Hi = terms4(node * 4 + 2) +& terms4(node * 4 + 3)
+        // Select operands before the final addition so i8 and i4 share it.
+        val operand0 = Mux(isInt4, pair4Lo.pad(9), terms8(node * 2))
+        val operand1 = Mux(isInt4, pair4Hi.pad(9), terms8(node * 2 + 1))
+        pipe0(pe)(node) := operand0 +& operand1
       }
     }
     when(valid(1)) { for (node <- 0 until 8) pipe1(pe)(node) := pipe0(pe)(node * 2) +& pipe0(pe)(node * 2 + 1) }
