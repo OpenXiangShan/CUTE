@@ -668,10 +668,10 @@ case class CuteParams(
     // Elastic safety buffer on every parameterized Omega input.
     val EnableOmegaInputQueue: Boolean = true,
 
-    // Bounded AB normal-load lookahead, independent of the task K beat count.
+    // Reserved for AB lookahead; the current normal-load path uses per-bank FIFOs.
     val ABPerfectBatchWindowDepth: Int = 8,
 
-    // Enable deterministic task-start seed selection for AB normal loads.
+    // Reserved seed control; the current normal-load path does not invoke seed lookup.
     val ABPerfectBatchSeedEnable: Boolean = true,
 
     // Shared AML/BML request-side C-tail mitigation; transpose and legacy paths stay natural.

@@ -34,6 +34,41 @@ class IdentityFriendlyOmegaSpec extends AnyFlatSpec with ChiselScalatestTester {
       }
     }
   }
+  for ((inputs, outputs) <- Seq((4, 4), (8, 4))) {
+    it should s"fall back to ordinary routing for $inputs inputs and $outputs outputs" in {
+      test(new OmegaResponseRouter(
+        n = inputs, dataWidth = 32, sourceIdWidth = 16,
+        bankIdWidth = chisel3.util.log2Ceil(inputs), bankIdOffset = 8,
+        outCount = outputs, bankCount = inputs, identityFriendlyInput = true
+      )).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+        dut.io.timeStamp.poke(0.U)
+        val pending = scala.collection.mutable.Set((0 until inputs): _*)
+        val received = scala.collection.mutable.Set.empty[Int]
+        for (cycle <- 0 until 40) {
+          for (lane <- 0 until inputs) {
+            dut.io.in(lane).valid.poke(pending.contains(lane).B)
+            dut.io.in(lane).bits.sourceId.poke(((lane << 8) | lane).U)
+            dut.io.in(lane).bits.data.poke(lane.U)
+            dut.io.in(lane).bits.coherent.poke(true.B)
+          }
+          for (lane <- 0 until outputs) {
+            val ready = cycle >= 5 && (cycle + lane) % 3 != 0
+            dut.io.out(lane).ready.poke(ready.B)
+            if (ready && dut.io.out(lane).valid.peek().litToBoolean) {
+              val token = dut.io.out(lane).bits.data.peek().litValue.toInt
+              assert(token / (inputs / outputs) == lane)
+              assert(received.add(token), "duplicate response")
+            }
+          }
+          val fired = pending.filter(lane => dut.io.in(lane).ready.peek().litToBoolean).toSeq
+          dut.clock.step()
+          pending --= fired
+        }
+        assert(pending.isEmpty && received.size == inputs)
+      }
+    }
+  }
+
 }
 
 /**

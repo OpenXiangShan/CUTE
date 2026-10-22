@@ -230,8 +230,10 @@ class OmegaResponseRouter(
 
   require(outputCount <= n, s"output channel count ($outputCount) must be <= input channel count ($n)")
   require(n % outputCount == 0, s"input channel count ($n) must be divisible by output channel count ($outputCount)")
-  require(!identityFriendlyInput || (n == 8 && outputCount == n && totalBanks == n),
-    "identity-friendly Omega is currently defined for the full 8x8 topology")
+  // The optional input permutation only optimizes the full 8x8 topology.
+  // Other geometries retain the ordinary backpressured Omega fabric.
+  private val useIdentityFriendlyInput = identityFriendlyInput &&
+    n == 8 && outputCount == n && totalBanks == n
 
   val io = IO(new Bundle {
     val timeStamp = Input(UInt(64.W))
@@ -301,7 +303,7 @@ class OmegaResponseRouter(
   private val physicalDest = io.in.map(in => destinationLaneOf(in.bits.sourceId))
   private val idealSurvivors = if (n == 1) {
     physicalValid.head.asUInt
-  } else if (identityFriendlyInput) {
+  } else if (useIdentityFriendlyInput) {
     val physicalAtInternal = physicalValid.indices.sortBy(OmegaTopology.perfectShuffle(_, n))
     val internalSurvivors = OmegaTopology.survivorMask(
       physicalAtInternal.map(physicalValid),
@@ -323,7 +325,7 @@ class OmegaResponseRouter(
     val fabric = Seq.fill(stageCount + 1)(Wire(Vec(n, Decoupled(new RoutedResponse(dataWidth, sourceIdWidth)))))
 
     for (i <- 0 until n) {
-      val internalInput = if (identityFriendlyInput) {
+      val internalInput = if (useIdentityFriendlyInput) {
         OmegaTopology.perfectShuffle(i, n)
       } else {
         i

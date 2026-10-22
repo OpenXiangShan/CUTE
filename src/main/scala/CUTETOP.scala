@@ -466,7 +466,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             ResponseBridgeQueueDepth,
             true,
             amlBridgeContext,
-            identityFriendlyInput = AMLResponseChannelCount == ABMatrixRegNBanks
+            identityFriendlyInput = ABMatrixRegNBanks == 8 && AMLResponseChannelCount == 8
         )
     } else {
         connectWithResponseArbiter(AML.io.LocalMMUIO, MMU.io.ALocalMMUIO, ABMatrixRegNBanks, amlBridgeContext)
@@ -509,7 +509,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             ResponseBridgeQueueDepth,
             true,
             bmlBridgeContext,
-            identityFriendlyInput = BMLResponseChannelCount == ABMatrixRegNBanks
+            identityFriendlyInput = ABMatrixRegNBanks == 8 && BMLResponseChannelCount == 8
         )
     } else {
         connectWithResponseArbiter(BML.io.LocalMMUIO, MMU.io.BLocalMMUIO, ABMatrixRegNBanks, bmlBridgeContext)

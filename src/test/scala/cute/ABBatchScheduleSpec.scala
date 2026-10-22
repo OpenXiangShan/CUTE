@@ -12,30 +12,32 @@ import scala.collection.mutable
 class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "shared AML/BML batch traversal"
 
-  private def params(mode: String, enabled: Boolean, bridgeConfig: String): Parameters = new Config((_, _, _) => {
+  private def params(mode: String, enabled: Boolean, bridgeConfig: String, multiplier: Int): Parameters = new Config((_, _, _) => {
     case PerfCounterOptionsKey => PerfCounterOptions(
       enablePerfPrint = false, enablePerfDB = false,
       perfLevel = XSPerfLevel.NORMAL, perfDBHartID = 0)
     case CuteParamsKey => CuteParams.CUTE_8Tops_128SCP.copy(
       LoaderBridgeChannelConfig = bridgeConfig, L2NBanks = 8, Tensor_K = 512,
       ABBatchScheduleEnable = enabled, ABBatchScheduleMode = mode,
-      ABBatchRotateOffset = 1, ABBatchPermutationMul = 17,
+      ABBatchRotateOffset = 1, ABBatchPermutationMul = multiplier,
       Debug = CuteDebugParams.NoDebug, EnableDifftest = false)
   })
 
   for {
     label <- Seq("AML", "BML")
-    (mode, enabled, bridgeConfig) <- Seq(
-      ("Natural", true, "A8B8CL8CS8"), ("Rotate", true, "A8B8CL8CS8"),
-      ("Permute", true, "A8B8CL8CS8"), ("Rotate", false, "A8B8CL8CS8"),
-      ("Rotate", true, "A4B4CL8CS8"))
+    (mode, enabled, bridgeConfig, multiplier) <- Seq(
+      ("Natural", true, "A8B8CL8CS8", 17), ("Rotate", true, "A8B8CL8CS8", 17),
+      ("Permute", true, "A8B8CL8CS8", 17), ("Rotate", false, "A8B8CL8CS8", 17),
+      ("Rotate", true, "A4B4CL8CS8", 17), ("Permute", true, "A8B8CL8CS8", 3))
     beats <- Seq(1, 2, 4, 8)
   } {
-    it should s"preserve $label data identities for $mode enabled=$enabled $bridgeConfig K=$beats under stalls" in {
-      implicit val p: Parameters = params(mode, enabled, bridgeConfig)
+    it should s"preserve $label data identities for $mode enabled=$enabled $bridgeConfig multiplier=$multiplier K=$beats under stalls" in {
+      implicit val p: Parameters = params(mode, enabled, bridgeConfig, multiplier)
       test(new MultiChannelsABMemLoader(label)) { dut =>
         for (epoch <- 0 until 2) {
-          val rows = 27 // three complete groups distinguish Rotate from Permute; partial final group
+          // Multiplier 3 falls back with three groups, then resumes permutation
+          // with two groups on the next task. Both tasks have a partial group.
+          val rows = if (multiplier == 3 && epoch == 1) 19 else 27
           val base = BigInt("80046200", 16)
           val stride = BigInt(576)
           val pending = Array.fill(8)(mutable.Queue.empty[(BigInt, BigInt)])
@@ -75,7 +77,8 @@ class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
             dut.reset.poke(false.B)
           }
           cfg.MatrixRegTensor_M.poke(rows.U)
-          cfg.MatrixRegTensor_K.poke((beats * 64).U)
+          // TaskController supplies the load beat count, not a byte count.
+          cfg.MatrixRegTensor_K.poke(beats.U)
           cfg.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr.poke(base.U)
           cfg.ApplicationTensor_A.ApplicationTensor_A_Stride_M.poke(stride.U)
           cfg.ApplicationTensor_A.K_Beat_Count.poke(beats.U)
@@ -136,15 +139,16 @@ class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
                 val ordinalGroup = laneRequests(lane) / beats
                 val expectedBeat = laneRequests(lane) % beats
                 val completeGroups = rows / 8
-                val reordered = enabled && bridgeConfig == "A8B8CL8CS8" && ordinalGroup < completeGroups
+                val permutationValid = mode != "Permute" || BigInt(multiplier).gcd(BigInt(completeGroups)) == 1
+                val reordered = enabled && permutationValid && bridgeConfig == "A8B8CL8CS8" && ordinalGroup < completeGroups
                 val expectedGroup = if (!reordered || mode == "Natural") ordinalGroup
                   else if (mode == "Rotate") (ordinalGroup + 1) % completeGroups
-                  else (17 * ordinalGroup + 1) % completeGroups
+                  else (multiplier * ordinalGroup + 1) % completeGroups
                 assert(row == expectedGroup * 8 + lane && beat == expectedBeat)
                 laneRequests(lane) += 1
                 if (firstRow(lane).isEmpty) {
                   firstRow(lane) = Some(row)
-                  val reordered = enabled && mode != "Natural" && bridgeConfig == "A8B8CL8CS8"
+                  val reordered = enabled && permutationValid && mode != "Natural" && bridgeConfig == "A8B8CL8CS8"
                   assert(row == lane + (if (reordered) 8 else 0))
                   if (beats == 1) {
                     val bank = ((addr >> 6) & 7).toInt

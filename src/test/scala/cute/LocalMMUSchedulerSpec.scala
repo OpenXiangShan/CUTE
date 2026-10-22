@@ -11,7 +11,7 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
   private implicit val params: Parameters = LocalMMUSchedulerTestUtils.parameters()
 
   private def init(dut: CollisionAwareLocalMMUScheduler): Unit = {
-    for (source <- 0 until LocalMMUSourceClass.Count; lane <- 0 until 8) {
+    for (source <- 0 until LocalMMUSourceClass.Count; lane <- dut.io.llc.indices) {
       dut.io.candidates(source)(lane).valid.poke(false.B)
       val request = dut.io.candidates(source)(lane).bits.request
       request.RequestAddr.poke(0.U)
@@ -155,7 +155,7 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
-  it should "hold the complete selected request stable through ten stalled cycles" in {
+  it should "forward an unchanged candidate through ten stalled cycles" in {
     test(scheduler).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       init(dut)
       val source = LocalMMUSourceClass.CLoad
@@ -203,7 +203,7 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
         dut.io.candidates(source)(lane).valid.poke(false.B)
       }
 
-      dut.io.held.expect("hAA".U)
+      dut.io.held.expect(0.U)
       for (_ <- 0 until 10) {
         for (lane <- 0 until 8 if lane % 2 == 1) {
           dut.io.llc(lane).valid.expect(true.B)
@@ -260,7 +260,7 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
-  it should "reserve a held Omega route against later static-priority candidates" in {
+  it should "reselect current Omega candidates after a stall without consuming the loser" in {
     test(scheduler).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       init(dut)
       val source = LocalMMUSourceClass.CLoad
@@ -269,28 +269,17 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.candidates(source)(1).bits.returnBank.poke(0.U)
       dut.io.candidates(source)(1).bits.physicalInput.poke(0.U)
       dut.clock.step()
-
-      // A compatible route in another physical input can progress while the
-      // original request remains held.
-      dut.io.candidates(source)(7).valid.poke(true.B)
-      dut.io.candidates(source)(7).bits.returnBank.poke(7.U)
-      dut.io.candidates(source)(7).bits.physicalInput.poke(7.U)
-      dut.io.candidates(source)(7).ready.expect(true.B)
-      dut.clock.step()
-      dut.io.candidates(source)(7).valid.poke(false.B)
-
-      // Lane 0 would win the first Omega switch over held lane 1 if admitted.
       dut.io.candidates(source)(0).valid.poke(true.B)
       dut.io.candidates(source)(0).bits.returnBank.poke(0.U)
       dut.io.candidates(source)(0).bits.physicalInput.poke(0.U)
-      dut.io.candidates(source)(0).ready.expect(false.B)
-      dut.io.survivor(0).expect("b00000010".U)
-      dut.io.llc(1).valid.expect(true.B)
-      dut.io.selectedOwner(1).expect(source.U)
-
-      dut.io.llc(1).ready.poke(true.B)
-      dut.clock.step()
       dut.io.candidates(source)(0).ready.expect(true.B)
+      dut.io.candidates(source)(1).ready.expect(false.B)
+      dut.io.survivor(0).expect(1.U)
+      dut.clock.step()
+      dut.io.candidates(source)(0).valid.poke(false.B)
+      dut.io.llc(1).ready.poke(true.B)
+      dut.io.candidates(source)(1).ready.expect(true.B)
+      dut.io.survivor(0).expect(2.U)
     }
   }
 
@@ -329,4 +318,36 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.survivor(3).expect("b00000001".U)
     }
   }
+  for (source <- Seq(LocalMMUSourceClass.A, LocalMMUSourceClass.B)) {
+    it should s"drain non-identity four-bank AB source $source with partial issue" in {
+      test(new CollisionAwareLocalMMUScheduler(
+        laneCount = 4, bankCount = 4, aResponseChannels = 4, bResponseChannels = 4,
+        cLoadResponseChannels = 4, cStoreResponseChannels = 4,
+        aLegacy = false, bLegacy = false, cLoadLegacy = false, cStoreLegacy = false
+      )).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+        init(dut)
+        val pending = scala.collection.mutable.Set(0, 1, 2, 3)
+        val fired = scala.collection.mutable.Set.empty[Int]
+        for (cycle <- 0 until 16) {
+          for (lane <- 0 until 4) {
+            val candidate = dut.io.candidates(source)(lane)
+            candidate.valid.poke(pending.contains(lane).B)
+            candidate.bits.physicalInput.poke(((lane + 1) % 4).U)
+            candidate.bits.returnBank.poke(lane.U)
+            candidate.bits.request.RequestSourceID.poke(lane.U)
+            dut.io.llc(lane).ready.poke((cycle >= 3).B)
+          }
+          val accepted = pending.filter(lane => dut.io.candidates(source)(lane).ready.peek().litToBoolean).toSeq
+          for (lane <- accepted) {
+            dut.io.llc(lane).bits.RequestSourceID.expect(lane.U)
+            assert(fired.add(lane))
+          }
+          dut.clock.step()
+          pending --= accepted
+        }
+        assert(pending.isEmpty && fired.size == 4)
+      }
+    }
+  }
+
 }

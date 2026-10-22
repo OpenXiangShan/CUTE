@@ -27,11 +27,11 @@ class LocalMMUSchedulerCandidate(val bankCount: Int)(implicit p: Parameters) ext
 }
 
 /**
- * Predicts C response fabrics, then fills every free LLC lane in
- * CLoad > A > AScale > B > BScale > CStore order. A/B are guaranteed i-to-i
- * by their software layout and use only physical-bank deduplication here. A
- * selected transaction that meets backpressure is retained until it fires.
-  */
+ * Admit current candidates in CLoad > A > AScale > B > BScale > CStore order.
+ * This is a combinational Decoupled arbiter: only fire transfers ownership.
+ * In particular, grouped arbiters and allocated source IDs may change while
+ * stalled, so no unaccepted payload or route is reserved here.
+ */
 class CollisionAwareLocalMMUScheduler(
   laneCount: Int,
   bankCount: Int,
@@ -47,7 +47,6 @@ class CollisionAwareLocalMMUScheduler(
   require(isPow2(laneCount) && laneCount == bankCount)
 
   private val ownerWidth = log2Ceil(LocalMMUSourceClass.Count + 1)
-  private val bankWidth = log2Ceil(bankCount)
 
   val io = IO(new Bundle {
     val candidates = Flipped(Vec(LocalMMUSourceClass.Count,
@@ -63,12 +62,6 @@ class CollisionAwareLocalMMUScheduler(
     val cLoadRefill = Output(UInt(laneCount.W))
   })
 
-  val heldValid = RegInit(VecInit(Seq.fill(laneCount)(false.B)))
-  val heldOwner = RegInit(VecInit(Seq.fill(laneCount)(LocalMMUSourceClass.None.U(ownerWidth.W))))
-  val heldRequest = Reg(Vec(laneCount, new MMURequestIO))
-  val heldPhysicalInput = Reg(Vec(laneCount, UInt(bankWidth.W)))
-  val heldReturnBank = Reg(Vec(laneCount, UInt(bankWidth.W)))
-
   for (source <- 0 until LocalMMUSourceClass.Count; lane <- 0 until laneCount) {
     io.candidates(source)(lane).ready := false.B
   }
@@ -79,11 +72,8 @@ class CollisionAwareLocalMMUScheduler(
     legacy: Boolean,
     candidateEligible: Seq[Bool]
   ): UInt = {
-    val held = (0 until laneCount).map { lane =>
-      heldValid(lane) && heldOwner(lane) === source.U
-    }
     val valids = (0 until laneCount).map { lane =>
-      held(lane) || (!heldValid(lane) && io.candidates(source)(lane).valid && candidateEligible(lane))
+      io.candidates(source)(lane).valid && candidateEligible(lane)
     }
     // Omega input position is the addressed L2 bank, not the request lane.
     // Select one deterministic owner for duplicate physical inputs before
@@ -91,29 +81,18 @@ class CollisionAwareLocalMMUScheduler(
     // the original request lanes.
     val physicalOwners = (0 until bankCount).map { physical =>
       val owner = Wire(Vec(laneCount, Bool()))
-      val heldMatches = (0 until laneCount).map { lane =>
-        held(lane) && heldPhysicalInput(lane) === physical.U
-      }
-      val hasHeldOwner = heldMatches.reduce(_ || _)
-      var seenHeld: Bool = false.B
-      var seenNew: Bool = false.B
+      var seen: Bool = false.B
       for (lane <- 0 until laneCount) {
-        val lanePhysical = Mux(heldValid(lane), heldPhysicalInput(lane),
-          io.candidates(source)(lane).bits.physicalInput)
-        val newMatch = !held(lane) && valids(lane) && lanePhysical === physical.U
-        owner(lane) := Mux(hasHeldOwner,
-          heldMatches(lane) && !seenHeld,
-          newMatch && !seenNew)
-        seenHeld = seenHeld || heldMatches(lane)
-        seenNew = seenNew || newMatch
+        val matches = valids(lane) && io.candidates(source)(lane).bits.physicalInput === physical.U
+        owner(lane) := matches && !seen
+        seen = seen || matches
       }
       owner
     }
     val physicalValids = physicalOwners.map(_.asUInt.orR)
     val physicalDestinations = (0 until bankCount).map { physical =>
       val destinations = (0 until laneCount).map { lane =>
-        val destinationBank = Mux(heldValid(lane), heldReturnBank(lane),
-          io.candidates(source)(lane).bits.returnBank)
+        val destinationBank = io.candidates(source)(lane).bits.returnBank
         OmegaTopology.destinationLane(destinationBank,
           laneCount, responseChannels, bankCount)
       }
@@ -122,22 +101,10 @@ class CollisionAwareLocalMMUScheduler(
     val survivorPhysical = if (legacy) {
       VecInit(physicalValids).asUInt
     } else {
-      val heldMask = VecInit(held).asUInt
-      val heldPhysicalValids = physicalOwners.map(owner =>
-        (0 until laneCount).map(lane => owner(lane) && held(lane)).reduce(_ || _))
-      val heldOnlyPhysical = OmegaTopology.survivorMask(heldPhysicalValids, physicalDestinations)
-
-      // A held batch was admitted as a collision-free set. Do not let a new
-      // request exploit the router's static priority and displace one of its
-      // routes before the complete batch has left LocalMMU.
-      when(heldMask.orR) {
-        assert((VecInit(heldPhysicalValids).asUInt & ~heldOnlyPhysical) === 0.U,
-          s"LocalMMU $source held routes are not Omega-compatible")
-      }
       OmegaTopology.incrementalCompatibleMask(
         physicalValids,
         physicalDestinations,
-        heldPhysicalValids
+        Seq.fill(bankCount)(false.B)
       )
     }
     VecInit((0 until laneCount).map { lane =>
@@ -147,7 +114,9 @@ class CollisionAwareLocalMMUScheduler(
     }).asUInt
   }
 
-  /** First-owner physical-bank deduplication for guaranteed i-to-i AB traffic. */
+  /** Full-width eight-bank AB admission. Identity layouts use the optimized
+    * fabric; other layouts rely on its ordinary response backpressure.
+    */
   private def identityMask(source: Int, candidateEligible: Seq[Bool]): UInt = {
     val accepted = (0 until laneCount).map { lane =>
       val candidate = io.candidates(source)(lane)
@@ -170,7 +139,7 @@ class CollisionAwareLocalMMUScheduler(
   )
 
   // Commit tiers progressively. Request lanes and addressed L2 banks selected
-  // by held/higher-priority traffic are unavailable to lower tiers.
+  // by higher-priority traffic are unavailable to lower tiers.
   val selectedBySource = Wire(Vec(LocalMMUSourceClass.Count, UInt(laneCount.W)))
   val survivorBySource = Wire(Vec(LocalMMUSourceClass.Count, UInt(laneCount.W)))
   val evaluatedBySource = Wire(Vec(LocalMMUSourceClass.Count, UInt(laneCount.W)))
@@ -179,10 +148,8 @@ class CollisionAwareLocalMMUScheduler(
   survivorBySource := VecInit(Seq.fill(LocalMMUSourceClass.Count)(0.U(laneCount.W)))
   evaluatedBySource := VecInit(Seq.fill(LocalMMUSourceClass.Count)(0.U(laneCount.W)))
   collisionBySource := VecInit(Seq.fill(LocalMMUSourceClass.Count)(0.U(laneCount.W)))
-  var occupiedLanes: Seq[Bool] = (0 until laneCount).map(heldValid(_))
-  var occupiedPhysicalInputs: Seq[Bool] = (0 until bankCount).map { physical =>
-    (0 until laneCount).map(lane => heldValid(lane) && heldPhysicalInput(lane) === physical.U).reduce(_ || _)
-  }
+  var occupiedLanes: Seq[Bool] = Seq.fill(laneCount)(false.B)
+  var occupiedPhysicalInputs: Seq[Bool] = Seq.fill(bankCount)(false.B)
   for (source <- priorityOrder) {
     val tierEligible = (0 until laneCount).map { lane =>
       val candidate = io.candidates(source)(lane)
@@ -196,16 +163,16 @@ class CollisionAwareLocalMMUScheduler(
       case LocalMMUSourceClass.CStore =>
         domainMask(source, cStoreResponseChannels, cStoreLegacy, tierEligible)
       case LocalMMUSourceClass.A =>
-        if (!aLegacy && aResponseChannels == laneCount) identityMask(source, tierEligible)
+        if (!aLegacy && laneCount == 8 && aResponseChannels == laneCount) identityMask(source, tierEligible)
         else domainMask(source, aResponseChannels, aLegacy, tierEligible)
       case LocalMMUSourceClass.B =>
-        if (!bLegacy && bResponseChannels == laneCount) identityMask(source, tierEligible)
+        if (!bLegacy && laneCount == 8 && bResponseChannels == laneCount) identityMask(source, tierEligible)
         else domainMask(source, bResponseChannels, bLegacy, tierEligible)
       case _ => VecInit((0 until laneCount).map(lane =>
         io.candidates(source)(lane).valid && tierEligible(lane))).asUInt
     }
     val evaluated = VecInit((0 until laneCount).map(lane =>
-      io.candidates(source)(lane).valid && tierEligible(lane) && !heldValid(lane))).asUInt
+      io.candidates(source)(lane).valid && tierEligible(lane))).asUInt
     val selected = (0 until laneCount).map { lane =>
       io.candidates(source)(lane).valid && tierEligible(lane) && tierSurvivor(lane)
     }
@@ -234,10 +201,11 @@ class CollisionAwareLocalMMUScheduler(
   for (source <- 0 until LocalMMUSourceClass.Count) {
     val offered = VecInit(io.candidates(source).map(_.valid)).asUInt
     io.evaluated(source) := evaluatedBySource(source)
-    io.priorityBlocked(source) := offered & ~evaluatedBySource(source) & ~heldValid.asUInt
+    io.priorityBlocked(source) := offered & ~evaluatedBySource(source)
     io.selectedFire(source) := VecInit(io.candidates(source).map(_.fire)).asUInt
   }
-  io.held := heldValid.asUInt
+  // Preserve the performance interface; no requests are held by this arbiter.
+  io.held := 0.U
   val abRefillFire = io.selectedFire(LocalMMUSourceClass.A) |
     io.selectedFire(LocalMMUSourceClass.AScale) |
     io.selectedFire(LocalMMUSourceClass.B) |
@@ -254,43 +222,21 @@ class CollisionAwareLocalMMUScheduler(
     }
 
     val selectedRequest = Wire(new MMURequestIO)
-    val selectedPhysicalInput = Wire(UInt(bankWidth.W))
-    val selectedDestinationBank = Wire(UInt(bankWidth.W))
     selectedRequest := 0.U.asTypeOf(selectedRequest)
-    selectedPhysicalInput := 0.U
-    selectedDestinationBank := 0.U
     for (source <- 0 until LocalMMUSourceClass.Count) {
       when(selected === source.U) {
         selectedRequest := io.candidates(source)(lane).bits.request
-        selectedPhysicalInput := io.candidates(source)(lane).bits.physicalInput
-        selectedDestinationBank := io.candidates(source)(lane).bits.returnBank
       }
     }
 
-    io.llc(lane).valid := Mux(heldValid(lane), true.B, selected =/= LocalMMUSourceClass.None.U)
-    io.llc(lane).bits := Mux(heldValid(lane), heldRequest(lane), selectedRequest)
-    io.selectedOwner(lane) := Mux(heldValid(lane), heldOwner(lane), selected)
+    io.llc(lane).valid := selected =/= LocalMMUSourceClass.None.U
+    io.llc(lane).bits := selectedRequest
+    io.selectedOwner(lane) := selected
 
     for (source <- 0 until LocalMMUSourceClass.Count) {
-      io.candidates(source)(lane).ready := io.llc(lane).fire && io.selectedOwner(lane) === source.U
+      io.candidates(source)(lane).ready := io.llc(lane).ready && selected === source.U
     }
 
-    when(!heldValid(lane) && io.llc(lane).valid && !io.llc(lane).ready) {
-      heldValid(lane) := true.B
-      heldOwner(lane) := selected
-      heldRequest(lane) := selectedRequest
-      heldPhysicalInput(lane) := selectedPhysicalInput
-      heldReturnBank(lane) := selectedDestinationBank
-    }.elsewhen(heldValid(lane) && io.llc(lane).fire) {
-      heldValid(lane) := false.B
-      heldOwner(lane) := LocalMMUSourceClass.None.U
-    }
-
-    when(RegNext(io.llc(lane).valid && !io.llc(lane).ready, false.B)) {
-      assert(io.llc(lane).valid, s"LocalMMU LLC lane $lane dropped a stalled request")
-      assert(io.llc(lane).bits === RegEnable(io.llc(lane).bits, io.llc(lane).valid && !io.llc(lane).ready),
-        s"LocalMMU LLC lane $lane changed a stalled request")
-    }
     assert(PopCount((0 until LocalMMUSourceClass.Count).map(source => io.candidates(source)(lane).fire)) <= 1.U,
       s"LocalMMU LLC lane $lane accepted multiple owners")
   }

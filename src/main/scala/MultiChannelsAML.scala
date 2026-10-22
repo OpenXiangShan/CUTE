@@ -66,6 +66,9 @@ class MultiChannelsABMemLoader(
         (if (label == "BML") BMLResponseChannelCount else AMLResponseChannelCount) ==
             ABMatrixRegNBanks && ABMatrixRegNBanks == L2NBanks && L2NBanks == 8
 
+    // A non-bijective permutation falls back to natural order for this task.
+    val batchPermutationValid = RegInit(true.B)
+
     val currentM = Seq.tabulate(ABMatrixRegNBanks)(i => RegInit(i.U(MatrixRegMaxTensorDimBitSize.W)))
     val currentK = Seq.fill(ABMatrixRegNBanks)(RegInit(0.U(MatrixRegMaxTensorDimBitSize.W)))
     private val bankRespMetaWidth = RegAddrWidth + 1
@@ -214,7 +217,7 @@ class MultiChannelsABMemLoader(
                 val completeBatchCount = MatrixRegTensor_M / ABMatrixRegNBanks.U
                 val traversalBatch = traversalRow / ABMatrixRegNBanks.U
                 val scheduleActive = ABBatchScheduleEnable.B && normalScheduleFullWidth.B &&
-                    traversalBatch < completeBatchCount
+                    traversalBatch < completeBatchCount && batchPermutationValid
                 val physicalBatch = ABBatchSchedule.batch(traversalBatch, completeBatchCount,
                     ABBatchScheduleMode, ABBatchRotateOffset, ABBatchPermutationMul)
                 val physicalRow = Mux(scheduleActive,
@@ -352,11 +355,8 @@ class MultiChannelsABMemLoader(
                 val completeBatches = ConfigInfo.MatrixRegTensor_M / ABMatrixRegNBanks.U
                 val validCounts = (1 to (Tensor_MN / ABMatrixRegNBanks)).filter(
                     count => ABBatchSchedule.coprime(ABBatchPermutationMul, count))
-                when(!ConfigInfo.Is_Transpose && ConfigInfo.LoadTaskInfo.Is_FullLoad) {
-                    assert(completeBatches === 0.U || VecInit(validCounts.map(
-                        count => completeBatches === count.U)).asUInt.orR,
-                        "AB permutation multiplier must be coprime to the task's complete batch count")
-                }
+                batchPermutationValid := completeBatches === 0.U || validCounts.map(
+                    count => completeBatches === count.U).reduceOption(_ || _).getOrElse(false.B)
             }
 
             Is_ZeroLoad := ConfigInfo.LoadTaskInfo.Is_ZeroLoad

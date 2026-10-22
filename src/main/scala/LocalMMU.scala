@@ -119,6 +119,8 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     val sourceIsAcc = Seq(true, true, false, false, false, false)
     val sourceIsA = Seq(false, false, true, false, false, false)
 
+    // The combinational scheduler consumes this ID on the same fire as the loader.
+    // No unaccepted request retains an earlier allocation across backpressure.
     for (mmuio <- abcss) {
         mmuio.ConherentRequsetSourceID.valid := !allocFull
         mmuio.ConherentRequsetSourceID.bits := allocatedId
