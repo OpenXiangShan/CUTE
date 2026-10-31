@@ -764,6 +764,7 @@ case class CuteParams(
     require((FPEparams.ScaleElementWidth == 8), "FPEparams.ScaleElementWidth must be 8")
 
     def cuteFpeConfig: CuteFpeConfig = CuteFpeConfig(
+        enableInt8Int32 = MatrixExtension.enableInt8Int32,
         enableTf32Fp32 = MatrixExtension.enableTf32Fp32,
         enableFp16Fp32 = MatrixExtension.enableFp16Fp32,
         enableMxfp4Fp32 = MatrixExtension.enableMxfp4Fp32,
