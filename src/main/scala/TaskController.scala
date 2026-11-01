@@ -696,16 +696,18 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         computeType := MteComputeType.ComputeTypeUndef
       }
     }.otherwise {
-      when(mma.types1 === "b000".U && mma.types2 === "b000".U) {
-        computeType := MteComputeType.U8U8I32
-      }.elsewhen(mma.types1 === "b100".U && mma.types2 === "b000".U) {
-        computeType := MteComputeType.I8U8I32
-      }.elsewhen(mma.types1 === "b000".U && mma.types2 === "b100".U) {
-        computeType := MteComputeType.U8I8I32
-      }.elsewhen(mma.types1 === "b100".U && mma.types2 === "b100".U) {
-        computeType := MteComputeType.I8I8I32
-      }.otherwise {
-        computeType := MteComputeType.ComputeTypeUndef
+      if (enableMteInt8) {
+        when(mma.types1 === "b000".U && mma.types2 === "b000".U) {
+          computeType := MteComputeType.U8U8I32
+        }.elsewhen(mma.types1 === "b100".U && mma.types2 === "b000".U) {
+          computeType := MteComputeType.I8U8I32
+        }.elsewhen(mma.types1 === "b000".U && mma.types2 === "b100".U) {
+          computeType := MteComputeType.U8I8I32
+        }.elsewhen(mma.types1 === "b100".U && mma.types2 === "b100".U) {
+          computeType := MteComputeType.I8I8I32
+        }.otherwise {
+          computeType := MteComputeType.ComputeTypeUndef
+        }
       }
     }
     computeType
