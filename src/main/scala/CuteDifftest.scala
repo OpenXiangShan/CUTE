@@ -1,7 +1,7 @@
 package cute
 
 import chisel3._
-import difftest.{DiffAmuFinishEvent, DiffAmuHashEvent, DifftestBundle, DifftestModule}
+import difftest.{DiffAmuWritebackEvent, DiffAmuHashEvent, DifftestBundle, DifftestModule}
 import difftest.common.DifftestWiring
 import difftest.util.MatrixHash
 import freechips.rocketchip.util.{AsyncQueueParams, AsyncQueueSink, AsyncQueueSource}
@@ -72,7 +72,7 @@ object CuteDifftest {
     bankBytes: Int,
     regBytes: Int,
     rowBytes: Int
-  )(implicit p: Parameters): DiffAmuFinishEvent =
+  )(implicit p: Parameters): DiffAmuWritebackEvent =
     matrixHash(banks, bankBytes, regBytes, rowBytes, ports = 1).head
 
   def matrixHash(
@@ -81,9 +81,9 @@ object CuteDifftest {
     regBytes: Int,
     rowBytes: Int,
     ports: Int
-  )(implicit p: Parameters): Vec[DiffAmuFinishEvent] = {
+  )(implicit p: Parameters): Vec[DiffAmuWritebackEvent] = {
     val module = Module(new MatrixHash(banks, bankBytes, regBytes, rowBytes, ports))
-    val writes = Wire(Vec(ports, new DiffAmuFinishEvent(banks, bankBytes / 8)))
+    val writes = Wire(Vec(ports, new DiffAmuWritebackEvent(banks, bankBytes / 8)))
     module.io.in := writes
     // Combine concurrent writes in the accelerator domain, then transport
     // only the instruction's compact completion event across the clock boundary.

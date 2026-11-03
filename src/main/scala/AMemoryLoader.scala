@@ -68,12 +68,12 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
           (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
         difftestAmuFinish.pc := pcReg
-        // DiffAmuFinishEvent packing is parameterized by words-per-bank.
+        // DiffAmuWritebackEvent packing is parameterized by words-per-bank.
         val eventWordsPerBank = difftestAmuFinish.data.length / ABMatrixRegNBanks
         val abMRegWordsPerBank = ABMatrixRegEntryBitSize / 64
-        require(difftestAmuFinish.data.length % ABMatrixRegNBanks == 0, "DiffAmuFinishEvent.data should divide by AB bank count")
+        require(difftestAmuFinish.data.length % ABMatrixRegNBanks == 0, "DiffAmuWritebackEvent.data should divide by AB bank count")
         require(ABMatrixRegEntryBitSize % 64 == 0, s"ABMatrixRegEntryBitSize must be 64-bit aligned, got $ABMatrixRegEntryBitSize")
-        require(abMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuFinishEvent only supports up to $eventWordsPerBank words per AB bank, got $abMRegWordsPerBank")
+        require(abMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuWritebackEvent only supports up to $eventWordsPerBank words per AB bank, got $abMRegWordsPerBank")
         for (i <- 0 until ABMatrixRegNBanks) {
           difftestAmuFinish.bankValid(i) := io.ToMatrixRegIO.BankAddr(i).valid
           difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.BankAddr(i).bits

@@ -14,7 +14,7 @@ class CuteDifftestConcurrentHarness(async: Boolean) extends Module {
   val io = IO(new Bundle {
     val acceleratorClock = Input(Clock())
     val acceleratorReset = Input(Bool())
-    val write = Input(Vec(2, new difftest.DiffAmuFinishEvent(2, 2)))
+    val write = Input(Vec(2, new difftest.DiffAmuWritebackEvent(2, 2)))
   })
   if (async) CuteDifftest.publishSinkClock("concurrent_hash_test", clock, reset.asBool)
   withClockAndReset(io.acceleratorClock, io.acceleratorReset) {

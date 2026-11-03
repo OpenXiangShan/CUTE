@@ -163,9 +163,9 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
 
         val eventWordsPerBank = difftestLoadFinish.data.length / CMatrixRegNBanks
         val cMRegWordsPerBank = CMatrixRegEntryBitSize / 64
-        require(difftestLoadFinish.data.length % CMatrixRegNBanks == 0, "DiffAmuFinishEvent.data should divide by C bank count")
+        require(difftestLoadFinish.data.length % CMatrixRegNBanks == 0, "DiffAmuWritebackEvent.data should divide by C bank count")
         require(CMatrixRegEntryBitSize % 64 == 0, s"CMatrixRegEntryBitSize must be 64-bit aligned, got $CMatrixRegEntryBitSize")
-        require(cMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuFinishEvent only supports up to $eventWordsPerBank words per C bank, got $cMRegWordsPerBank")
+        require(cMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuWritebackEvent only supports up to $eventWordsPerBank words per C bank, got $cMRegWordsPerBank")
         for (i <- 0 until CMatrixRegNBanks) {
           difftestLoadFinish.bankValid(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).valid
           difftestLoadFinish.bankAddr(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).bits
@@ -202,16 +202,11 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         }
         difftestLoadFinishLane1.finish := false.B
 
-        val difftestStoreFinish = CuteDifftest(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestStoreFinish = CuteDifftest(new DiffAmuFinishEvent, delay = 0, dontCare = true)
         difftestStoreFinish.coreid := StoreCoreidReg.get
-        difftestStoreFinish.index := 2.U
+        difftestStoreFinish.index := 0.U
         difftestStoreFinish.valid := storeFinishAny
         difftestStoreFinish.pc := StorePcReg.get
-        difftestStoreFinish.bankValid.foreach(_ := false.B)
-        difftestStoreFinish.bankAddr.foreach(_ := 0.U)
-        difftestStoreFinish.bankMask.foreach(_ := 0.U)
-        difftestStoreFinish.data.foreach(_ := 0.U)
-        difftestStoreFinish.finish := storeFinishAny
     }
 
     val LoadMatrixRegTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))

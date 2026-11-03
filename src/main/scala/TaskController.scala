@@ -1612,7 +1612,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   // ===================== Release DiffTest alignment =====================
   if (EnableDifftest) {
-    val releaseFinish = CuteDifftest(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 3, dontCare = true)
+    val releaseFinish = CuteDifftest(new DiffAmuFinishEvent, delay = 3, dontCare = true)
     val releaseIssueOwnerSlot = issueSlotIdx
     val releaseIssueOwnerEntry = issueSlot.entry
 
@@ -1620,11 +1620,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     releaseFinish.index := 1.U
     releaseFinish.valid := issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
     releaseFinish.pc := Mux(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release, releaseIssueOwnerEntry.ctrl.pc.get, 0.U)
-    releaseFinish.bankValid.foreach(_ := false.B)
-    releaseFinish.bankAddr.foreach(_ := 0.U)
-    releaseFinish.bankMask.foreach(_ := 0.U)
-    releaseFinish.data.foreach(_ := 0.U)
-    releaseFinish.finish := issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
 
     when(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release) {
       dontTouch(releaseIssueOwnerSlot)
