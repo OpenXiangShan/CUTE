@@ -417,9 +417,9 @@ class MultiChannelsABMemLoader(
         difftestAmuFinish.pc := pcReg
         val eventWordsPerBank = difftestAmuFinish.data.length / ABMatrixRegNBanks
         val abMRegWordsPerBank = ABMatrixRegEntryBitSize / 64
-        require(difftestAmuFinish.data.length % ABMatrixRegNBanks == 0, "DiffAmuFinishEvent.data should divide by AB bank count")
+        require(difftestAmuFinish.data.length % ABMatrixRegNBanks == 0, "DiffAmuWritebackEvent.data should divide by AB bank count")
         require(ABMatrixRegEntryBitSize % 64 == 0, s"ABMatrixRegEntryBitSize must be 64-bit aligned, got $ABMatrixRegEntryBitSize")
-        require(abMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuFinishEvent only supports up to $eventWordsPerBank words per AB bank, got $abMRegWordsPerBank")
+        require(abMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuWritebackEvent only supports up to $eventWordsPerBank words per AB bank, got $abMRegWordsPerBank")
         for (i <- 0 until ABMatrixRegNBanks) {
           difftestAmuFinish.bankValid(i) := io.ToMatrixRegIO.BankAddr(i).valid
           difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.BankAddr(i).bits
