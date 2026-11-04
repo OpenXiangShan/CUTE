@@ -90,8 +90,8 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         val loadFinishAny = io.ConfigInfo.LoadMicroTaskEndValid && io.ConfigInfo.LoadMicroTaskEndReady
         val storeFinishAny = io.ConfigInfo.StoreMicroTaskEndValid && io.ConfigInfo.StoreMicroTaskEndReady
 
-        val hashWrites = CuteDifftest.matrixHash(CMatrixRegNBanks, CMatrixRegEntryByteSize, CMatrixRegSize, Tensor_MN * ResultWidthByte, ports = 2)
-        val difftestLoadFinish = hashWrites(0)
+        val probeWrites = MatrixRegWriteProbes.genWriteProbes(MatrixRegWriteProbes.cLoadHash, ports = 2)
+        val difftestLoadFinish = probeWrites(0)
         difftestLoadFinish.coreid := LoadCoreidReg.get
         difftestLoadFinish.index := 2.U
         difftestLoadFinish.valid := loadWriteAny || loadFinishAny
@@ -118,7 +118,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         }
         difftestLoadFinish.finish := loadFinishAny
 
-        val difftestLoadFinishLane1 = hashWrites(1)
+        val difftestLoadFinishLane1 = probeWrites(1)
         difftestLoadFinishLane1.coreid := difftestLoadFinish.coreid
         difftestLoadFinishLane1.index := 2.U
         difftestLoadFinishLane1.valid := io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest.map(_(1).BankAddr.valid).reduce(_ || _)

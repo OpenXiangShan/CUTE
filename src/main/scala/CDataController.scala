@@ -57,33 +57,22 @@ class CDataController(implicit p: Parameters) extends CuteModule{
           pcReg := io.ConfigInfo.pc.get
           coreidReg := io.ConfigInfo.coreid.get
         }
-        val difftestAmuFinish = CuteDifftest(new DiffAmuWritebackEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestAmuFinish = MatrixRegWriteProbes.genWriteProbes(MatrixRegWriteProbes.mma, ports = 1).head
         // 默认值初始化
         difftestAmuFinish.coreid := coreidReg
         difftestAmuFinish.index := 0.U
         difftestAmuFinish.valid := (io.FromMatrixRegIO.WriteBankAddr.map(_.valid).reduce(_||_)
           || (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
         difftestAmuFinish.pc := pcReg
-        // DiffAmuWritebackEvent packing is parameterized by words-per-bank; C payload may be narrower (e.g. 2Tops).
-        val eventWordsPerBank = difftestAmuFinish.data.length / CMatrixRegNBanks
-        val cMRegWordsPerBank = CMatrixRegEntryBitSize / 64
-        require(difftestAmuFinish.data.length % CMatrixRegNBanks == 0, "DiffAmuWritebackEvent.data should divide by C bank count")
-        require(CMatrixRegEntryBitSize % 64 == 0, s"CMatrixRegEntryBitSize must be 64-bit aligned, got $CMatrixRegEntryBitSize")
-        require(cMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuWritebackEvent only supports up to $eventWordsPerBank words per C bank, got $cMRegWordsPerBank")
         for (i <- 0 until CMatrixRegNBanks) {
           difftestAmuFinish.bankValid(i) := io.FromMatrixRegIO.WriteBankAddr(i).valid
           difftestAmuFinish.bankAddr(i) := io.FromMatrixRegIO.WriteBankAddr(i).bits
           difftestAmuFinish.bankMask(i) := Fill(CMatrixRegEntryByteSize, true.B)
-          for (w <- 0 until eventWordsPerBank) {
-            if (w < cMRegWordsPerBank) {
-              val lo = w * 64
-              val hi = lo + 63
-              difftestAmuFinish.data(i * eventWordsPerBank + w) := io.FromMatrixRegIO.WriteRequestData(i).bits(hi, lo)
-            } else {
-              difftestAmuFinish.data(i * eventWordsPerBank + w) := 0.U(64.W)
-            }
-          }
         }
+        val bankBits = difftestAmuFinish.wordsPerBank * MatrixRegWriteProbes.writebackWordBits
+        // Pad each bank before flattening into the common writeback layout.
+        difftestAmuFinish.data := VecInit(io.FromMatrixRegIO.WriteRequestData.map(_.bits.pad(bankBits)))
+          .asUInt.asTypeOf(difftestAmuFinish.data)
         difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
     }
 

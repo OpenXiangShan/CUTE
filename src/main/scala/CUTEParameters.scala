@@ -805,9 +805,6 @@ case class CuteParams(
     def CMatrixRegEntryByteSize = Matrix_MN*ResultWidthByte //bandwidth for reads and writes
     def ABMatrixRegEntryBitSize = ReduceWidthByte * 8 //bandwidth suitable for feeding TE
     def CMatrixRegEntryBitSize = Matrix_MN*ResultWidthByte * 8//bandwidth for reads and writes
-    // DiffAmuWritebackEvent flattens per-bank payload into UInt(64) lanes.
-    // Use the maximum bank payload width so one event layout works for AB/C paths.
-    def DiffAmuFinishWordsPerBank = Math.max(ABMatrixRegEntryBitSize, CMatrixRegEntryBitSize) / 64
     def ABMatrixRegNBanks = Matrix_MN //note that this is strongly tied to Matrix_MN and is generally an integer multiple of Matrix_MN
     def CMatrixRegNBanks = Matrix_MN //convenient for reorder
     def Trans_Load_Size = outsideDataWidthByte / ABMatrixRegNBanks
@@ -924,7 +921,6 @@ trait HasCuteParams {
     def CMatrixRegEntryByteSize = cuteParams.CMatrixRegEntryByteSize
     def ABMatrixRegEntryBitSize = cuteParams.ABMatrixRegEntryBitSize
     def CMatrixRegEntryBitSize = cuteParams.CMatrixRegEntryBitSize
-    def DiffAmuFinishWordsPerBank = cuteParams.DiffAmuFinishWordsPerBank
     def ABMatrixRegNBanks = cuteParams.ABMatrixRegNBanks
     def CMatrixRegNBanks = cuteParams.CMatrixRegNBanks
     def Trans_Load_Size = cuteParams.Trans_Load_Size
