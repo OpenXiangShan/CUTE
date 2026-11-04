@@ -366,7 +366,7 @@ trait HasTransposeLoadEngine { this: CuteModule =>
       DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", ABMatrixRegSize)
       val pc = RegEnable(config.pc.get, accepted)
       val coreid = RegEnable(config.coreid.get, accepted)
-      val events = CuteDifftest.matrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K, ports = 2)
+      val events = MatrixRegWriteProbes.genWriteProbes(MatrixRegWriteProbes.abLoadHash, ports = 2)
       for (port <- 0 until 2) {
         val event = events(port)
         event.index := diffIndex.U

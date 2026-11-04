@@ -404,8 +404,8 @@ class MultiChannelsABMemLoader(
           pcReg := io.ConfigInfo.pc.get
           coreidReg := io.ConfigInfo.coreid.get
         }
-        val hashWrites = CuteDifftest.matrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K, ports = 2)
-        val difftestAmuFinish = hashWrites(0)
+        val probeWrites = MatrixRegWriteProbes.genWriteProbes(MatrixRegWriteProbes.abLoadHash, ports = 2)
+        val difftestAmuFinish = probeWrites(0)
         difftestAmuFinish.coreid := coreidReg
         val diffIndexMap = Map(
             "AML" -> 0,
@@ -436,7 +436,7 @@ class MultiChannelsABMemLoader(
         }
         difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
 
-        val difftestAmuFinishLane1 = hashWrites(1)
+        val difftestAmuFinishLane1 = probeWrites(1)
         difftestAmuFinishLane1.coreid := difftestAmuFinish.coreid
         difftestAmuFinishLane1.index := (if (label == "BML") 1.U else 0.U)
         difftestAmuFinishLane1.valid := io.ToMatrixRegIO.WriteRequest.map(_(1).BankAddr.valid).reduce(_ || _)

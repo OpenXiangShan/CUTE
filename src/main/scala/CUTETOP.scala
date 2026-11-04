@@ -4,6 +4,7 @@ package cute
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
+import freechips.rocketchip.diplomacy.{LazyModule, LazyModuleImp}
 import xscache.coupledL2.prefetch.MatrixPrefetchControl
 // import boom.exu.ygjk._
 // import scala.collection.parallel.Task
@@ -142,7 +143,25 @@ class CMLWrapper(contextName: String = "CML")(implicit p: Parameters) extends Cu
     }
 }
 
-class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
+// Keep the existing Module entry point used by XSAI and standalone harnesses.
+class CUTEV2Top()(implicit p: Parameters) extends CuteModule {
+    private val outer = LazyModule(new LazyCUTEV2Top)
+    val inner = Module(outer.module)
+    val io = IO(new CUTETopIO)
+    io <> inner.io
+}
+
+class LazyCUTEV2Top(implicit p: Parameters) extends LazyModule {
+    val probeParams = MatrixRegWriteProbes.Params()
+    val amlParameters = probeParams.parameters(probeParams.aLoad)
+    val bmlParameters = probeParams.parameters(probeParams.bLoad)
+    val cdcParameters = probeParams.parameters(probeParams.mma)
+    val cmlParameters = probeParams.parameters(probeParams.cLoad)
+
+    lazy val module = new CUTEV2TopImp(this)
+}
+
+class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEImplParameters{
     private def summarizeLoaderMode(mode: ResponseChannelHelper.LoaderMode): String = {
         if (mode.isLegacy) "legacy(1resp)"
         else s"bridge(${mode.responseChannelCount}resp)"
@@ -395,9 +414,9 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
 
     val ABMatrixRegs = Seq.tabulate(ABMatrixRegCount)(i => Module(new ABMatrixReg(i))).toVector
     val ADC = Module(new ADataController)
-    val AML = Module(new AMLWrapper(amlBridgeContext)).suggestName(s"${amlBridgeContext}_wrapper")
+    val AML = Module(new AMLWrapper(amlBridgeContext)(outer.amlParameters)).suggestName(s"${amlBridgeContext}_wrapper")
     val BDC = Module(new BDataController)
-    val BML = Module(new BMLWrapper(bmlBridgeContext)).suggestName(s"${bmlBridgeContext}_wrapper")
+    val BML = Module(new BMLWrapper(bmlBridgeContext)(outer.bmlParameters)).suggestName(s"${bmlBridgeContext}_wrapper")
 
     val CMatrixRegs = Seq.tabulate(CMatrixRegCount)(i => Module(new CMatrixReg(i))).toVector
 
@@ -421,8 +440,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
       Module(new BScaleLoader)
     )
 
-    val CDC = Module(new CDataController)
-    val CML = Module(new CMLWrapper(cmlWrapperContext)).suggestName(s"${cmlWrapperContext}_wrapper")
+    val CDC = Module(new CDataController()(outer.cdcParameters))
+    val CML = Module(new CMLWrapper(cmlWrapperContext)(outer.cmlParameters)).suggestName(s"${cmlWrapperContext}_wrapper")
 
     val TaskCtrl: BaseTaskController = Module(new TaskController)
     io.matrixPrefetch.zip(TaskCtrl.io.matrixPrefetch).foreach { case (to, from) => to := from }

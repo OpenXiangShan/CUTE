@@ -5,7 +5,7 @@ import difftest.{DiffAmuWritebackEvent, DiffAmuHashEvent, DifftestBundle, Diffte
 import difftest.common.DifftestWiring
 import difftest.util.MatrixHash
 import freechips.rocketchip.util.{AsyncQueueParams, AsyncQueueSink, AsyncQueueSource}
-import org.chipsalliance.cde.config.Parameters
+import org.chipsalliance.cde.config.{Field, Parameters}
 
 /** Difftest event transport for a CUTE clock domain that may be asynchronous to the core. */
 object CuteDifftest {
@@ -90,4 +90,99 @@ object CuteDifftest {
     apply(new DiffAmuHashEvent) := module.io.out
     writes
   }
+}
+
+/** Matrix-register write probe configuration resolved before hardware generation. */
+object MatrixRegWriteProbes {
+  private case object ProbeParamsKey extends Field[ProbeParams]
+
+  case class MatrixRegWriteProbe(
+    useHash: Boolean,
+    banks: CuteParams => Int,
+    bankBytes: CuteParams => Int,
+    regBytes: CuteParams => Int,
+    rowBytes: CuteParams => Int
+  )
+
+  case class Params(
+    aLoad: MatrixRegWriteProbe = abLoadHash,
+    bLoad: MatrixRegWriteProbe = abLoadHash,
+    cLoad: MatrixRegWriteProbe = cLoadHash,
+    mma: MatrixRegWriteProbe = MatrixRegWriteProbes.mma
+  )(implicit p: Parameters) {
+    private val probes = Seq(aLoad, bLoad, cLoad, mma)
+    val writebackWordsPerBank: Int = maxWritebackWordsPerBank(probes)
+
+    def parameters(description: MatrixRegWriteProbe): Parameters = {
+      require(probes.contains(description), "Matrix write probe must belong to this configuration")
+      if (!p(CuteParamsKey).EnableDifftest) p
+      else {
+        val params = ProbeParams(description, writebackWordsPerBank)
+        // Forward queries directly: XSAI may supply a frozen Parameters cache.
+        Parameters((_, _, _) => {
+          case ProbeParamsKey => params
+          case key: Field[_] if p.lift(key).isDefined => p(key)
+        })
+      }
+    }
+  }
+
+  private case class ProbeParams(description: MatrixRegWriteProbe, writebackWordsPerBank: Int) {
+    def genWriteProbes(ports: Int)(implicit p: Parameters): Seq[DiffAmuWritebackEvent] = {
+      require(ports > 0, "Matrix probes require at least one port")
+      val params = p(CuteParamsKey)
+      if (description.useHash) {
+        CuteDifftest.matrixHash(description.banks(params), description.bankBytes(params),
+          description.regBytes(params), description.rowBytes(params), ports).toSeq
+      } else {
+        Seq.fill(ports)(CuteDifftest(
+          new DiffAmuWritebackEvent(description.banks(params), writebackWordsPerBank), dontCare = true
+        ))
+      }
+    }
+  }
+
+  def genWriteProbes(default: MatrixRegWriteProbe, ports: Int = 1)
+    (implicit p: Parameters): Seq[DiffAmuWritebackEvent] = {
+    require(p(CuteParamsKey).EnableDifftest, "Matrix write probes require DiffTest")
+    val params = p.lift(ProbeParamsKey).getOrElse {
+      // A standalone producer derives its width from its own description.
+      ProbeParams(default, maxWritebackWordsPerBank(Seq(default)))
+    }
+    params.genWriteProbes(ports)
+  }
+
+  private def maxWritebackWordsPerBank(probes: Seq[MatrixRegWriteProbe])(implicit p: Parameters): Int = {
+    val params = p(CuteParamsKey)
+    if (!params.EnableDifftest) 0
+    else {
+      val writes = probes.filterNot(_.useHash)
+      require(writes.map(_.banks(params)).distinct.size <= 1, "Writeback probes must share a bank count")
+      val wordBits = writebackWordBits
+      val widths = writes.map(_.bankBytes(params) * 8)
+      require(widths.forall(bits => bits > 0 && bits % wordBits == 0),
+        s"Writeback bank width must be positive and $wordBits-bit aligned")
+      (widths :+ 0).max / wordBits
+    }
+  }
+
+  val abLoadHash: MatrixRegWriteProbe = MatrixRegWriteProbe(
+    useHash = true,
+    banks = _.ABMatrixRegNBanks,
+    bankBytes = _.ABMatrixRegEntryByteSize,
+    regBytes = _.ABMatrixRegSize,
+    rowBytes = _.Tensor_K
+  )
+  val cLoadHash: MatrixRegWriteProbe = MatrixRegWriteProbe(
+    useHash = true,
+    banks = _.CMatrixRegNBanks,
+    bankBytes = _.CMatrixRegEntryByteSize,
+    regBytes = _.CMatrixRegSize,
+    rowBytes = params => params.Tensor_MN * params.ResultWidthByte
+  )
+  val abLoadNoHash: MatrixRegWriteProbe = abLoadHash.copy(useHash = false)
+  val cLoadNoHash: MatrixRegWriteProbe = cLoadHash.copy(useHash = false)
+  val mma: MatrixRegWriteProbe = cLoadHash.copy(useHash = false)
+
+  def writebackWordBits: Int = (new DiffAmuWritebackEvent).data.head.getWidth
 }

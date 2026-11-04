@@ -61,8 +61,8 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
           pcReg := io.ConfigInfo.pc.get
           coreidReg := io.ConfigInfo.coreid.get
         }
-        val hashWrites = CuteDifftest.matrixHash(ABMatrixRegNBanks, ABMatrixRegEntryByteSize, ABMatrixRegSize, Tensor_K, ports = 2)
-        val difftestAmuFinish = hashWrites(0)
+        val probeWrites = MatrixRegWriteProbes.genWriteProbes(MatrixRegWriteProbes.abLoadHash, ports = 2)
+        val difftestAmuFinish = probeWrites(0)
         difftestAmuFinish.coreid := coreidReg
         difftestAmuFinish.index := 0.U
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
@@ -90,7 +90,7 @@ class AMemoryLoader(emitDifftest: Boolean = true)(implicit p: Parameters) extend
         }
         difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
 
-        val difftestAmuFinishLane1 = hashWrites(1)
+        val difftestAmuFinishLane1 = probeWrites(1)
         difftestAmuFinishLane1.coreid := difftestAmuFinish.coreid
         difftestAmuFinishLane1.index := 0.U
         difftestAmuFinishLane1.valid := io.ToMatrixRegIO.WriteRequest.map(_(1).BankAddr.valid).reduce(_ || _)
