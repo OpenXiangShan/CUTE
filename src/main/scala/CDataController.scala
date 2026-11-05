@@ -50,32 +50,6 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val CurrentMatrixRegId = RegInit(0.U(CMatrixRegIdWidth.W))
     io.MatrixRegId := CurrentMatrixRegId
 
-    if (EnableDifftest) {
-        val pcReg = RegInit(0.U(64.W))
-        val coreidReg = RegInit(0.U(8.W))
-        when (io.ConfigInfo.MicroTaskValid && io.ConfigInfo.MicroTaskReady) {
-          pcReg := io.ConfigInfo.pc.get
-          coreidReg := io.ConfigInfo.coreid.get
-        }
-        val difftestAmuFinish = MatrixRegWriteProbes.genWriteProbes(MatrixRegWriteProbes.mma, ports = 1).head
-        // 默认值初始化
-        difftestAmuFinish.coreid := coreidReg
-        difftestAmuFinish.index := 0.U
-        difftestAmuFinish.valid := (io.FromMatrixRegIO.WriteBankAddr.map(_.valid).reduce(_||_)
-          || (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
-        difftestAmuFinish.pc := pcReg
-        for (i <- 0 until CMatrixRegNBanks) {
-          difftestAmuFinish.bankValid(i) := io.FromMatrixRegIO.WriteBankAddr(i).valid
-          difftestAmuFinish.bankAddr(i) := io.FromMatrixRegIO.WriteBankAddr(i).bits
-          difftestAmuFinish.bankMask(i) := Fill(CMatrixRegEntryByteSize, true.B)
-        }
-        val bankBits = difftestAmuFinish.wordsPerBank * MatrixRegWriteProbes.writebackWordBits
-        // Pad each bank before flattening into the common writeback layout.
-        difftestAmuFinish.data := VecInit(io.FromMatrixRegIO.WriteRequestData.map(_.bits.pad(bankBits)))
-          .asUInt.asTypeOf(difftestAmuFinish.data)
-        difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
-    }
-
     //任务状态机 先来个简单的，顺序遍历所有bank，返回数据
     val s_idle :: s_mm_task :: Nil = Enum(2)
     val state = RegInit(s_idle)
@@ -334,6 +308,35 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         }
     }
     
+    if (EnableDifftest) {
+        val pcReg = RegInit(0.U(64.W))
+        val coreidReg = RegInit(0.U(8.W))
+        when (io.ConfigInfo.MicroTaskValid && io.ConfigInfo.MicroTaskReady) {
+          pcReg := io.ConfigInfo.pc.get
+          coreidReg := io.ConfigInfo.coreid.get
+        }
+        val difftestAmuFinish = MatrixRegWriteProbes.genWriteProbes(MatrixRegWriteProbes.mma, ports = 1).head
+        // 默认值初始化
+        difftestAmuFinish.coreid := coreidReg
+        difftestAmuFinish.index := 0.U
+        // Each K sweep overwrites the same output entries. Only the final sweep
+        // survives in the host result buffer; intermediate physical writes still run.
+        val finalKWriteback = result_K_Iterator === K_IteratorMax - 1.U
+        difftestAmuFinish.valid := ((io.FromMatrixRegIO.WriteBankAddr.map(_.valid).reduce(_||_) && finalKWriteback)
+          || (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
+        difftestAmuFinish.pc := pcReg
+        for (i <- 0 until CMatrixRegNBanks) {
+          difftestAmuFinish.bankValid(i) := io.FromMatrixRegIO.WriteBankAddr(i).valid
+          difftestAmuFinish.bankAddr(i) := io.FromMatrixRegIO.WriteBankAddr(i).bits
+          difftestAmuFinish.bankMask(i) := Fill(CMatrixRegEntryByteSize, true.B)
+        }
+        val bankBits = difftestAmuFinish.wordsPerBank * MatrixRegWriteProbes.writebackWordBits
+        // Pad each bank before flattening into the common writeback layout.
+        difftestAmuFinish.data := VecInit(io.FromMatrixRegIO.WriteRequestData.map(_.bits.pad(bankBits)))
+          .asUInt.asTypeOf(difftestAmuFinish.data)
+        difftestAmuFinish.finish := io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady
+    }
+
     //像MatrixReg请求数据的汇总
     //使用各自的值进行拼接，最低位代表Read，次低位代表Write，最高位代表Memory的Write
     //叫给MatrixReg来进行仲裁
