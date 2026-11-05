@@ -41,6 +41,8 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val BMTE_MicroTask_Config = Option.when(cuteMatrixExtension.enableBitMTE)(new BitMicroTaskConfigIO)
   val mteOwnerActive = Output(Bool())
   val bmteOwnerActive = Output(Bool())
+  // Simulation-only task identity for the array handshake trace.
+  val computeTraceSeqId = Option.when(EnableDifftest)(Output(Vec(2, UInt(16.W))))
   val DebugTimeStampe = Input(UInt(32.W))
   val perfProbe = Output(new TaskControllerPerfProbe)
   val matrixPrefetch = Option.when(EnableMatrixPrefetch)(Output(new MatrixPrefetchControl))
@@ -238,6 +240,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private val StoreFifoIdxWidth = 4
 
   class LoadEventEntry extends Bundle {
+    val schemaVersion = UInt(8.W)
+    val payloadBytes = UInt(32.W)
+    val isZero = Bool()
+    val widths = UInt(3.W)
     val eventType = UInt(4.W)
     val regId = UInt(4.W)
     val fifoIdx = UInt(LoadFifoIdxWidth.W)
@@ -251,6 +257,15 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   class ComputeEventEntry extends Bundle {
+    val schemaVersion = UInt(8.W)
+    val engineId = UInt(1.W) // 0: MTE, 1: BMTE
+    val packedMode = UInt(2.W)
+    val isInt4 = Bool()
+    val kslice = UInt(3.W)
+    val kElements = UInt(TileDimWidth.W)
+    val types1 = UInt(3.W)
+    val types2 = UInt(3.W)
+    val typed = UInt(3.W)
     val eventType = UInt(4.W)
     val aReg = UInt(4.W)
     val bReg = UInt(4.W)
@@ -266,6 +281,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   class StoreEventEntry extends Bundle {
+    val schemaVersion = UInt(8.W)
+    val payloadBytes = UInt(32.W)
+    val widths = UInt(3.W)
     val eventType = UInt(3.W)
     val regId = UInt(4.W)
     val fifoIdx = UInt(StoreFifoIdxWidth.W)
@@ -318,6 +336,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private val computeReadBFinishEventEn = WireInit(false.B)
   private val computeWriteCFinishEvent = WireInit(0.U.asTypeOf(new ComputeEventEntry))
   private val computeWriteCFinishEventEn = WireInit(false.B)
+
+  // Independent ports preserve simultaneous MTE and BMTE completion records.
+  private val bitComputeReadAFinishEvent = WireInit(0.U.asTypeOf(new ComputeEventEntry))
+  private val bitComputeReadBFinishEvent = WireInit(0.U.asTypeOf(new ComputeEventEntry))
+  private val bitComputeWriteCFinishEvent = WireInit(0.U.asTypeOf(new ComputeEventEntry))
 
   private val storeIssueEvent = WireInit(0.U.asTypeOf(new StoreEventEntry))
   private val storeIssueEventEn = WireInit(false.B)
@@ -476,6 +499,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val bitOwnerValid = fuBMTE.busy && slots(fuBMTE.ownerSlot).valid
   io.mteOwnerActive := computeOwnerValid
   io.bmteOwnerActive := bitOwnerValid
+  io.computeTraceSeqId.foreach { ids =>
+    ids(0) := slots(fuCompute.ownerSlot).seqId
+    ids(1) := slots(fuBMTE.ownerSlot).seqId
+  }
   (io.BitADC_MicroTask_Config.toSeq ++ io.BitBDC_MicroTask_Config.toSeq ++
     io.BitCDC_MicroTask_Config.toSeq).foreach(_.MicroTaskEndReady := bitOwnerValid)
 
@@ -1728,6 +1755,70 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     }
   }
 
+  // Trace metadata observes the captured task; it never affects scheduling.
+  private def computeTraceMetadata(event: ComputeEventEntry, mma: AmuMmaIO): Unit = {
+    event.schemaVersion := 1.U
+    event.engineId := (mma.packedMode =/= 0.U).asUInt
+    event.packedMode := mma.packedMode
+    event.isInt4 := mma.types1 === 7.U
+    event.kslice := mma.kslice
+    event.kElements := mma.mtilek
+    event.types1 := mma.types1
+    event.types2 := mma.types2
+    event.typed := mma.typed
+  }
+
+  private def bitComputeFinishTrace(event: ComputeEventEntry, eventType: Int): Unit = {
+    val owner = fuBMTE.ownerSlot
+    val slot = slots(owner)
+    val mma = decodeMma(slot.entry.ctrl)
+    event.eventType := eventType.U
+    event.aReg := mma.ms1(1, 0)
+    event.bReg := mma.ms2(1, 0)
+    event.cReg := mma.md(1, 0)
+    event.fifoIdx := slot.fifoIdx
+    event.mtilem := mma.mtilem
+    event.mtilen := mma.mtilen
+    event.mtilek := computeKFromMsew(mma.mtilek, mma.types1)
+    event.isMma := true.B
+    event.isFp := mma.isfp
+    event.slotId := owner
+    event.seqId := slot.seqId
+    computeTraceMetadata(event, mma)
+  }
+
+  private def loadTraceMetadata(event: LoadEventEntry, slot: IssueWindowSlot): Unit = {
+    val lsu = decodeLsu(slot.entry.ctrl)
+    val zero = slot.opKind === TaskCtrlOpKind.ZeroAcc || slot.opKind === TaskCtrlOpKind.ZeroTr
+    event.schemaVersion := 1.U
+    event.payloadBytes := Mux(zero, 0.U, lsu.row * loadByteCount(lsu.column, lsu.widths))
+    event.isZero := zero
+    event.widths := Mux(zero, 0.U, lsu.widths)
+  }
+
+  private def storeTraceMetadata(event: StoreEventEntry, slot: IssueWindowSlot): Unit = {
+    val lsu = decodeLsu(slot.entry.ctrl)
+    event.schemaVersion := 1.U
+    event.payloadBytes := lsu.row * loadByteCount(lsu.column, lsu.widths)
+    event.widths := lsu.widths
+  }
+
+  computeTraceMetadata(computeIssueEvent, issueMma)
+  val mteTraceMma = decodeMma(slots(fuCompute.ownerSlot).entry.ctrl)
+  computeTraceMetadata(computeReadAFinishEvent, mteTraceMma)
+  computeTraceMetadata(computeReadBFinishEvent, mteTraceMma)
+  computeTraceMetadata(computeWriteCFinishEvent, mteTraceMma)
+  bitComputeFinishTrace(bitComputeReadAFinishEvent, 1)
+  bitComputeFinishTrace(bitComputeReadBFinishEvent, 2)
+  bitComputeFinishTrace(bitComputeWriteCFinishEvent, 3)
+  loadTraceMetadata(loadAllocateEvent, issueSlot)
+  loadTraceMetadata(loadIssueEvent, issueSlot)
+  loadTraceMetadata(loadAFinishEvent, slots(fuAML.ownerSlot))
+  loadTraceMetadata(loadBFinishEvent, slots(fuBML.ownerSlot))
+  loadTraceMetadata(loadCFinishEvent, slots(fuCMLLoad.ownerSlot))
+  storeTraceMetadata(storeIssueEvent, issueSlot)
+  storeTraceMetadata(storeFinishEvent, slots(fuCMLStore.ownerSlot))
+
   // ===================== ChiselDB log commit =====================
   loadEventTable.log(loadAllocateEvent, loadAllocateEventEn, "LoadAllocate", clock, reset)
   loadEventTable.log(loadIssueEvent, loadIssueEventEn, "LoadIssue", clock, reset)
@@ -1739,6 +1830,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   computeEventTable.log(computeReadAFinishEvent, computeReadAFinishEventEn, "ComputeReadAFinish", clock, reset)
   computeEventTable.log(computeReadBFinishEvent, computeReadBFinishEventEn, "ComputeReadBFinish", clock, reset)
   computeEventTable.log(computeWriteCFinishEvent, computeWriteCFinishEventEn, "ComputeWriteCFinish", clock, reset)
+
+  computeEventTable.log(bitComputeReadAFinishEvent, bitAdcDone, "BMTEReadAFinish", clock, reset)
+  computeEventTable.log(bitComputeReadBFinishEvent, bitBdcDone, "BMTEReadBFinish", clock, reset)
+  computeEventTable.log(bitComputeWriteCFinishEvent, bitCdcDone, "BMTEWriteCFinish", clock, reset)
 
   storeEventTable.log(storeIssueEvent, storeIssueEventEn, "StoreIssue", clock, reset)
   storeEventTable.log(storeFinishEvent, storeFinishEventEn, "StoreFinish", clock, reset)

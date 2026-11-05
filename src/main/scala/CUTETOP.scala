@@ -5,6 +5,7 @@ import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config._
 import xscache.coupledL2.prefetch.MatrixPrefetchControl
+import utility.ChiselDB
 // import boom.exu.ygjk._
 // import scala.collection.parallel.Task
 
@@ -621,6 +622,54 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     BSC.foreach(_.io.ComputeGo := MTE.io.ComputeGo)
     CDC.io.ComputeGo := MTE.io.ComputeGo
     
+    // Observe accepted array input/output beats without changing their handshake.
+    if (EnableDifftest) {
+      class ComputeActivityEntry extends Bundle {
+        val schemaVersion = UInt(8.W)
+        val seqId = UInt(16.W)
+        val engineId = UInt(1.W)
+        val inputFire = Bool()
+        val outputFire = Bool()
+        val aValid = Bool()
+        val bValid = Bool()
+        val cValid = Bool()
+        val aReady = Bool()
+        val bReady = Bool()
+        val cReady = Bool()
+        val dValid = Bool()
+        val dReady = Bool()
+      }
+      val activityTable = ChiselDB.createTable("CUTEComputeActivityEvent", new ComputeActivityEntry, basicDB = true)
+      def logComputeActivity(
+        engine: Int,
+        owner: Bool,
+        a: DecoupledIO[UInt],
+        b: DecoupledIO[UInt],
+        c: DecoupledIO[UInt],
+        d: DecoupledIO[UInt]
+      ): Unit = {
+        val event = Wire(new ComputeActivityEntry)
+        event.schemaVersion := 1.U
+        event.seqId := TaskCtrl.io.computeTraceSeqId.get(engine)
+        event.engineId := engine.U
+        event.inputFire := a.fire
+        event.outputFire := d.fire
+        event.aValid := a.valid
+        event.bValid := b.valid
+        event.cValid := c.valid
+        event.aReady := a.ready
+        event.bReady := b.ready
+        event.cReady := c.ready
+        event.dValid := d.valid
+        event.dReady := d.ready
+        activityTable.log(event, owner || a.fire || d.fire, if (engine == 0) "MTE" else "BMTE", clock, reset)
+      }
+      logComputeActivity(0, TaskCtrl.io.mteOwnerActive, MTE.io.VectorA, MTE.io.VectorB, MTE.io.MatrixC, MTE.io.MatrixD)
+      BMTE.foreach { te =>
+        logComputeActivity(1, TaskCtrl.io.bmteOwnerActive, te.io.VectorA, te.io.VectorB, te.io.MatrixC, te.io.MatrixD)
+      }
+    }
+
     // Connect to the CPU MMU or IOMMU in a future integration.
     MMU.io.LastLevelCacheTLIO <> io.mmu2llc
 
