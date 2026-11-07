@@ -119,7 +119,7 @@ class BDataController(implicit p: Parameters) extends CuteModule{
     MatrixRegRequestBankAddr.valid := false.B                                           //默认无效
     val MatrixRegData = io.FromMatrixRegIO.Data //从MatrixReg读数，会有1周期的延迟
 
-    val MatrixRegDataHoldReg = RegInit(0.U(MatrixRegData.bits.asUInt.getWidth.W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
+    val MatrixRegDataHoldReg = Reg(UInt(MatrixRegData.bits.asUInt.getWidth.W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
     val MatrixRegDataHoldValid = RegInit(false.B) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
 
     //如果是mm_task,且计算状态机是init，那么就开始初始化
@@ -132,7 +132,6 @@ class BDataController(implicit p: Parameters) extends CuteModule{
                 K_Iterator := 0.U
                 BVectorCount := 0.U
                 BRequestVectorCount := 0.U
-                MatrixRegDataHoldReg := 0.U
                 MatrixRegDataHoldValid := false.B
                 //阶段1，初始化完成，开始供数任务
                 calculate_state := s_cal_working

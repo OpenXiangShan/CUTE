@@ -280,11 +280,11 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     //1.查看每一个bank是否有数据需要回填
     //2.给每个准备回填数据的bank，找到其对应的Fill_FIFO的index，在这个fill_fifo[index]的filltime+1，如果filltime==MAX_Fill_Times，那么这个数据就用完了
     //3.更新FIFO，更新Tail，更新Table
-    val MReg_Fill_Table = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
-    val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(CMatrixRegBankNEntries).W)))))//记录这个LLC回的数是在scp的哪个地址
-    val MReg_Fill_Table_TransposeLane = RegInit(VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(CMatrixRegNBanks).W))))
+    val MReg_Fill_Table = Reg(Vec(CMemoryLoaderReadFromMemoryFIFODepth, UInt(outsideDataWidth.W)))
+    val MReg_Fill_Table_MReg_Addr = Reg(Vec(CMemoryLoaderReadFromMemoryFIFODepth, UInt(log2Ceil(CMatrixRegBankNEntries).W))) //记录这个LLC回的数是在scp的哪个地址
+    val MReg_Fill_Table_TransposeLane = Reg(Vec(CMemoryLoaderReadFromMemoryFIFODepth, UInt(log2Ceil(CMatrixRegNBanks).W)))
     val MReg_Fill_Table_Time = RegInit((VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/CMatrixRegEntryByteSize)+1).W)))))//记录这个LLC回的数需要回填的次数，完成就可以将数据释放了
-    val MReg_Fill_Table_IsTail = RegInit(VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(false.B)))
+    val MReg_Fill_Table_IsTail = Reg(Vec(CMemoryLoaderReadFromMemoryFIFODepth, Bool()))
     val MReg_Fill_Table_Free = MReg_Fill_Table_Time.map(_ === 0.U)//记录这个FIFO能否能填数据
     val MReg_Fill_Table_Valid = MReg_Fill_Table_Time.map(_ =/= 0.U)//记录这个FIFO里的数据是否有效
     val MReg_Fill_Table_Insert_Index = PriorityEncoder(MReg_Fill_Table_Free)//返回第一个空位的index
@@ -301,7 +301,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     val Repeat_Fill_Table_Index = RegInit(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W))//记录这个数据在FIFO里的index
     val Repeat_Fill_Request_Infight = RegInit(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W))//记录这个有多少请求已经发出，由于我们一个发出的请求需要回填16拍，所以必须记录一下infight的数量，不能多发请求
 
-    val Bank_Fill_Search_FIFO = RegInit((VecInit(Seq.fill(CMatrixRegNBanks)(VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W)))))))//记录fifo里的数据是哪个bank的
+    val Bank_Fill_Search_FIFO = Reg(Vec(CMatrixRegNBanks, Vec(CMemoryLoaderReadFromMemoryFIFODepth, UInt(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W)))) //记录fifo里的数据是哪个bank的
     val Bank_Fill_Search_FIFO_Head = RegInit((VecInit(Seq.fill(CMatrixRegNBanks)(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W)))))//想要往scp里bank(x)写的最后一个scp_fill_fifo的index
     val Bank_Fill_Search_FIFO_Tail = RegInit((VecInit(Seq.fill(CMatrixRegNBanks)(0.U(log2Ceil(CMemoryLoaderReadFromMemoryFIFODepth).W)))))
     val Bank_Fill_Search_FIFO_Full = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(false.B)))
@@ -325,14 +325,9 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             CurrentLoaded_BlockTensor_M_Iter := 0.U
             CurrentLoaded_BlockTensor_N_Iter := 0.U
             MaxRequestIter := LoadMatrixRegTensor_M * N_Beat_Count //总共要发出的访存请求的次数
-            Bank_Fill_Search_FIFO := 0.U.asTypeOf(Bank_Fill_Search_FIFO)
             Bank_Fill_Search_FIFO_Head := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Head)
             Bank_Fill_Search_FIFO_Tail := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Tail)
-            MReg_Fill_Table := 0.U.asTypeOf(MReg_Fill_Table)
-            MReg_Fill_Table_MReg_Addr := 0.U.asTypeOf(MReg_Fill_Table_MReg_Addr)
-            MReg_Fill_Table_TransposeLane := 0.U.asTypeOf(MReg_Fill_Table_TransposeLane)
             MReg_Fill_Table_Time := 0.U.asTypeOf(MReg_Fill_Table_Time)
-            MReg_Fill_Table_IsTail := VecInit(Seq.fill(CMemoryLoaderReadFromMemoryFIFODepth)(false.B))
             Request_M_Iter_Time := 0.U
             MReg_Fill_Table_Head := 0.U
             MReg_Fill_Table_Tail := 0.U
@@ -863,7 +858,7 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
     //存一个Matrix_M*Matrix_MN*T的数据矩阵寄存器，用于存储重排的数据，T = CMReg的总带宽/Matrix_MN*ResultWidth
     val Per_GetMatrix_NDim_Width = Matrix_MN*ResultWidth //每次Get的N连续的数据的宽度
     val Reorder_ToLLC_GroupSize = outsideDataWidth / (Per_GetMatrix_NDim_Width)//填满一个LLCDataWidth需要这么多次
-    val Reorder_ToLLC_Reg = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(Matrix_MN)(VecInit(Seq.fill(Reorder_ToLLC_GroupSize)(0.U((Per_GetMatrix_NDim_Width).W))))))))
+    val Reorder_ToLLC_Reg = Reg(Vec(2, Vec(Matrix_MN, Vec(Reorder_ToLLC_GroupSize, UInt(Per_GetMatrix_NDim_Width.W)))))
     val Reorder_ToLLC_Reg_Valid = RegInit(VecInit(Seq.fill(2)(false.B)))
     val Reorder_ToLLC_Reg_Get_Index  = RegInit(0.U(log2Ceil(2).W))//双缓冲
     val Reorder_ToLLC_Reg_Send_Index = RegInit(0.U(log2Ceil(2).W))//双缓冲
@@ -878,9 +873,9 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
         is(s_store_init) {
             memorystore_state := s_store_working
 
-            Reorder_ToLLC_Reg := 0.U.asTypeOf(Reorder_ToLLC_Reg)
             Reorder_ToLLC_Reg_Valid := 0.U.asTypeOf(Reorder_ToLLC_Reg_Valid) 
             Reorder_ToLLC_Reg_Get_Index := 0.U
+            Reorder_ToLLC_Reg_Send_Index := 0.U
 
             Fill_LLC_Iter := 0.U
 
@@ -888,7 +883,6 @@ class CMemoryLoader(implicit p: Parameters) extends CuteModule{
             TotalStoreRequestSize := 0.U
             CurrentStore_BlockTensor_Major_DIM_Iter := 0.U
             CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
-            FromMatrixRegReadFIFO := 0.U.asTypeOf(FromMatrixRegReadFIFO)
             FromMatrixRegReadFIFOHead := 0.U
             FromMatrixRegReadFIFOTail := 0.U
             Max_Load_MReg_Time := StoreMatrixRegTensor_M * StoreMatrixRegTensor_N * D_DataType / CMatrixReg_Total_Bandwidth.U//总共要发对SCAP的访存次数

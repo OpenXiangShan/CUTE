@@ -202,17 +202,17 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
     val SoureceIdSearchTable = RegInit(VecInit(Seq.fill(SoureceMaxNum)(0.U((new BSourceIdSearch).getWidth.W))))
     val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)).W))
 
-    val MReg_Fill_Table = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
-    val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(ABMatrixRegBankNEntries).W)))))//MatrixReg address for each returned LLC response.
+    val MReg_Fill_Table = Reg(Vec(BMemoryLoaderReadFromMemoryFIFODepth, UInt(outsideDataWidth.W)))
+    val MReg_Fill_Table_MReg_Addr = Reg(Vec(BMemoryLoaderReadFromMemoryFIFODepth, UInt(log2Ceil(ABMatrixRegBankNEntries).W))) //MatrixReg address for each returned LLC response.
     val MReg_Fill_Table_Time = RegInit((VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/ABMatrixRegEntryByteSize)+1).W)))))//Remaining writeback slices before releasing the entry.
-    val MReg_Fill_Table_IsTail = RegInit(VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(false.B)))
+    val MReg_Fill_Table_IsTail = Reg(Vec(BMemoryLoaderReadFromMemoryFIFODepth, Bool()))
     val MReg_Fill_Table_Free = MReg_Fill_Table_Time.map(_ === 0.U)//True when a fill-table entry is free.
     val MReg_Fill_Table_Valid = MReg_Fill_Table_Time.map(_ =/= 0.U)//True when a fill-table entry is valid.
     val MReg_Fill_Table_Insert_Index = PriorityEncoder(MReg_Fill_Table_Free)//Index of the first free entry.
     val MReg_Fill_Table_Not_Full = MReg_Fill_Table_Free.reduce(_ || _)//True when an entry is available.
     val MAX_Fill_Times = outsideDataWidthByte/ABMatrixRegEntryByteSize
 
-    val Bank_Fill_Search_FIFO = RegInit((VecInit(Seq.fill(ABMatrixRegNBanks)(VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))))//Bank assigned to each FIFO entry.
+    val Bank_Fill_Search_FIFO = Reg(Vec(ABMatrixRegNBanks, Vec(BMemoryLoaderReadFromMemoryFIFODepth, UInt(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))) //Bank assigned to each FIFO entry.
     val Bank_Fill_Search_FIFO_Head = RegInit((VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))//Next fill-table index to write for each bank.
     val Bank_Fill_Search_FIFO_Tail = RegInit((VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(log2Ceil(BMemoryLoaderReadFromMemoryFIFODepth).W)))))
     val Bank_Fill_Search_FIFO_Full = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(false.B)))
@@ -237,13 +237,9 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
             CurrentLoaded_BlockTensor_K_Iter := 0.U
             Request_N_Iter_Time := 0.U
             MaxRequestIter := MatrixRegTensor_N * K_Beat_Count //Total number of memory requests.
-            Bank_Fill_Search_FIFO := 0.U.asTypeOf(Bank_Fill_Search_FIFO)
             Bank_Fill_Search_FIFO_Head := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Head)
             Bank_Fill_Search_FIFO_Tail := 0.U.asTypeOf(Bank_Fill_Search_FIFO_Tail)
-            MReg_Fill_Table := 0.U.asTypeOf(MReg_Fill_Table)
-            MReg_Fill_Table_MReg_Addr := 0.U.asTypeOf(MReg_Fill_Table_MReg_Addr)
             MReg_Fill_Table_Time := 0.U.asTypeOf(MReg_Fill_Table_Time)
-            MReg_Fill_Table_IsTail := VecInit(Seq.fill(BMemoryLoaderReadFromMemoryFIFODepth)(false.B))
         }
         is(s_load_working) {
             io.ToMatrixRegIO.active := true.B
