@@ -112,12 +112,13 @@ object MatrixRegWriteProbes {
   )(implicit p: Parameters) {
     private val probes = Seq(aLoad, bLoad, cLoad, mma)
     val writebackWordsPerBank: Int = maxWritebackWordsPerBank(probes)
+    val writebackHasMask: Boolean = Seq(aLoad, bLoad, cLoad).exists(probe => !probe.useHash)
 
     def parameters(description: MatrixRegWriteProbe): Parameters = {
       require(probes.contains(description), "Matrix write probe must belong to this configuration")
       if (!p(CuteParamsKey).EnableDifftest) p
       else {
-        val params = ProbeParams(description, writebackWordsPerBank)
+        val params = ProbeParams(description, writebackWordsPerBank, writebackHasMask)
         // Forward queries directly: XSAI may supply a frozen Parameters cache.
         Parameters((_, _, _) => {
           case ProbeParamsKey => params
@@ -127,7 +128,11 @@ object MatrixRegWriteProbes {
     }
   }
 
-  private case class ProbeParams(description: MatrixRegWriteProbe, writebackWordsPerBank: Int) {
+  private case class ProbeParams(
+    description: MatrixRegWriteProbe,
+    writebackWordsPerBank: Int,
+    writebackHasMask: Boolean
+  ) {
     def genWriteProbes(ports: Int)(implicit p: Parameters): Seq[DiffAmuWritebackEvent] = {
       require(ports > 0, "Matrix probes require at least one port")
       val params = p(CuteParamsKey)
@@ -135,9 +140,28 @@ object MatrixRegWriteProbes {
         CuteDifftest.matrixHash(description.banks(params), description.bankBytes(params),
           description.regBytes(params), description.rowBytes(params), ports).toSeq
       } else {
-        Seq.fill(ports)(CuteDifftest(
-          new DiffAmuWritebackEvent(description.banks(params), writebackWordsPerBank), dontCare = true
-        ))
+        Seq.fill(ports) {
+          val banks = description.banks(params)
+          if (writebackHasMask) {
+            CuteDifftest(new DiffAmuWritebackEvent(banks, writebackWordsPerBank), dontCare = true)
+          } else {
+            // Keep the local write probe masked; compact only the transported event.
+            val writes = Wire(new DiffAmuWritebackEvent(banks, writebackWordsPerBank))
+            writes := DontCare
+            writes.valid := false.B
+            val event = CuteDifftest(
+              new DiffAmuWritebackEvent(banks, writebackWordsPerBank, hasMask = false), dontCare = true
+            )
+            event.elements.foreach { case (name, field) => field := writes.elements(name) }
+            val fullMask = ((BigInt(1) << description.bankBytes(params)) - 1).U
+            for (bank <- 0 until banks) {
+              when(writes.valid && writes.bankValid(bank)) {
+                assert(writes.bankMask.get(bank) === fullMask, "Unmasked matrix writeback requires a full bank mask")
+              }
+            }
+            writes
+          }
+        }
       }
     }
   }
@@ -147,7 +171,7 @@ object MatrixRegWriteProbes {
     require(p(CuteParamsKey).EnableDifftest, "Matrix write probes require DiffTest")
     val params = p.lift(ProbeParamsKey).getOrElse {
       // A standalone producer derives its width from its own description.
-      ProbeParams(default, maxWritebackWordsPerBank(Seq(default)))
+      ProbeParams(default, maxWritebackWordsPerBank(Seq(default)), writebackHasMask = true)
     }
     params.genWriteProbes(ports)
   }

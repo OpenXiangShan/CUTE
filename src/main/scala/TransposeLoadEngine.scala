@@ -375,11 +375,11 @@ trait HasTransposeLoadEngine { this: CuteModule =>
         event.finish := (if (port == 0) config.MicroTaskEndValid && config.MicroTaskEndReady else false.B)
         event.valid := target.WriteRequest.map(_(port).BankAddr.valid).reduce(_ || _) || event.finish
         val words = event.data.length / ABMatrixRegNBanks
+        event.bankValid := VecInit(target.WriteRequest.map(_(port).BankAddr.valid)).asUInt
         for (bank <- 0 until ABMatrixRegNBanks) {
           val write = target.WriteRequest(bank)(port)
-          event.bankValid(bank) := write.BankAddr.valid
           event.bankAddr(bank) := write.BankAddr.bits
-          event.bankMask(bank) := write.ByteMask.bits
+          event.bankMask.get(bank) := write.ByteMask.bits
           for (word <- 0 until words) {
             event.data(bank * words + word) := (if (word < ABMatrixRegEntryBitSize / 64)
               write.Data.bits(word * 64 + 63, word * 64) else 0.U)

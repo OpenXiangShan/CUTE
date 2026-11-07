@@ -7,32 +7,38 @@ import org.scalatest.flatspec.AnyFlatSpec
 import scala.collection.mutable.ArrayBuffer
 
 class MatrixHashConcurrentSpec extends AnyFlatSpec with ChiselScalatestTester {
-  behavior of "concurrent MatrixHash writes"
+  behavior of "concurrent CRC32C MatrixHash writes"
 
   private case class Write(port: Int, bank: Int, address: Int, data: BigInt, mask: Int = 65535)
-  private val polynomial = (BigInt(1) << 128) | 0x87
+  private val polynomial = BigInt("82f63b78", 16)
 
   private def reference(writes: Seq[Write]): (BigInt, Int) = {
-    var hash = BigInt(0)
+    val symbols = Array.fill(128)(0)
     var count = 0
     for (w <- writes; byte <- 0 until 16 if (w.mask & (1 << byte)) != 0) {
       val offset = (w.address * 2 + w.bank) * 16 + byte
-      hash ^= (BigInt(256) | ((w.data >> (byte * 8)) & 255)) << (9 * offset)
+      symbols(offset) ^= 256 | ((w.data >> (byte * 8)) & 255).toInt
       count += 1
     }
-    while (hash.bitLength > 128) hash ^= polynomial << (hash.bitLength - 129)
-    (hash, count)
+    var crc = BigInt("ffffffff", 16)
+    for (symbol <- symbols.reverse; bit <- 8 to 0 by -1) {
+      val feedback = crc.testBit(0) != ((symbol & (1 << bit)) != 0)
+      crc = (crc >> 1) ^ (if (feedback) polynomial else BigInt(0))
+    }
+    (crc ^ BigInt("ffffffff", 16), count)
   }
 
   for (ports <- Seq(1, 2)) {
     it should s"include final-cycle writes and isolate back-to-back instructions with $ports ports" in {
       test(if (ports == 1) new MatrixHash(2, 16, 128, 16) else new MatrixHash(2, 16, 128, 16, ports))
         .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+          assert(dut.io.out.hashLo.getWidth == 32)
+          assert(!dut.io.out.elements.contains("hashHi"))
           val expected = ArrayBuffer.empty[(BigInt, Int, BigInt)]
           val received = ArrayBuffer.empty[(BigInt, Int, BigInt)]
           def sample(): Unit = {
             if (dut.io.out.valid.peek().litToBoolean) {
-              val hash = dut.io.out.hashLo.peek().litValue | (dut.io.out.hashHi.peek().litValue << 64)
+              val hash = dut.io.out.hashLo.peek().litValue
               received += ((hash, dut.io.out.byteCount.peek().litValue.toInt, dut.io.out.pc.peek().litValue))
               dut.io.out.index.expect(2.U)
               dut.io.out.coreid.expect(0.U)
@@ -46,11 +52,12 @@ class MatrixHashConcurrentSpec extends AnyFlatSpec with ChiselScalatestTester {
               event.pc.poke(pc.U)
               event.coreid.poke(0.U)
               event.index.poke(2.U)
+              val bankValid = writes.filter(_.port == port).foldLeft(BigInt(0))((bits, write) => bits.setBit(write.bank))
+              event.bankValid.poke(bankValid.U)
               for (bank <- 0 until 2) {
                 val write = writes.find(w => w.port == port && w.bank == bank)
-                event.bankValid(bank).poke(write.nonEmpty.B)
                 event.bankAddr(bank).poke(write.map(_.address).getOrElse(0).U)
-                event.bankMask(bank).poke(write.map(_.mask).getOrElse(0).U)
+                event.bankMask.get(bank).poke(write.map(_.mask).getOrElse(0).U)
                 for (word <- 0 until 2) {
                   val data = (write.map(_.data).getOrElse(BigInt(0)) >> (word * 64)) & ((BigInt(1) << 64) - 1)
                   event.data(bank * 2 + word).poke(data.U)
@@ -76,7 +83,8 @@ class MatrixHashConcurrentSpec extends AnyFlatSpec with ChiselScalatestTester {
           expected += ((secondHash, secondCount, BigInt(0x2000)))
           step(second, finish = true, pc = 0x2000)
           // Finish without a write still produces one empty completion.
-          expected += ((BigInt(0), 0, BigInt(0x3000)))
+          val (emptyHash, emptyCount) = reference(Seq.empty)
+          expected += ((emptyHash, emptyCount, BigInt(0x3000)))
           step(Seq.empty, finish = true, pc = 0x3000)
           for (_ <- 0 until 8) step(Seq.empty)
           assert(received == expected, s"completion mismatch: $received != $expected")

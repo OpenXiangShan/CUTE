@@ -325,10 +325,10 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         difftestAmuFinish.valid := ((io.FromMatrixRegIO.WriteBankAddr.map(_.valid).reduce(_||_) && finalKWriteback)
           || (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
         difftestAmuFinish.pc := pcReg
+        difftestAmuFinish.bankValid := VecInit(io.FromMatrixRegIO.WriteBankAddr.map(_.valid)).asUInt
         for (i <- 0 until CMatrixRegNBanks) {
-          difftestAmuFinish.bankValid(i) := io.FromMatrixRegIO.WriteBankAddr(i).valid
           difftestAmuFinish.bankAddr(i) := io.FromMatrixRegIO.WriteBankAddr(i).bits
-          difftestAmuFinish.bankMask(i) := Fill(CMatrixRegEntryByteSize, true.B)
+          difftestAmuFinish.bankMask.get(i) := Fill(CMatrixRegEntryByteSize, true.B)
         }
         val bankBits = difftestAmuFinish.wordsPerBank * MatrixRegWriteProbes.writebackWordBits
         // Pad each bank before flattening into the common writeback layout.
