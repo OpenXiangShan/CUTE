@@ -166,10 +166,10 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         require(difftestLoadFinish.data.length % CMatrixRegNBanks == 0, "DiffAmuWritebackEvent.data should divide by C bank count")
         require(CMatrixRegEntryBitSize % 64 == 0, s"CMatrixRegEntryBitSize must be 64-bit aligned, got $CMatrixRegEntryBitSize")
         require(cMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuWritebackEvent only supports up to $eventWordsPerBank words per C bank, got $cMRegWordsPerBank")
+        difftestLoadFinish.bankValid := VecInit(io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr.map(_.valid)).asUInt
         for (i <- 0 until CMatrixRegNBanks) {
-          difftestLoadFinish.bankValid(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).valid
           difftestLoadFinish.bankAddr(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).bits
-          difftestLoadFinish.bankMask(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask(i).bits
+          difftestLoadFinish.bankMask.get(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask(i).bits
           for (w <- 0 until eventWordsPerBank) {
             if (w < cMRegWordsPerBank) {
               val lo = w * 64
@@ -187,11 +187,13 @@ class MultiChannelsCMemLoader(implicit p: Parameters) extends CuteModule{
         difftestLoadFinishLane1.index := 2.U
         difftestLoadFinishLane1.valid := io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest.map(_(1).BankAddr.valid).reduce(_ || _)
         difftestLoadFinishLane1.pc := LoadPcReg.get
+        difftestLoadFinishLane1.bankValid := VecInit(
+          io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest.map(_(1).BankAddr.valid)
+        ).asUInt
         for (i <- 0 until CMatrixRegNBanks) {
           val write = io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(i)(1)
-          difftestLoadFinishLane1.bankValid(i) := write.BankAddr.valid
           difftestLoadFinishLane1.bankAddr(i) := write.BankAddr.bits
-          difftestLoadFinishLane1.bankMask(i) := write.ByteMask.bits
+          difftestLoadFinishLane1.bankMask.get(i) := write.ByteMask.bits
           for (w <- 0 until eventWordsPerBank) {
             if (w < cMRegWordsPerBank) {
               difftestLoadFinishLane1.data(i * eventWordsPerBank + w) := write.Data.bits(w * 64 + 63, w * 64)

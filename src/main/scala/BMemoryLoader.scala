@@ -73,10 +73,10 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         require(difftestAmuFinish.data.length % ABMatrixRegNBanks == 0, "DiffAmuWritebackEvent.data should divide by AB bank count")
         require(ABMatrixRegEntryBitSize % 64 == 0, s"ABMatrixRegEntryBitSize must be 64-bit aligned, got $ABMatrixRegEntryBitSize")
         require(abMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuWritebackEvent only supports up to $eventWordsPerBank words per AB bank, got $abMRegWordsPerBank")
+        difftestAmuFinish.bankValid := VecInit(io.ToMatrixRegIO.BankAddr.map(_.valid)).asUInt
         for (i <- 0 until ABMatrixRegNBanks) {
-          difftestAmuFinish.bankValid(i) := io.ToMatrixRegIO.BankAddr(i).valid
           difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.BankAddr(i).bits
-          difftestAmuFinish.bankMask(i) := io.ToMatrixRegIO.ByteMask(i).bits
+          difftestAmuFinish.bankMask.get(i) := io.ToMatrixRegIO.ByteMask(i).bits
           for (w <- 0 until eventWordsPerBank) {
             if (w < abMRegWordsPerBank) {
               val lo = w * 64
@@ -94,11 +94,11 @@ class BMemoryLoader(implicit p: Parameters) extends CuteModule{
         difftestAmuFinishLane1.index := 1.U
         difftestAmuFinishLane1.valid := io.ToMatrixRegIO.WriteRequest.map(_(1).BankAddr.valid).reduce(_ || _)
         difftestAmuFinishLane1.pc := pcReg
+        difftestAmuFinishLane1.bankValid := VecInit(io.ToMatrixRegIO.WriteRequest.map(_(1).BankAddr.valid)).asUInt
         for (i <- 0 until ABMatrixRegNBanks) {
           val write = io.ToMatrixRegIO.WriteRequest(i)(1)
-          difftestAmuFinishLane1.bankValid(i) := write.BankAddr.valid
           difftestAmuFinishLane1.bankAddr(i) := write.BankAddr.bits
-          difftestAmuFinishLane1.bankMask(i) := write.ByteMask.bits
+          difftestAmuFinishLane1.bankMask.get(i) := write.ByteMask.bits
           for (w <- 0 until eventWordsPerBank) {
             if (w < abMRegWordsPerBank) {
               difftestAmuFinishLane1.data(i * eventWordsPerBank + w) := write.Data.bits(w * 64 + 63, w * 64)
