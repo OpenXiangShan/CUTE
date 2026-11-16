@@ -8,13 +8,13 @@ import org.scalatest.flatspec.AnyFlatSpec
 
 import scala.collection.mutable
 
-object CMemoryLoaderTransposeTestConfig {
+object AccMemoryTransposeTestConfig {
   val params: Parameters = new Config((_, _, _) => {
     case CuteParamsKey => CuteParams.CUTE_1Tops_64SCP
   })
 }
 
-class CMemoryLoaderTransposeHarness(implicit p: Parameters) extends CuteModule {
+class AccMemoryTransposeHarness(implicit p: Parameters) extends CuteModule {
   val io = IO(new Bundle {
     val start = Input(Bool())
     val sourceRows = Input(UInt(MatrixRegMaxTensorDimBitSize.W))
@@ -28,12 +28,12 @@ class CMemoryLoaderTransposeHarness(implicit p: Parameters) extends CuteModule {
     val taskEnd = Output(Bool())
     val request = Decoupled(new MMURequestIO)
     val response = Flipped(Decoupled(new MMUResponseIO))
-    val bankAddr = Output(Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W))))
-    val data = Output(Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W))))
-    val byteMask = Output(Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryByteSize.W))))
+    val bankAddr = Output(Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W))))
+    val data = Output(Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryBitSize.W))))
+    val byteMask = Output(Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryByteSize.W))))
   })
 
-  val loader = Module(new CMemoryLoader)
+  val loader = Module(new AccMemoryLegacy)
   loader.io.DebugInfo.DebugTimeStampe := 0.U
 
   loader.io.LoadLocalMMUIO.ConherentRequsetSourceID.valid := true.B
@@ -42,7 +42,7 @@ class CMemoryLoaderTransposeHarness(implicit p: Parameters) extends CuteModule {
   loader.io.LoadLocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
   loader.io.LoadLocalMMUIO.Request(0) <> io.request
   loader.io.LoadLocalMMUIO.Response(0) <> io.response
-  for (channel <- 1 until ABMatrixRegNBanks) {
+  for (channel <- 1 until TrMatrixRegNBanks) {
     loader.io.LoadLocalMMUIO.Request(channel).ready := true.B
     loader.io.LoadLocalMMUIO.Response(channel).valid := false.B
     loader.io.LoadLocalMMUIO.Response(channel).bits := 0.U.asTypeOf(new MMUResponseIO)
@@ -52,7 +52,7 @@ class CMemoryLoaderTransposeHarness(implicit p: Parameters) extends CuteModule {
   loader.io.StoreLocalMMUIO.ConherentRequsetSourceID.bits := 0.U
   loader.io.StoreLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
   loader.io.StoreLocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
-  for (channel <- 0 until ABMatrixRegNBanks) {
+  for (channel <- 0 until TrMatrixRegNBanks) {
     loader.io.StoreLocalMMUIO.Request(channel).ready := true.B
     loader.io.StoreLocalMMUIO.Response(channel).valid := false.B
     loader.io.StoreLocalMMUIO.Response(channel).bits := 0.U.asTypeOf(new MMUResponseIO)
@@ -60,7 +60,7 @@ class CMemoryLoaderTransposeHarness(implicit p: Parameters) extends CuteModule {
 
   loader.io.ToMatrixRegIO.LoadReadWriteResponse := loader.io.ToMatrixRegIO.LoadReadWriteRequest
   loader.io.ToMatrixRegIO.StoreReadWriteResponse := loader.io.ToMatrixRegIO.StoreReadWriteRequest
-  for (bank <- 0 until CMatrixRegNBanks) {
+  for (bank <- 0 until AccMatrixRegNBanks) {
     loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid := false.B
     loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits := 0.U
   }
@@ -101,7 +101,7 @@ class CMemoryLoaderTransposeHarness(implicit p: Parameters) extends CuteModule {
   io.taskEnd := config.LoadMicroTaskEndValid
 }
 
-class CMemoryLoaderTransposeSpec extends AnyFlatSpec with ChiselScalatestTester {
+class AccMemoryTransposeSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "the legacy C memory loader transpose path"
 
   private val base = 0x1000
@@ -140,7 +140,7 @@ class CMemoryLoaderTransposeSpec extends AnyFlatSpec with ChiselScalatestTester 
     }).toMap
   }
 
-  private def pokeResponse(dut: CMemoryLoaderTransposeHarness, meta: Option[RequestMeta]): Unit = {
+  private def pokeResponse(dut: AccMemoryTransposeHarness, meta: Option[RequestMeta]): Unit = {
     dut.io.response.valid.poke(meta.nonEmpty.B)
     dut.io.response.bits.ReseponseConherent.poke(true.B)
     dut.io.response.bits.ReseponseSourceID.poke(meta.map(_.sourceId).getOrElse(0).U)
@@ -148,7 +148,7 @@ class CMemoryLoaderTransposeSpec extends AnyFlatSpec with ChiselScalatestTester 
   }
 
   it should "scatter out-of-order e32 cacheline responses into transposed C-bank entries" in {
-    test(new CMemoryLoaderTransposeHarness()(CMemoryLoaderTransposeTestConfig.params))
+    test(new AccMemoryTransposeHarness()(AccMemoryTransposeTestConfig.params))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         dut.reset.poke(true.B)
         dut.clock.step(2)
@@ -169,7 +169,7 @@ class CMemoryLoaderTransposeSpec extends AnyFlatSpec with ChiselScalatestTester 
           dut.clock.step()
           readyWait += 1
         }
-        assert(dut.io.taskReady.peek().litToBoolean, "CML did not become ready")
+        assert(dut.io.taskReady.peek().litToBoolean, "accMemory did not become ready")
         dut.io.start.poke(true.B)
         dut.clock.step()
         dut.io.start.poke(false.B)
@@ -241,7 +241,7 @@ class CMemoryLoaderTransposeSpec extends AnyFlatSpec with ChiselScalatestTester 
           cycle += 1
         }
 
-        assert(endCycle >= 0, s"CML transpose task did not complete after $cycle cycles")
+        assert(endCycle >= 0, s"accMemory transpose task did not complete after $cycle cycles")
         assert(requests.size == requestCount, s"expected $requestCount requests, observed ${requests.size}")
         assert(responseCount == requestCount, s"expected $requestCount responses, observed $responseCount")
         assert(actualBytes.toMap == expectedBytes,

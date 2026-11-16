@@ -33,10 +33,11 @@ class LocalMMUL2BankRouteHarness(implicit p: Parameters) extends CuteModule {
   ))
   val bankRouter = Module(new AddressBankRequestRouter(laneCount))
 
-  scheduler.io.candidates(LocalMMUSourceClass.CLoad) <> io.cLoad
-  scheduler.io.candidates(LocalMMUSourceClass.A) <> io.a
-  for (source <- Seq(LocalMMUSourceClass.CStore, LocalMMUSourceClass.AScale,
-    LocalMMUSourceClass.B, LocalMMUSourceClass.BScale); lane <- 0 until laneCount) {
+  scheduler.io.candidates(LocalMMUSourceClass.AccLoader0) <> io.cLoad
+  scheduler.io.candidates(LocalMMUSourceClass.TrLoader0) <> io.a
+  for (source <- Seq(LocalMMUSourceClass.AccStorer0, LocalMMUSourceClass.AScale,
+    LocalMMUSourceClass.TrLoader1, LocalMMUSourceClass.BScale,
+    LocalMMUSourceClass.TrStorer0); lane <- 0 until laneCount) {
     scheduler.io.candidates(source)(lane).valid := false.B
     scheduler.io.candidates(source)(lane).bits := 0.U.asTypeOf(
       scheduler.io.candidates(source)(lane).bits)
@@ -44,7 +45,7 @@ class LocalMMUL2BankRouteHarness(implicit p: Parameters) extends CuteModule {
   bankRouter.io.in <> scheduler.io.llc
   io.bankOut <> bankRouter.io.out
   io.collisionMasked := scheduler.io.collisionMasked(0)
-  io.aPriorityBlocked := scheduler.io.priorityBlocked(LocalMMUSourceClass.A)
+  io.aPriorityBlocked := scheduler.io.priorityBlocked(LocalMMUSourceClass.TrLoader0)
   io.cLoadRefill := scheduler.io.cLoadRefill
 }
 
@@ -181,6 +182,80 @@ class LocalMMUL2BankRouteSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.aPriorityBlocked.expect("b00001000".U)
       dut.io.bankOut(5).valid.expect(true.B)
       dut.io.bankOut(5).bits.RequestAddr.expect((BigInt(5) << 6).U)
+    }
+  }
+}
+
+class TrMatrixStoreMmuSpec extends AnyFlatSpec with ChiselScalatestTester {
+  behavior of "LocalMMU A/B matrix-store routing"
+
+  it should "keep read data and A/B/C write acknowledgements separate on every physical channel" in {
+    implicit val p: Parameters = TrMatrixStoreTestParams()
+    test(new LocalMMU).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      val sources = Seq(dut.io.trLoader0Memory, dut.io.trLoader1Memory, dut.io.accLoader0Memory,
+        dut.io.accStorer0Memory, dut.io.ASLocalMMUIO, dut.io.BSLocalMMUIO,
+        dut.io.trStorer0Memory)
+      for (source <- sources; lane <- 0 until 8) {
+        val request = source.Request(lane)
+        request.valid.poke(false.B)
+        request.bits.RequestAddr.poke(0.U)
+        request.bits.RequestData.poke(0.U)
+        request.bits.RequestConherent.poke(true.B)
+        request.bits.RequestSourceID.poke(0.U)
+        request.bits.RequestType_isWrite.poke(false.B)
+        request.bits.UseAllocatedSourceID.poke(false.B)
+        request.bits.isA.poke(false.B)
+        request.bits.MatrixIsAcc.poke(false.B)
+        request.bits.IsTranspose.poke(false.B)
+        request.bits.RequestMask.poke(((BigInt(1) << 64) - 1).U)
+        source.Response(lane).ready.poke(false.B)
+      }
+      dut.io.LastLevelCacheTLIO.ConherentRequsetSourceID.valid.poke(true.B)
+      dut.io.LastLevelCacheTLIO.ConherentRequsetSourceID.bits.poke(0.U)
+      dut.io.LastLevelCacheTLIO.nonConherentRequsetSourceID.valid.poke(false.B)
+      dut.io.LastLevelCacheTLIO.nonConherentRequsetSourceID.bits.poke(0.U)
+      for (lane <- 0 until 8) {
+        dut.io.LastLevelCacheTLIO.Request(lane).ready.poke(true.B)
+        dut.io.LastLevelCacheTLIO.Response(lane).valid.poke(false.B)
+        dut.io.LastLevelCacheTLIO.Response(lane).bits.ReseponseData.poke(0.U)
+        dut.io.LastLevelCacheTLIO.Response(lane).bits.ReseponseConherent.poke(true.B)
+        dut.io.LastLevelCacheTLIO.Response(lane).bits.ReseponseSourceID.poke(0.U)
+      }
+      dut.clock.step(2)
+      for ((source, tag) <- sources.zipWithIndex; lane <- 0 until 8) {
+        val write = Set(3, 6).contains(tag)
+        val id = 17 + lane
+        val request = source.Request(lane)
+        request.valid.poke(true.B)
+        request.bits.RequestAddr.poke((0x80000000L + lane * 64).U)
+        request.bits.RequestSourceID.poke(id.U)
+        request.bits.RequestType_isWrite.poke(write.B)
+        request.ready.expect(true.B)
+        val output = dut.io.LastLevelCacheTLIO.Request(lane)
+        output.valid.expect(true.B)
+        output.bits.RequestSourceID.expect(((id << 3) | tag).U)
+        output.bits.RequestType_isWrite.expect(write.B)
+        output.bits.MatrixIsAcc.expect((tag == 2 || tag == 3).B)
+        dut.clock.step()
+        request.valid.poke(false.B)
+        val returnLane = 7 - lane
+        val response = dut.io.LastLevelCacheTLIO.Response(returnLane)
+        response.valid.poke(true.B)
+        response.bits.ReseponseSourceID.poke(((id << 3) | tag).U)
+        response.bits.ReseponseData.poke(0x1234.U)
+        response.ready.expect(false.B)
+        for ((other, sourceTag) <- sources.zipWithIndex) {
+          other.Response(returnLane).valid.expect((sourceTag == tag).B)
+        }
+        source.Response(returnLane).bits.ReseponseSourceID.expect(id.U)
+        if (write) source.Response(returnLane).bits.ReseponseData.expect(0.U)
+        dut.clock.step(2)
+        source.Response(returnLane).ready.poke(true.B)
+        response.ready.expect(true.B)
+        dut.clock.step()
+        response.valid.poke(false.B)
+        source.Response(returnLane).ready.poke(false.B)
+      }
     }
   }
 }

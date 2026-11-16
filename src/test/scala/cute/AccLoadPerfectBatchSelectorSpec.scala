@@ -5,7 +5,7 @@ import chisel3.util._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
 
-class CMLPerfectBatchSelectorHarness extends Module {
+class AccLoadPerfectBatchSelectorHarness extends Module {
   private val laneCount = 8
   val io = IO(new Bundle {
     val valid = Input(Vec(laneCount, Bool()))
@@ -16,7 +16,7 @@ class CMLPerfectBatchSelectorHarness extends Module {
     val selected = Output(UInt(laneCount.W))
   })
 
-  io.selected := CMLPerfectBatchSelector.select(
+  io.selected := AccLoadPerfectBatchSelector.select(
     io.valid,
     io.address,
     io.destination,
@@ -25,11 +25,11 @@ class CMLPerfectBatchSelectorHarness extends Module {
     l2BankCount = 8)
 }
 
-class CMLPerfectBatchSelectorSpec extends AnyFlatSpec with ChiselScalatestTester {
-  behavior of "CMLPerfectBatchSelector"
+class AccLoadPerfectBatchSelectorSpec extends AnyFlatSpec with ChiselScalatestTester {
+  behavior of "AccLoadPerfectBatchSelector"
 
   private def drive(
-    dut: CMLPerfectBatchSelectorHarness,
+    dut: AccLoadPerfectBatchSelectorHarness,
     valid: Seq[Boolean],
     banks: Seq[Int],
     destinations: Seq[Int],
@@ -78,7 +78,7 @@ class CMLPerfectBatchSelectorSpec extends AnyFlatSpec with ChiselScalatestTester
   }
 
   it should "preserve every retained seed and add only compatible requests" in {
-    test(new CMLPerfectBatchSelectorHarness) { dut =>
+    test(new AccLoadPerfectBatchSelectorHarness) { dut =>
       val valid = Seq.fill(8)(true)
       val banks = 0 until 8
       val destinations = Seq(0, 4, 1, 5, 2, 6, 3, 7)
@@ -95,7 +95,7 @@ class CMLPerfectBatchSelectorSpec extends AnyFlatSpec with ChiselScalatestTester
   }
 
   it should "rotate the progress seed and always select non-empty work" in {
-    test(new CMLPerfectBatchSelectorHarness) { dut =>
+    test(new AccLoadPerfectBatchSelectorHarness) { dut =>
       val valid = Seq.fill(8)(true)
       val sameBanks = Seq.fill(8)(0)
       val destinations = 0 until 8
@@ -108,7 +108,7 @@ class CMLPerfectBatchSelectorSpec extends AnyFlatSpec with ChiselScalatestTester
   }
 
   it should "keep conflicting retained requests for deterministic fallback" in {
-    test(new CMLPerfectBatchSelectorHarness) { dut =>
+    test(new AccLoadPerfectBatchSelectorHarness) { dut =>
       val retained = Seq(true, true) ++ Seq.fill(6)(false)
       drive(dut, Seq.fill(8)(true), Seq.fill(8)(0), 0 until 8, retained)
       assert((dut.io.selected.peek().litValue & 0x3) == 0x3)
@@ -117,7 +117,7 @@ class CMLPerfectBatchSelectorSpec extends AnyFlatSpec with ChiselScalatestTester
 
   it should "match an address-derived eight-bank route oracle" in {
     val random = new scala.util.Random(0x004005)
-    test(new CMLPerfectBatchSelectorHarness) { dut =>
+    test(new AccLoadPerfectBatchSelectorHarness) { dut =>
       for (_ <- 0 until 100) {
         val valid = Seq.fill(8)(random.nextBoolean())
         val banks = Seq.fill(8)(random.nextInt(8))

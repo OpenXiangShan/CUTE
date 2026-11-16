@@ -45,41 +45,41 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
   it should "mask predictable C collisions and reuse the released lane with A then B" in {
     test(scheduler).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       init(dut)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(0).valid.poke(true.B)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(0).bits.returnBank.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(0).bits.physicalInput.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(1).valid.poke(true.B)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(1).bits.returnBank.poke(2.U)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(1).bits.physicalInput.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.A)(1).valid.poke(true.B)
-      dut.io.candidates(LocalMMUSourceClass.A)(1).bits.returnBank.poke(7.U)
-      dut.io.candidates(LocalMMUSourceClass.A)(1).bits.physicalInput.poke(7.U)
-      dut.io.candidates(LocalMMUSourceClass.B)(1).valid.poke(true.B)
-      dut.io.candidates(LocalMMUSourceClass.B)(1).bits.returnBank.poke(6.U)
-      dut.io.candidates(LocalMMUSourceClass.B)(1).bits.physicalInput.poke(6.U)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(0).valid.poke(true.B)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(0).bits.returnBank.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(0).bits.physicalInput.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(1).valid.poke(true.B)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(1).bits.returnBank.poke(2.U)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(1).bits.physicalInput.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(1).valid.poke(true.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(1).bits.returnBank.poke(7.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(1).bits.physicalInput.poke(7.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(1).valid.poke(true.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(1).bits.returnBank.poke(6.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(1).bits.physicalInput.poke(6.U)
 
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(0).ready.expect(true.B)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(1).ready.expect(false.B)
-      dut.io.candidates(LocalMMUSourceClass.A)(1).ready.expect(true.B)
-      dut.io.candidates(LocalMMUSourceClass.B)(1).ready.expect(false.B)
-      dut.io.selectedOwner(1).expect(LocalMMUSourceClass.A.U)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(0).ready.expect(true.B)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(1).ready.expect(false.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(1).ready.expect(true.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(1).ready.expect(false.B)
+      dut.io.selectedOwner(1).expect(LocalMMUSourceClass.TrLoader0.U)
       dut.io.collisionMasked(0).expect("b00000010".U)
       dut.io.cLoadRefill.expect("b00000010".U)
-      dut.io.priorityBlocked(LocalMMUSourceClass.B).expect("b00000010".U)
+      dut.io.priorityBlocked(LocalMMUSourceClass.TrLoader1).expect("b00000010".U)
     }
   }
 
   it should "treat C load and C store as independent collision domains" in {
     test(scheduler).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       init(dut)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(0).valid.poke(true.B)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(0).bits.returnBank.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(0).bits.physicalInput.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.CStore)(1).valid.poke(true.B)
-      dut.io.candidates(LocalMMUSourceClass.CStore)(1).bits.returnBank.poke(2.U)
-      dut.io.candidates(LocalMMUSourceClass.CStore)(1).bits.physicalInput.poke(2.U)
-      dut.io.candidates(LocalMMUSourceClass.CLoad)(0).ready.expect(true.B)
-      dut.io.candidates(LocalMMUSourceClass.CStore)(1).ready.expect(true.B)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(0).valid.poke(true.B)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(0).bits.returnBank.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(0).bits.physicalInput.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.AccStorer0)(1).valid.poke(true.B)
+      dut.io.candidates(LocalMMUSourceClass.AccStorer0)(1).bits.returnBank.poke(2.U)
+      dut.io.candidates(LocalMMUSourceClass.AccStorer0)(1).bits.physicalInput.poke(2.U)
+      dut.io.candidates(LocalMMUSourceClass.AccLoader0)(0).ready.expect(true.B)
+      dut.io.candidates(LocalMMUSourceClass.AccStorer0)(1).ready.expect(true.B)
     }
   }
 
@@ -88,14 +88,14 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
       init(dut)
       val banks = Seq(0, 4, 1, 5, 2, 6, 3, 7)
       for (lane <- 0 until 8) {
-        dut.io.candidates(LocalMMUSourceClass.CLoad)(lane).valid.poke(true.B)
-        dut.io.candidates(LocalMMUSourceClass.CLoad)(lane).bits.returnBank.poke(banks(lane).U)
-        dut.io.candidates(LocalMMUSourceClass.CLoad)(lane).bits.physicalInput.poke(lane.U)
+        dut.io.candidates(LocalMMUSourceClass.AccLoader0)(lane).valid.poke(true.B)
+        dut.io.candidates(LocalMMUSourceClass.AccLoader0)(lane).bits.returnBank.poke(banks(lane).U)
+        dut.io.candidates(LocalMMUSourceClass.AccLoader0)(lane).bits.physicalInput.poke(lane.U)
       }
       val expected = LocalMMUSchedulerTestUtils.survivorMask(
         Seq.fill(8)(true), banks, responseChannels = 8)
       val accepted = (0 until 8).count(lane =>
-        dut.io.candidates(LocalMMUSourceClass.CLoad)(lane).ready.peek().litToBoolean)
+        dut.io.candidates(LocalMMUSourceClass.AccLoader0)(lane).ready.peek().litToBoolean)
       assert(accepted == expected.bitCount)
       assert(accepted == 8)
     }
@@ -108,9 +108,9 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
       // by the topology oracle. Destination remains the request-lane bank.
       val physicalInputs = Seq(0, 2, 4, 6, 1, 3, 5, 7)
       for (lane <- 0 until 8) {
-        dut.io.candidates(LocalMMUSourceClass.CLoad)(lane).valid.poke(true.B)
-        dut.io.candidates(LocalMMUSourceClass.CLoad)(lane).bits.physicalInput.poke(physicalInputs(lane).U)
-        dut.io.candidates(LocalMMUSourceClass.CLoad)(lane).bits.returnBank.poke(lane.U)
+        dut.io.candidates(LocalMMUSourceClass.AccLoader0)(lane).valid.poke(true.B)
+        dut.io.candidates(LocalMMUSourceClass.AccLoader0)(lane).bits.physicalInput.poke(physicalInputs(lane).U)
+        dut.io.candidates(LocalMMUSourceClass.AccLoader0)(lane).bits.returnBank.poke(lane.U)
       }
       val expected = LocalMMUSchedulerTestUtils.physicalSurvivorMask(
         Seq.fill(8)(true), physicalInputs, (0 until 8), responseChannels = 8)
@@ -118,7 +118,7 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.survivor(0).expect(expected.U)
       dut.io.collisionMasked(0).expect(0.U)
       for (lane <- 0 until 8) {
-        dut.io.candidates(LocalMMUSourceClass.CLoad)(lane).ready.expect(true.B)
+        dut.io.candidates(LocalMMUSourceClass.AccLoader0)(lane).ready.expect(true.B)
       }
     }
   }
@@ -128,37 +128,37 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
       init(dut)
       val lane = 3
       Seq(
-        LocalMMUSourceClass.CStore,
-        LocalMMUSourceClass.A,
+        LocalMMUSourceClass.AccStorer0,
+        LocalMMUSourceClass.TrLoader0,
         LocalMMUSourceClass.AScale,
-        LocalMMUSourceClass.B,
+        LocalMMUSourceClass.TrLoader1,
         LocalMMUSourceClass.BScale
       ).foreach { source =>
         dut.io.candidates(source)(lane).valid.poke(true.B)
         dut.io.candidates(source)(lane).bits.physicalInput.poke(lane.U)
         dut.io.candidates(source)(lane).bits.returnBank.poke(lane.U)
       }
-      dut.io.selectedOwner(lane).expect(LocalMMUSourceClass.A.U)
-      dut.io.candidates(LocalMMUSourceClass.A)(lane).ready.expect(true.B)
-      dut.io.candidates(LocalMMUSourceClass.B)(lane).ready.expect(false.B)
-      dut.io.candidates(LocalMMUSourceClass.CStore)(lane).ready.expect(false.B)
-      dut.io.priorityBlocked(LocalMMUSourceClass.CStore).expect((1 << lane).U)
+      dut.io.selectedOwner(lane).expect(LocalMMUSourceClass.TrLoader0.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(lane).ready.expect(true.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(lane).ready.expect(false.B)
+      dut.io.candidates(LocalMMUSourceClass.AccStorer0)(lane).ready.expect(false.B)
+      dut.io.priorityBlocked(LocalMMUSourceClass.AccStorer0).expect((1 << lane).U)
 
-      dut.io.candidates(LocalMMUSourceClass.A)(lane).valid.poke(false.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(lane).valid.poke(false.B)
       dut.io.selectedOwner(lane).expect(LocalMMUSourceClass.AScale.U)
       dut.io.candidates(LocalMMUSourceClass.AScale)(lane).valid.poke(false.B)
-      dut.io.selectedOwner(lane).expect(LocalMMUSourceClass.B.U)
-      dut.io.candidates(LocalMMUSourceClass.B)(lane).valid.poke(false.B)
+      dut.io.selectedOwner(lane).expect(LocalMMUSourceClass.TrLoader1.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(lane).valid.poke(false.B)
       dut.io.selectedOwner(lane).expect(LocalMMUSourceClass.BScale.U)
       dut.io.candidates(LocalMMUSourceClass.BScale)(lane).valid.poke(false.B)
-      dut.io.selectedOwner(lane).expect(LocalMMUSourceClass.CStore.U)
+      dut.io.selectedOwner(lane).expect(LocalMMUSourceClass.AccStorer0.U)
     }
   }
 
   it should "forward an unchanged candidate through ten stalled cycles" in {
     test(scheduler).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       init(dut)
-      val source = LocalMMUSourceClass.CLoad
+      val source = LocalMMUSourceClass.AccLoader0
       dut.io.llc(0).ready.poke(false.B)
       dut.io.candidates(source)(0).valid.poke(true.B)
       dut.io.candidates(source)(0).bits.returnBank.poke(3.U)
@@ -167,7 +167,7 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.candidates(source)(0).bits.request.RequestSourceID.poke("h55".U)
       dut.clock.step()
       for (cycle <- 0 until 10) {
-        dut.io.candidates(LocalMMUSourceClass.A)((cycle + 1) % 8).valid.poke((cycle % 2 == 0).B)
+        dut.io.candidates(LocalMMUSourceClass.TrLoader0)((cycle + 1) % 8).valid.poke((cycle % 2 == 0).B)
         dut.io.llc(0).valid.expect(true.B)
         dut.io.llc(0).bits.RequestAddr.expect("h12340".U)
         dut.io.llc(0).bits.RequestSourceID.expect("h55".U)
@@ -182,7 +182,7 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
   it should "drain a perfect batch exactly once after asymmetric ten-cycle stalls" in {
     test(scheduler).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       init(dut)
-      val source = LocalMMUSourceClass.CLoad
+      val source = LocalMMUSourceClass.AccLoader0
       val physicalInputs = Seq(0, 2, 4, 6, 1, 3, 5, 7)
       val fired = Array.fill(8)(0)
       for (lane <- 0 until 8) {
@@ -232,7 +232,7 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
   it should "classify first-stage, later-stage, and duplicate-input C conflicts exactly" in {
     test(scheduler).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       init(dut)
-      val source = LocalMMUSourceClass.CLoad
+      val source = LocalMMUSourceClass.AccLoader0
 
       def drivePair(secondPhysicalInput: Int): Unit = {
         Seq(0, 1).foreach { lane =>
@@ -263,7 +263,7 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
   it should "reselect current Omega candidates after a stall without consuming the loser" in {
     test(scheduler).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       init(dut)
-      val source = LocalMMUSourceClass.CLoad
+      val source = LocalMMUSourceClass.AccLoader0
       dut.io.llc(1).ready.poke(false.B)
       dut.io.candidates(source)(1).valid.poke(true.B)
       dut.io.candidates(source)(1).bits.returnBank.poke(0.U)
@@ -297,28 +297,28 @@ class LocalMMUSchedulerSpec extends AnyFlatSpec with ChiselScalatestTester {
       cStoreLegacy = false
     )).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       init(dut)
-      dut.io.candidates(LocalMMUSourceClass.A)(0).valid.poke(true.B)
-      dut.io.candidates(LocalMMUSourceClass.A)(1).valid.poke(true.B)
-      dut.io.candidates(LocalMMUSourceClass.A)(0).bits.returnBank.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.A)(1).bits.returnBank.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.A)(0).bits.physicalInput.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.A)(1).bits.physicalInput.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(0).valid.poke(true.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(1).valid.poke(true.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(0).bits.returnBank.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(1).bits.returnBank.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(0).bits.physicalInput.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(1).bits.physicalInput.poke(0.U)
       // Legacy bypasses Omega conflict prediction, but duplicate L2 inputs
       // still represent one physical bank opportunity.
       dut.io.survivor(2).expect("b00000001".U)
-      dut.io.candidates(LocalMMUSourceClass.A)(0).valid.poke(false.B)
-      dut.io.candidates(LocalMMUSourceClass.A)(1).valid.poke(false.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(0).valid.poke(false.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader0)(1).valid.poke(false.B)
 
-      dut.io.candidates(LocalMMUSourceClass.B)(0).valid.poke(true.B)
-      dut.io.candidates(LocalMMUSourceClass.B)(1).valid.poke(true.B)
-      dut.io.candidates(LocalMMUSourceClass.B)(0).bits.returnBank.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.B)(1).bits.returnBank.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.B)(0).bits.physicalInput.poke(0.U)
-      dut.io.candidates(LocalMMUSourceClass.B)(1).bits.physicalInput.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(0).valid.poke(true.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(1).valid.poke(true.B)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(0).bits.returnBank.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(1).bits.returnBank.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(0).bits.physicalInput.poke(0.U)
+      dut.io.candidates(LocalMMUSourceClass.TrLoader1)(1).bits.physicalInput.poke(0.U)
       dut.io.survivor(3).expect("b00000001".U)
     }
   }
-  for (source <- Seq(LocalMMUSourceClass.A, LocalMMUSourceClass.B)) {
+  for (source <- Seq(LocalMMUSourceClass.TrLoader0, LocalMMUSourceClass.TrLoader1)) {
     it should s"drain non-identity four-bank AB source $source with partial issue" in {
       test(new CollisionAwareLocalMMUScheduler(
         laneCount = 4, bankCount = 4, aResponseChannels = 4, bResponseChannels = 4,

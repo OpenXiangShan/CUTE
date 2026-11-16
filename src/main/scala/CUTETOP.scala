@@ -16,21 +16,58 @@ class CUTETopIO()(implicit p: Parameters) extends CuteBundle{
     val matrixPrefetch = Option.when(EnableMatrixPrefetch)(Output(new MatrixPrefetchControl))
 }
 
-class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends CuteModule with HasTransposeLoadEngine {
-    private val nameContext = VerilogNameHelper.sanitize(contextName)
-    override def desiredName: String = s"${nameContext}Wrapper_${if (AMLUseLegacyLoader) "Legacy" else "Multi"}"
-
+/** Route ADC/BDC reads to the selected TR matrix register. */
+class TrMatrixRegReadPortRouter(implicit p: Parameters) extends CuteModule {
     val io = IO(new Bundle {
-        val ToMatrixRegIO = Flipped(new ABMemoryLoaderMatrixRegIO)
-        val ConfigInfo = Flipped(new AMLMicroTaskConfigIO)
-        val LocalMMUIO = Flipped(new LocalMMUIO)
-        val DebugInfo = Input(new DebugInfoIO)
-        val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
-        val perfProbe = Output(new ABMLPerfProbe)
+        val clients = Vec(2, new TrDataControlMatrixRegIO)
+        val regIds = Input(Vec(2, UInt(TrMatrixRegIdWidth.W)))
+        val registers = Flipped(Vec(TrMatrixRegCount, new TrDataControlMatrixRegIO))
     })
 
-    if (!AMLUseLegacyLoader) {
-        val inner = Module(new MultiChannelsABMemLoader("AML", nameContext, emitDifftest = false))
+    io.clients.foreach { client =>
+        client.BankAddr.ready := false.B
+        client.Data.valid := false.B
+        client.Data.bits := 0.U.asTypeOf(client.Data.bits)
+    }
+    for (regIdx <- 0 until TrMatrixRegCount) {
+        val registerPort = io.registers(regIdx)
+        val selected = VecInit((0 until 2).map { clientIdx =>
+            io.clients(clientIdx).BankAddr.valid && io.regIds(clientIdx) === regIdx.U
+        })
+        assert(PopCount(selected) <= 1.U,
+            "TR MatrixReg has one read port; readers must be excluded by task scheduling")
+        registerPort.BankAddr.valid := selected.asUInt.orR
+        registerPort.BankAddr.bits := Mux1H(selected, io.clients.map(_.BankAddr.bits))
+        for (clientIdx <- 0 until 2) {
+            when (selected(clientIdx)) {
+                io.clients(clientIdx).BankAddr.ready := registerPort.BankAddr.ready
+            }
+            val owner = RegNext(selected(clientIdx) && registerPort.BankAddr.fire, false.B)
+            when (owner) {
+                io.clients(clientIdx).Data := registerPort.Data
+                assert(registerPort.Data.valid,
+                    "TR MatrixReg read response must return after one cycle")
+            }
+        }
+    }
+}
+
+class TrLoader0Wrapper(contextName: String = "trLoader0")(implicit p: Parameters)
+    extends CuteModule with HasTransposeLoadEngine {
+    private val nameContext = VerilogNameHelper.sanitize(contextName)
+    override def desiredName: String = s"${nameContext}Wrapper_${if (TrLoader0UseLegacyLoader) "Legacy" else "Multi"}"
+
+    val io = IO(new Bundle {
+        val ToMatrixRegIO = Flipped(new TrLoadMatrixRegIO)
+        val ConfigInfo = Flipped(new TrLoadTaskConfigIO)
+        val LocalMMUIO = Flipped(new LocalMMUIO)
+        val DebugInfo = Input(new DebugInfoIO)
+        val MatrixRegId = Output(UInt(TrMatrixRegIdWidth.W))
+        val perfProbe = Output(new TrLoadPerfProbe)
+    })
+
+    if (!TrLoader0UseLegacyLoader) {
+        val inner = Module(new MultiChannelTrLoader("trLoader0", nameContext, emitDifftest = false))
             .suggestName(s"${nameContext}_multi_loader")
         connectTransposeLoadEngine(io.ConfigInfo, io.LocalMMUIO, io.ToMatrixRegIO, io.MatrixRegId,
           inner.io.ConfigInfo, inner.io.LocalMMUIO, inner.io.ToMatrixRegIO, inner.io.MatrixRegId,
@@ -38,90 +75,65 @@ class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends Cu
         inner.io.DebugInfo <> io.DebugInfo
         io.perfProbe := inner.io.perfProbe
     } else {
-        val inner = Module(new AMemoryLoader(emitDifftest = false)).suggestName(s"${nameContext}_legacy_loader")
+        val inner = Module(new TrLoader0Legacy(emitDifftest = false)).suggestName(s"${nameContext}_legacy_loader")
         connectTransposeLoadEngine(io.ConfigInfo, io.LocalMMUIO, io.ToMatrixRegIO, io.MatrixRegId,
           inner.io.ConfigInfo, inner.io.LocalMMUIO, inner.io.ToMatrixRegIO, inner.io.MatrixRegId,
           legacy = true, diffIndex = 0)
         inner.io.DebugInfo <> io.DebugInfo
-        io.perfProbe := 0.U.asTypeOf(new ABMLPerfProbe)
+        io.perfProbe := 0.U.asTypeOf(new TrLoadPerfProbe)
     }
 }
 
-class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends CuteModule {
+class TrLoader1Wrapper(contextName: String = "trLoader1")(implicit p: Parameters) extends CuteModule {
     private val nameContext = VerilogNameHelper.sanitize(contextName)
-    override def desiredName: String = s"${nameContext}Wrapper_${if (BMLUseLegacyLoader) "Legacy" else "Multi"}"
+    override def desiredName: String = s"${nameContext}Wrapper_${if (TrLoader1UseLegacyLoader) "Legacy" else "Multi"}"
 
     val io = IO(new Bundle {
-        val ToMatrixRegIO = Flipped(new ABMemoryLoaderMatrixRegIO)
-        val ConfigInfo = Flipped(new BMLMicroTaskConfigIO)
+        val ToMatrixRegIO = Flipped(new TrLoadMatrixRegIO)
+        val ConfigInfo = Flipped(new TrLoadTaskConfigIO)
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
-        val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
-        val perfProbe = Output(new ABMLPerfProbe)
+        val MatrixRegId = Output(UInt(TrMatrixRegIdWidth.W))
+        val perfProbe = Output(new TrLoadPerfProbe)
     })
 
-    if (!BMLUseLegacyLoader) {
-        val inner = Module(new MultiChannelsABMemLoader("BML", nameContext))
+    if (!TrLoader1UseLegacyLoader) {
+        val inner = Module(new MultiChannelTrLoader("trLoader1", nameContext))
             .suggestName(s"${nameContext}_multi_loader")
-        val bToAConfig = Wire(new AMLMicroTaskConfigIO)
-        bToAConfig.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr
-        bToAConfig.ApplicationTensor_A.ApplicationTensor_A_Stride_M := io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_Stride_N
-        bToAConfig.ApplicationTensor_A.dataType := io.ConfigInfo.ApplicationTensor_B.dataType
-        bToAConfig.ApplicationTensor_A.HasTail := io.ConfigInfo.ApplicationTensor_B.HasTail
-        bToAConfig.ApplicationTensor_A.TailByteMask := io.ConfigInfo.ApplicationTensor_B.TailByteMask
-        bToAConfig.ApplicationTensor_A.K_Beat_Count := io.ConfigInfo.ApplicationTensor_B.K_Beat_Count
-        bToAConfig.MatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_N
-        bToAConfig.MatrixRegTensor_K := io.ConfigInfo.MatrixRegTensor_K
-        bToAConfig.MatrixRegId := io.ConfigInfo.MatrixRegId
-        bToAConfig.PrefetchTaskId.zip(io.ConfigInfo.PrefetchTaskId).foreach { case (to, from) => to := from }
-        bToAConfig.PrefetchStream.zip(io.ConfigInfo.PrefetchStream).foreach { case (to, from) => to := from }
-        bToAConfig.Conherent := io.ConfigInfo.Conherent
-        bToAConfig.Is_Transpose := io.ConfigInfo.Is_Transpose
-        bToAConfig.MicroTaskValid := io.ConfigInfo.MicroTaskValid
-        bToAConfig.MicroTaskEndReady := io.ConfigInfo.MicroTaskEndReady
-        bToAConfig.LoadTaskInfo.Is_FullLoad := true.B
-        bToAConfig.LoadTaskInfo.Is_ZeroLoad := false.B
-        bToAConfig.LoadTaskInfo.Is_RepeatRowLoad := false.B
-        bToAConfig.pc.foreach(_ := io.ConfigInfo.pc.getOrElse(0xDEAD1234.U))
-        bToAConfig.coreid.foreach(_ := io.ConfigInfo.coreid.getOrElse(0xDEAD5678.U))
-
-        io.ConfigInfo.MicroTaskReady := bToAConfig.MicroTaskReady
-        io.ConfigInfo.MicroTaskEndValid := bToAConfig.MicroTaskEndValid
-
-        inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
-        inner.io.ConfigInfo <> bToAConfig
-        inner.io.LocalMMUIO <> io.LocalMMUIO
-        inner.io.DebugInfo <> io.DebugInfo
-        io.MatrixRegId := inner.io.MatrixRegId
-        io.perfProbe := inner.io.perfProbe
-    } else {
-        val inner = Module(new BMemoryLoader).suggestName(s"${nameContext}_legacy_loader")
         inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
         inner.io.ConfigInfo <> io.ConfigInfo
         inner.io.LocalMMUIO <> io.LocalMMUIO
         inner.io.DebugInfo <> io.DebugInfo
         io.MatrixRegId := inner.io.MatrixRegId
-        io.perfProbe := 0.U.asTypeOf(new ABMLPerfProbe)
+        io.perfProbe := inner.io.perfProbe
+    } else {
+        val inner = Module(new TrLoader1Legacy).suggestName(s"${nameContext}_legacy_loader")
+        inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
+        inner.io.ConfigInfo <> io.ConfigInfo
+        inner.io.LocalMMUIO <> io.LocalMMUIO
+        inner.io.DebugInfo <> io.DebugInfo
+        io.MatrixRegId := inner.io.MatrixRegId
+        io.perfProbe := 0.U.asTypeOf(new TrLoadPerfProbe)
     }
 }
 
-class CMLWrapper(contextName: String = "CML")(implicit p: Parameters) extends CuteModule {
+class AccMemoryWrapper(contextName: String = "accMemory")(implicit p: Parameters) extends CuteModule {
     private val nameContext = VerilogNameHelper.sanitize(contextName)
-    override def desiredName: String = s"${nameContext}Wrapper_${if (CLoadUseLegacyLoader) "Legacy" else "Multi"}"
+    override def desiredName: String = s"${nameContext}Wrapper_${if (AccLoader0UseLegacyLoader) "Legacy" else "Multi"}"
 
     val io = IO(new Bundle {
-        val ToMatrixRegIO = Flipped(new CMemoryLoaderMatrixRegIO)
-        val ConfigInfo = Flipped(new CMLMicroTaskConfigIO)
+        val ToMatrixRegIO = Flipped(new AccMemoryMatrixRegIO)
+        val ConfigInfo = Flipped(new AccMemoryTaskConfigIO)
         val LoadLocalMMUIO = Flipped(new LocalMMUIO)
         val StoreLocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
-        val LoadMatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
-        val StoreMatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
-        val perfProbe = Output(new CMLPerfProbe)
+        val LoadMatrixRegId = Output(UInt(AccMatrixRegIdWidth.W))
+        val StoreMatrixRegId = Output(UInt(AccMatrixRegIdWidth.W))
+        val perfProbe = Output(new AccLoadPerfProbe)
     })
 
-    if (!CLoadUseLegacyLoader) {
-        val inner = Module(new MultiChannelsCMemLoader).suggestName(s"${nameContext}_multi_loader")
+    if (!AccLoader0UseLegacyLoader) {
+        val inner = Module(new MultiChannelAccMemory).suggestName(s"${nameContext}_multi_memory")
         inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
         inner.io.ConfigInfo <> io.ConfigInfo
         inner.io.LoadLocalMMUIO <> io.LoadLocalMMUIO
@@ -131,7 +143,7 @@ class CMLWrapper(contextName: String = "CML")(implicit p: Parameters) extends Cu
         io.StoreMatrixRegId := inner.io.StoreMatrixRegId
         io.perfProbe := inner.io.perfProbe
     } else {
-        val inner = Module(new CMemoryLoader).suggestName(s"${nameContext}_legacy_loader")
+        val inner = Module(new AccMemoryLegacy).suggestName(s"${nameContext}_legacy_memory")
         inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
         inner.io.ConfigInfo <> io.ConfigInfo
         inner.io.LoadLocalMMUIO <> io.LoadLocalMMUIO
@@ -139,7 +151,22 @@ class CMLWrapper(contextName: String = "CML")(implicit p: Parameters) extends Cu
         inner.io.DebugInfo <> io.DebugInfo
         io.LoadMatrixRegId := inner.io.LoadMatrixRegId
         io.StoreMatrixRegId := inner.io.StoreMatrixRegId
-        io.perfProbe := 0.U.asTypeOf(new CMLPerfProbe)
+        io.perfProbe := 0.U.asTypeOf(new AccLoadPerfProbe)
+    }
+}
+
+class TrStorer0Wrapper(contextName: String = "trStorer0")(implicit p: Parameters) extends CuteModule {
+    private val nameContext = VerilogNameHelper.sanitize(contextName)
+    override def desiredName: String = s"${nameContext}Wrapper_${if (TrStorer0UseLegacyLoader) "Legacy" else "Multi"}"
+
+    val io = IO(new TrStoreIO)
+    if (TrStorer0UseLegacyLoader) {
+        val inner = Module(new TrStorerLegacy).suggestName(s"${nameContext}_legacy_storer")
+        io <> inner.io
+    } else {
+        val inner = Module(new MultiChannelTrStorer(TrStorer0RequestChannelCount, nameContext))
+            .suggestName(s"${nameContext}_multi_storer")
+        io <> inner.io
     }
 }
 
@@ -153,10 +180,11 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule {
 
 class LazyCUTEV2Top(implicit p: Parameters) extends LazyModule {
     val probeParams = MatrixRegWriteProbes.Params()
-    val amlParameters = probeParams.parameters(probeParams.aLoad)
-    val bmlParameters = probeParams.parameters(probeParams.bLoad)
+    // Probe positions retain their ABI: aLoad/bLoad denote physical TL0/TL1.
+    val trLoader0Parameters = probeParams.parameters(probeParams.aLoad)
+    val trLoader1Parameters = probeParams.parameters(probeParams.bLoad)
     val cdcParameters = probeParams.parameters(probeParams.mma)
-    val cmlParameters = probeParams.parameters(probeParams.cLoad)
+    val accMemoryParameters = probeParams.parameters(probeParams.cLoad)
 
     lazy val module = new CUTEV2TopImp(this)
 }
@@ -170,10 +198,11 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
     private def loaderBridgeConfigSummary: String = {
         val config = parsedLoaderBridgeChannelConfig
         Seq(
-            s"AML=${summarizeLoaderMode(config.a)}",
-            s"BML=${summarizeLoaderMode(config.b)}",
-            s"CLoad=${summarizeLoaderMode(config.cLoad)}",
-            s"CStore=${summarizeLoaderMode(config.cStore)}",
+            s"trLoader0=${summarizeLoaderMode(config.trLoader0)}",
+            s"trLoader1=${summarizeLoaderMode(config.trLoader1)}",
+            s"AL0=${summarizeLoaderMode(config.accLoader0)}",
+            s"AS0=${summarizeLoaderMode(config.accStorer0)}",
+            s"TS0=${TrStorer0RequestChannelCount}req/${if (TrStorer0UseLegacyLoader) "1" else "all-lane"}ack",
             s"omegaInputQueue=$EnableOmegaInputQueue"
         ).mkString(s"${config.render} [", ", ", "]")
     }
@@ -374,51 +403,52 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
     // otherwise the nominal A1B1CL1CS1 baseline still issues C stores through
     // all eight CUTE-to-L2 channels.
     val cStoreRequestChannelCount =
-        if (CStoreUseLegacyLoader) CMatrixRegNBanks else CStoreBridgeResponseChannelCount
+        if (AccStorer0UseLegacyLoader) AccMatrixRegNBanks else AccStorer0BridgeResponseChannelCount
     val aRequestChannelCount =
-        if (AMLUseLegacyLoader) ABMatrixRegNBanks else AMLResponseChannelCount
+        if (TrLoader0UseLegacyLoader) TrMatrixRegNBanks else TrLoader0ResponseChannelCount
     val bRequestChannelCount =
-        if (BMLUseLegacyLoader) ABMatrixRegNBanks else BMLResponseChannelCount
+        if (TrLoader1UseLegacyLoader) TrMatrixRegNBanks else TrLoader1ResponseChannelCount
     val cLoadRequestChannelCount =
-        if (CLoadUseLegacyLoader) CMatrixRegNBanks else CLoadBridgeResponseChannelCount
+        if (AccLoader0UseLegacyLoader) AccMatrixRegNBanks else AccLoader0BridgeResponseChannelCount
 
-    val amlBridgeContext = multiOrLegacyBridgeContext(
-        "AML",
-        AMLUseLegacyLoader,
-        ABMatrixRegNBanks,
+    val trLoader0BridgeContext = multiOrLegacyBridgeContext(
+        "trLoader0",
+        TrLoader0UseLegacyLoader,
+        TrMatrixRegNBanks,
         aRequestChannelCount,
-        AMLResponseChannelCount
+        TrLoader0ResponseChannelCount
     )
-    val bmlBridgeContext = multiOrLegacyBridgeContext(
-        "BML",
-        BMLUseLegacyLoader,
-        ABMatrixRegNBanks,
+    val trLoader1BridgeContext = multiOrLegacyBridgeContext(
+        "trLoader1",
+        TrLoader1UseLegacyLoader,
+        TrMatrixRegNBanks,
         bRequestChannelCount,
-        BMLResponseChannelCount
+        TrLoader1ResponseChannelCount
     )
-    val cLoadBridgeContext = multiOrLegacyBridgeContext(
+    val accLoader0BridgeContext = multiOrLegacyBridgeContext(
         "CLoad",
-        CLoadUseLegacyLoader,
-        CMatrixRegNBanks,
+        AccLoader0UseLegacyLoader,
+        AccMatrixRegNBanks,
         cLoadRequestChannelCount,
-        CLoadBridgeResponseChannelCount
+        AccLoader0BridgeResponseChannelCount
     )
-    val cStoreBridgeContext = multiOrLegacyBridgeContext(
+    val accStorer0BridgeContext = multiOrLegacyBridgeContext(
         "CStore",
-        CLoadUseLegacyLoader,
-        CMatrixRegNBanks,
+        AccLoader0UseLegacyLoader,
+        AccMatrixRegNBanks,
         cStoreRequestChannelCount,
-        CStoreBridgeResponseChannelCount
+        AccStorer0BridgeResponseChannelCount
     )
-    val cmlWrapperContext = VerilogNameHelper.sanitize(s"CML_${cLoadBridgeContext}_${cStoreBridgeContext}")
+    val accMemoryContext = VerilogNameHelper.sanitize(s"AccMemory_${accLoader0BridgeContext}_${accStorer0BridgeContext}")
 
-    val ABMatrixRegs = Seq.tabulate(ABMatrixRegCount)(i => Module(new ABMatrixReg(i))).toVector
+    val TrMatrixRegs = Seq.tabulate(TrMatrixRegCount)(i => Module(new TrMatrixReg(i))).toVector
     val ADC = Module(new ADataController)
-    val AML = Module(new AMLWrapper(amlBridgeContext)(outer.amlParameters)).suggestName(s"${amlBridgeContext}_wrapper")
+    val trLoader0 = Module(new TrLoader0Wrapper(trLoader0BridgeContext)(outer.trLoader0Parameters)).suggestName(s"${trLoader0BridgeContext}_wrapper")
     val BDC = Module(new BDataController)
-    val BML = Module(new BMLWrapper(bmlBridgeContext)(outer.bmlParameters)).suggestName(s"${bmlBridgeContext}_wrapper")
+    val trLoader1 = Module(new TrLoader1Wrapper(trLoader1BridgeContext)(outer.trLoader1Parameters)).suggestName(s"${trLoader1BridgeContext}_wrapper")
+    val trStorer0 = Module(new TrStorer0Wrapper("trStorer0")).suggestName("trStorer0_wrapper")
 
-    val CMatrixRegs = Seq.tabulate(CMatrixRegCount)(i => Module(new CMatrixReg(i))).toVector
+    val AccMatrixRegs = Seq.tabulate(AccMatrixRegCount)(i => Module(new AccMatrixReg(i))).toVector
 
     val ASMRegs = Option.when(cuteMatrixExtension.enableScalingFactor)(
       Seq.tabulate(2)(i => Module(new ABScaleMatrixReg)).toVector
@@ -441,7 +471,7 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
     )
 
     val CDC = Module(new CDataController()(outer.cdcParameters))
-    val CML = Module(new CMLWrapper(cmlWrapperContext)(outer.cmlParameters)).suggestName(s"${cmlWrapperContext}_wrapper")
+    val accMemory = Module(new AccMemoryWrapper(accMemoryContext)(outer.accMemoryParameters)).suggestName(s"${accMemoryContext}_wrapper")
 
     val TaskCtrl: BaseTaskController = Module(new TaskController)
     io.matrixPrefetch.zip(TaskCtrl.io.matrixPrefetch).foreach { case (to, from) => to := from }
@@ -470,32 +500,32 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
         asc.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     }
 
-    // Default AML inputs.
-    AML.io.ConfigInfo <> TaskCtrl.io.AML_MicroTask_Config
-    AML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-    if (!AMLUseLegacyLoader) {
+    // Default trLoader0 inputs.
+    trLoader0.io.ConfigInfo <> TaskCtrl.io.trLoader0Config
+    trLoader0.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
+    if (!TrLoader0UseLegacyLoader) {
         connectWithResponseBridge(
-            AML.io.LocalMMUIO,
-            MMU.io.ALocalMMUIO,
-            ABMatrixRegNBanks,
-            AMLResponseChannelCount,
+            trLoader0.io.LocalMMUIO,
+            MMU.io.trLoader0Memory,
+            TrMatrixRegNBanks,
+            TrLoader0ResponseChannelCount,
             aRequestChannelCount,
-            log2Ceil(ABMatrixRegNBanks),
-            log2Ceil(ABMatrixRegBankNEntries),
+            log2Ceil(TrMatrixRegNBanks),
+            log2Ceil(TrMatrixRegBankNEntries),
             ResponseBridgeQueueDepth,
             true,
-            amlBridgeContext,
-            identityFriendlyInput = ABMatrixRegNBanks == 8 && AMLResponseChannelCount == 8
+            trLoader0BridgeContext,
+            identityFriendlyInput = TrMatrixRegNBanks == 8 && TrLoader0ResponseChannelCount == 8
         )
     } else {
-        connectWithResponseArbiter(AML.io.LocalMMUIO, MMU.io.ALocalMMUIO, ABMatrixRegNBanks, amlBridgeContext)
+        connectWithResponseArbiter(trLoader0.io.LocalMMUIO, MMU.io.trLoader0Memory, TrMatrixRegNBanks, trLoader0BridgeContext)
     }
 
     ASL.foreach { asl =>
     // Default ASL inputs.
         asl.io.ConfigInfo <> TaskCtrl.io.ASL_MicroTask_Config.get
         asl.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-        connectWithResponseArbiter(asl.io.LocalMMUIO, MMU.io.ASLocalMMUIO, ABMatrixRegNBanks, "ASL_legacy_1resp")
+        connectWithResponseArbiter(asl.io.LocalMMUIO, MMU.io.ASLocalMMUIO, TrMatrixRegNBanks, "ASL_legacy_1resp")
     }
 
     // Default BDC inputs.
@@ -513,36 +543,36 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
         bsc.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     }
 
-    // Default BML inputs.
-    BML.io.ConfigInfo <> TaskCtrl.io.BML_MicroTask_Config
-    BML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-    if (!BMLUseLegacyLoader) {
+    // Default trLoader1 inputs.
+    trLoader1.io.ConfigInfo <> TaskCtrl.io.trLoader1Config
+    trLoader1.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
+    if (!TrLoader1UseLegacyLoader) {
         connectWithResponseBridge(
-            BML.io.LocalMMUIO,
-            MMU.io.BLocalMMUIO,
-            ABMatrixRegNBanks,
-            BMLResponseChannelCount,
+            trLoader1.io.LocalMMUIO,
+            MMU.io.trLoader1Memory,
+            TrMatrixRegNBanks,
+            TrLoader1ResponseChannelCount,
             bRequestChannelCount,
-            log2Ceil(ABMatrixRegNBanks),
-            log2Ceil(ABMatrixRegBankNEntries),
+            log2Ceil(TrMatrixRegNBanks),
+            log2Ceil(TrMatrixRegBankNEntries),
             ResponseBridgeQueueDepth,
             true,
-            bmlBridgeContext,
-            identityFriendlyInput = ABMatrixRegNBanks == 8 && BMLResponseChannelCount == 8
+            trLoader1BridgeContext,
+            identityFriendlyInput = TrMatrixRegNBanks == 8 && TrLoader1ResponseChannelCount == 8
         )
     } else {
-        connectWithResponseArbiter(BML.io.LocalMMUIO, MMU.io.BLocalMMUIO, ABMatrixRegNBanks, bmlBridgeContext)
+        connectWithResponseArbiter(trLoader1.io.LocalMMUIO, MMU.io.trLoader1Memory, TrMatrixRegNBanks, trLoader1BridgeContext)
     }
 
     BSL.foreach { bsl =>
     // Default BSL inputs.
         bsl.io.ConfigInfo <> TaskCtrl.io.BSL_MicroTask_Config.get
         bsl.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-        connectWithResponseArbiter(bsl.io.LocalMMUIO, MMU.io.BSLocalMMUIO, ABMatrixRegNBanks, "BSL_legacy_1resp")
+        connectWithResponseArbiter(bsl.io.LocalMMUIO, MMU.io.BSLocalMMUIO, TrMatrixRegNBanks, "BSL_legacy_1resp")
     }
 
     if (!cuteMatrixExtension.enableScalingFactor) {
-        for (i <- 0 until ABMatrixRegNBanks) {
+        for (i <- 0 until TrMatrixRegNBanks) {
             MMU.io.ASLocalMMUIO.Request(i).valid := false.B
             MMU.io.ASLocalMMUIO.Request(i).bits := 0.U.asTypeOf(MMU.io.ASLocalMMUIO.Request(i).bits)
             MMU.io.ASLocalMMUIO.Response(i).ready := false.B
@@ -558,70 +588,88 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
     CDC.io.ConfigInfo <> TaskCtrl.io.CDC_MicroTask_Config
     CDC.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
 
-    // Default CML inputs.
-    CML.io.ConfigInfo <> TaskCtrl.io.CML_MicroTask_Config
-    CML.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
-    if (!CLoadUseLegacyLoader) {
+    trStorer0.io.command <> TaskCtrl.io.trStorer0.command
+    trStorer0.io.done <> TaskCtrl.io.trStorer0.done
+    connectLoaderRequests(trStorer0.io.memory, MMU.io.trStorer0Memory, TrMatrixRegNBanks)
+    if (TrStorer0UseLegacyLoader) {
+        // All physical lanes remain reachable; the legacy interface delivers one ACK.
+        val ack = Module(new Arbiter(new MMUResponseIO, TrMatrixRegNBanks))
+        for (lane <- 0 until TrMatrixRegNBanks) {
+            ack.io.in(lane) <> MMU.io.trStorer0Memory.Response(lane)
+        }
+        trStorer0.io.memory.Response(0) <> ack.io.out
+        for (lane <- 1 until TrMatrixRegNBanks) {
+            trStorer0.io.memory.Response(lane).valid := false.B
+            trStorer0.io.memory.Response(lane).bits := 0.U.asTypeOf(new MMUResponseIO)
+        }
+    } else {
+        trStorer0.io.memory.Response <> MMU.io.trStorer0Memory.Response
+    }
+
+    // Default accMemory inputs.
+    accMemory.io.ConfigInfo <> TaskCtrl.io.accMemoryConfig
+    accMemory.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
+    if (!AccLoader0UseLegacyLoader) {
         connectWithResponseBridge(
-            CML.io.LoadLocalMMUIO,
-            MMU.io.CLoadLocalMMUIO,
-            CMatrixRegNBanks,
-            CLoadBridgeResponseChannelCount,
+            accMemory.io.LoadLocalMMUIO,
+            MMU.io.accLoader0Memory,
+            AccMatrixRegNBanks,
+            AccLoader0BridgeResponseChannelCount,
             cLoadRequestChannelCount,
-            log2Ceil(CMatrixRegNBanks),
-            log2Ceil(CMatrixRegBankNEntries),
+            log2Ceil(AccMatrixRegNBanks),
+            log2Ceil(AccMatrixRegBankNEntries),
             ResponseBridgeQueueDepth,
             true,
-            cLoadBridgeContext
+            accLoader0BridgeContext
         )
-        if (CStoreDirectAckCountMode) {
+        if (AccStorer0DirectAckCountMode) {
             connectRequestChannelsWithGroupedArbiter(
-                CML.io.StoreLocalMMUIO.Request,
-                CML.io.StoreLocalMMUIO.ConherentRequsetSourceID,
-                CML.io.StoreLocalMMUIO.nonConherentRequsetSourceID,
-                MMU.io.CStoreLocalMMUIO.Request,
-                MMU.io.CStoreLocalMMUIO.ConherentRequsetSourceID,
-                MMU.io.CStoreLocalMMUIO.nonConherentRequsetSourceID,
-                CMatrixRegNBanks,
+                accMemory.io.StoreLocalMMUIO.Request,
+                accMemory.io.StoreLocalMMUIO.ConherentRequsetSourceID,
+                accMemory.io.StoreLocalMMUIO.nonConherentRequsetSourceID,
+                MMU.io.accStorer0Memory.Request,
+                MMU.io.accStorer0Memory.ConherentRequsetSourceID,
+                MMU.io.accStorer0Memory.nonConherentRequsetSourceID,
+                AccMatrixRegNBanks,
                 cStoreRequestChannelCount,
-                cStoreBridgeContext
+                accStorer0BridgeContext
             )
-            for (i <- 0 until CMatrixRegNBanks) {
-                CML.io.StoreLocalMMUIO.Response(i).valid := MMU.io.CStoreLocalMMUIO.Response(i).valid
-                CML.io.StoreLocalMMUIO.Response(i).bits := MMU.io.CStoreLocalMMUIO.Response(i).bits
-                MMU.io.CStoreLocalMMUIO.Response(i).ready := CML.io.StoreLocalMMUIO.Response(i).ready
+            for (i <- 0 until AccMatrixRegNBanks) {
+                accMemory.io.StoreLocalMMUIO.Response(i).valid := MMU.io.accStorer0Memory.Response(i).valid
+                accMemory.io.StoreLocalMMUIO.Response(i).bits := MMU.io.accStorer0Memory.Response(i).bits
+                MMU.io.accStorer0Memory.Response(i).ready := accMemory.io.StoreLocalMMUIO.Response(i).ready
             }
         } else {
             connectWithResponseBridge(
-                CML.io.StoreLocalMMUIO,
-                MMU.io.CStoreLocalMMUIO,
-                CMatrixRegNBanks,
-                CStoreBridgeResponseChannelCount,
+                accMemory.io.StoreLocalMMUIO,
+                MMU.io.accStorer0Memory,
+                AccMatrixRegNBanks,
+                AccStorer0BridgeResponseChannelCount,
                 cStoreRequestChannelCount,
-                log2Ceil(CMatrixRegNBanks),
-                log2Ceil(CMatrixRegBankNEntries),
+                log2Ceil(AccMatrixRegNBanks),
+                log2Ceil(AccMatrixRegBankNEntries),
                 ResponseBridgeQueueDepth,
                 false,
-                cStoreBridgeContext
+                accStorer0BridgeContext
             )
         }
     } else {
         connectWithResponseArbiter(
-            CML.io.LoadLocalMMUIO,
-            MMU.io.CLoadLocalMMUIO,
-            CMatrixRegNBanks,
-            cLoadBridgeContext
+            accMemory.io.LoadLocalMMUIO,
+            MMU.io.accLoader0Memory,
+            AccMatrixRegNBanks,
+            accLoader0BridgeContext
         )
         connectWithResponseArbiter(
-            CML.io.StoreLocalMMUIO,
-            MMU.io.CStoreLocalMMUIO,
-            CMatrixRegNBanks,
-            cStoreBridgeContext
+            accMemory.io.StoreLocalMMUIO,
+            MMU.io.accStorer0Memory,
+            AccMatrixRegNBanks,
+            accStorer0BridgeContext
         )
     }
-    CML.io.ToMatrixRegIO.LoadReadWriteResponse := 0.U
-    CML.io.ToMatrixRegIO.StoreReadWriteResponse := 0.U
-    CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData := 0.U.asTypeOf(CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData)
+    accMemory.io.ToMatrixRegIO.LoadReadWriteResponse := 0.U
+    accMemory.io.ToMatrixRegIO.StoreReadWriteResponse := 0.U
+    accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData := 0.U.asTypeOf(accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData)
 
     MTE.io.VectorA <> ADC.io.VectorA
     MTE.io.VectorB <> BDC.io.VectorB
@@ -655,34 +703,34 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
     perf.backendEvents(6) := TaskCtrl.io.perfProbe.mmaFp16Done
     perf.backendEvents(7) := TaskCtrl.io.perfProbe.mmaBf16Done
     perf.backendEvents(8) := TaskCtrl.io.perfProbe.mmaTf32Done
-    perf.memEvents(0) := TaskCtrl.io.perfProbe.loadADone
-    perf.memEvents(1) := TaskCtrl.io.perfProbe.loadBDone
-    perf.memEvents(2) := TaskCtrl.io.perfProbe.loadCDone
+    perf.memEvents(0) := TaskCtrl.io.perfProbe.trLoader0Done
+    perf.memEvents(1) := TaskCtrl.io.perfProbe.trLoader1Done
+    perf.memEvents(2) := TaskCtrl.io.perfProbe.accLoader0Done
     perf.memEvents(3) := TaskCtrl.io.perfProbe.storeDone
-    perf.memEvents(4) := TaskCtrl.io.perfProbe.amlActive
-    perf.memEvents(5) := TaskCtrl.io.perfProbe.bmlActive
-    perf.memEvents(6) := TaskCtrl.io.perfProbe.cmlLoadActive
-    perf.memEvents(7) := TaskCtrl.io.perfProbe.cmlStoreActive
+    perf.memEvents(4) := TaskCtrl.io.perfProbe.trLoader0Active
+    perf.memEvents(5) := TaskCtrl.io.perfProbe.trLoader1Active
+    perf.memEvents(6) := TaskCtrl.io.perfProbe.accLoader0Active
+    perf.memEvents(7) := TaskCtrl.io.perfProbe.accStorer0Active
     perf.memEvents(8) := MMU.io.perfProbe.rdReq
     perf.memEvents(9) := MMU.io.perfProbe.wrReq
     perf.memEvents(10) := MMU.io.perfProbe.rd32BReq
     perf.memEvents(11) := MMU.io.perfProbe.wr32BReq
     perf.localMMU := MMU.io.perfProbe
-    perf.aml := AML.io.perfProbe
-    perf.bml := BML.io.perfProbe
-    perf.cml := CML.io.perfProbe
+    perf.trLoader0 := trLoader0.io.perfProbe
+    perf.trLoader1 := trLoader1.io.perfProbe
+    perf.accLoader0 := accMemory.io.perfProbe
     io.perf := RegNext(perf, 0.U.asTypeOf(new CutePerfToCoreIO))
 
     // Assign default inputs for each MatrixReg.
     
-    // AB MatrixReg
-    for (i <- 0 until ABMatrixRegCount){
+    // TR MatrixReg
+    for (i <- 0 until TrMatrixRegCount){
         // DataController requests.
-        ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
-        ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
-        //MemoryLoader的请求
-        ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequest :=
-            0.U.asTypeOf(ABMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequest)
+        TrMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.valid := false.B
+        TrMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits := 0.U.asTypeOf(TrMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.bits)
+        // Loader memory requests.
+        TrMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequest :=
+            0.U.asTypeOf(TrMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.WriteRequest)
     }
 
     if (cuteMatrixExtension.enableScalingFactor) {
@@ -695,11 +743,11 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
         }
     }
 
-    // C MatrixReg
-    for (i <- 0 until CMatrixRegCount){
-        CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteRequest := 0.U
-        CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.LoadReadWriteRequest := 0.U
-        CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.StoreReadWriteRequest := 0.U
+    // ACC MatrixReg
+    for (i <- 0 until AccMatrixRegCount){
+        AccMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteRequest := 0.U
+        AccMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.LoadReadWriteRequest := 0.U
+        AccMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.StoreReadWriteRequest := 0.U
     }
 
     // ============================================
@@ -761,8 +809,8 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
         connectScaleLoaderToRegs(bsl.io.SpadId, bsl.io.ToMatrixRegIO, bsmRegs)
     }
 
-    def disableABLoaderPort(dest: ABMemoryLoaderMatrixRegIO): Unit = {
-        for (b <- 0 until ABMatrixRegNBanks) {
+    def disableTrLoadPort(dest: TrLoadMatrixRegIO): Unit = {
+        for (b <- 0 until TrMatrixRegNBanks) {
             for (lane <- 0 until 2) {
                 val write = dest.WriteRequest(b)(lane)
                 write.BankAddr.valid := false.B
@@ -770,102 +818,81 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
                 write.Data.valid := false.B
                 write.Data.bits := DontCare
                 write.ByteMask.valid := false.B
-                write.ByteMask.bits := Fill(ABMatrixRegEntryByteSize, true.B)
+                write.ByteMask.bits := Fill(TrMatrixRegEntryByteSize, true.B)
             }
         }
     }
 
-    def copyABLoaderPort(dest: ABMemoryLoaderMatrixRegIO, src: ABMemoryLoaderMatrixRegIO): Unit = {
-        for (b <- 0 until ABMatrixRegNBanks) {
+    def copyTrLoadPort(dest: TrLoadMatrixRegIO, src: TrLoadMatrixRegIO): Unit = {
+        for (b <- 0 until TrMatrixRegNBanks) {
             for (lane <- 0 until 2) {
                 dest.WriteRequest(b)(lane) := src.WriteRequest(b)(lane)
             }
         }
     }
     
-    for (regIdx <- 0 until ABMatrixRegCount) {
-        val dest = ABMatrixRegs(regIdx).io.MatrixRegIO.FromMemoryLoader
-        val amlSel = AML.io.MatrixRegId === regIdx.U
-        val bmlSel = BML.io.MatrixRegId === regIdx.U
-        val amlActive = AML.io.ToMatrixRegIO.active
-        val bmlActive = BML.io.ToMatrixRegIO.active
+    for (regIdx <- 0 until TrMatrixRegCount) {
+        val dest = TrMatrixRegs(regIdx).io.MatrixRegIO.FromMemoryLoader
+        val trLoader0Sel = trLoader0.io.MatrixRegId === regIdx.U
+        val trLoader1Sel = trLoader1.io.MatrixRegId === regIdx.U
+        val trLoader0Active = trLoader0.io.ToMatrixRegIO.active
+        val trLoader1Active = trLoader1.io.ToMatrixRegIO.active
         dest.active := DontCare
-        when(amlSel && bmlSel && amlActive && bmlActive) {
-            assert(false.B, cf"[CUTETop] AML and BML choose the same AB MatrixReg($regIdx)")
+        when(trLoader0Sel && trLoader1Sel && trLoader0Active && trLoader1Active) {
+            assert(false.B, cf"[CUTETop] trLoader0 and trLoader1 choose the same TR MatrixReg($regIdx)")
         }
-        when(amlSel && amlActive) {
-            copyABLoaderPort(dest, AML.io.ToMatrixRegIO)
-        }.elsewhen(bmlSel && bmlActive) {
-            copyABLoaderPort(dest, BML.io.ToMatrixRegIO)
+        when(trLoader0Sel && trLoader0Active) {
+            copyTrLoadPort(dest, trLoader0.io.ToMatrixRegIO)
+        }.elsewhen(trLoader1Sel && trLoader1Active) {
+            copyTrLoadPort(dest, trLoader1.io.ToMatrixRegIO)
         }.otherwise {
-            disableABLoaderPort(dest)
+            disableTrLoadPort(dest)
         }
     }
 
-    for (regIdx <- 0 until ABMatrixRegCount) {
-        val dest = ABMatrixRegs(regIdx).io.MatrixRegIO.FromDataController
-        dest.BankAddr.valid := false.B
-        dest.BankAddr.bits := 0.U.asTypeOf(dest.BankAddr.bits)
-        val adcSel = ADC.io.MatrixRegId === regIdx.U
-        val bdcSel = BDC.io.MatrixRegId === regIdx.U
-        val adcActive = ADC.io.FromMatrixRegIO.BankAddr.valid
-        val bdcActive = BDC.io.FromMatrixRegIO.BankAddr.valid
-        when(adcSel && bdcSel && (adcActive || bdcActive)) {
-            assert(false.B, cf"[CUTETop] ADC and BDC choose the same AB MatrixReg($regIdx)")
+    val trReadRouter = Module(new TrMatrixRegReadPortRouter)
+    val trReaders = Seq(ADC.io.FromMatrixRegIO, BDC.io.FromMatrixRegIO)
+    val trReaderIds = Seq(ADC.io.MatrixRegId, BDC.io.MatrixRegId)
+    for (c <- trReaders.indices) {
+        trReadRouter.io.clients(c) <> trReaders(c)
+        trReadRouter.io.regIds(c) := trReaderIds(c)
+    }
+    for (r <- 0 until TrMatrixRegCount) {
+        TrMatrixRegs(r).io.MatrixRegIO.FromDataController <> trReadRouter.io.registers(r)
+    }
+
+    trStorer0.io.read.BankAddr.ready := false.B
+    trStorer0.io.read.Data.valid := false.B
+    trStorer0.io.read.Data.bits := 0.U.asTypeOf(trStorer0.io.read.Data.bits)
+    for (r <- 0 until TrMatrixRegCount) {
+        val storePort = TrMatrixRegs(r).io.MatrixRegIO.FromStore
+        val selected = trStorer0.io.regId === r.U
+        storePort.BankAddr.valid := selected && trStorer0.io.read.BankAddr.valid
+        storePort.BankAddr.bits := trStorer0.io.read.BankAddr.bits
+        when(selected) {
+            trStorer0.io.read.BankAddr.ready := storePort.BankAddr.ready
+            trStorer0.io.read.Data.valid := storePort.Data.valid
+            trStorer0.io.read.Data.bits := storePort.Data.bits
         }
-        when(adcSel) {
-            dest.BankAddr.valid := ADC.io.FromMatrixRegIO.BankAddr.valid
-            dest.BankAddr.bits := ADC.io.FromMatrixRegIO.BankAddr.bits
-        }.elsewhen(bdcSel) {
-            dest.BankAddr.valid := BDC.io.FromMatrixRegIO.BankAddr.valid
-            dest.BankAddr.bits := BDC.io.FromMatrixRegIO.BankAddr.bits
-        }.otherwise {
-            dest.BankAddr.valid := false.B
-            dest.BankAddr.bits := DontCare
-        }
     }
 
-    val adcSelVec = VecInit((0 until ABMatrixRegCount).map(i => ADC.io.MatrixRegId === i.U))
-    val adcReadyChoices = (0 until ABMatrixRegCount).map(i => adcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.ready)
-    ADC.io.FromMatrixRegIO.BankAddr.ready := Mux1H(adcReadyChoices)
-    val adcDataValidChoices = (0 until ABMatrixRegCount).map(i => adcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.Data.valid)
-    ADC.io.FromMatrixRegIO.Data.valid := Mux1H(adcDataValidChoices)
-    for (bank <- 0 until ABMatrixRegNBanks) {
-        val adcDataBitsChoices = (0 until ABMatrixRegCount).map(i =>
-            adcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.Data.bits(bank)
-        )
-        ADC.io.FromMatrixRegIO.Data.bits(bank) := Mux1H(adcDataBitsChoices)
-    }
-
-    val bdcSelVec = VecInit((0 until ABMatrixRegCount).map(i => BDC.io.MatrixRegId === i.U))
-    val bdcReadyChoices = (0 until ABMatrixRegCount).map(i => bdcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.BankAddr.ready)
-    BDC.io.FromMatrixRegIO.BankAddr.ready := Mux1H(bdcReadyChoices)
-    val bdcDataValidChoices = (0 until ABMatrixRegCount).map(i => bdcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.Data.valid)
-    BDC.io.FromMatrixRegIO.Data.valid := Mux1H(bdcDataValidChoices)
-    for (bank <- 0 until ABMatrixRegNBanks) {
-        val bdcDataBitsChoices = (0 until ABMatrixRegCount).map(i =>
-            bdcSelVec(i) -> ABMatrixRegs(i).io.MatrixRegIO.FromDataController.Data.bits(bank)
-        )
-        BDC.io.FromMatrixRegIO.Data.bits(bank) := Mux1H(bdcDataBitsChoices)
-    }
-
-    for (regIdx <- 0 until CMatrixRegCount) {
-        val dest = CMatrixRegs(regIdx).io.MatrixRegIO.FromMemoryLoader
-        val loadSel = CML.io.LoadMatrixRegId === regIdx.U
-        val storeSel = CML.io.StoreMatrixRegId === regIdx.U
-        val loadWriteReq = CML.io.ToMatrixRegIO.LoadReadWriteRequest(MatrixRegTaskType.WriteFromMemoryLoaderIndex)
-        val storeReadReq = CML.io.ToMatrixRegIO.StoreReadWriteRequest(MatrixRegTaskType.ReadFromMemoryLoaderIndex)
+    for (regIdx <- 0 until AccMatrixRegCount) {
+        val dest = AccMatrixRegs(regIdx).io.MatrixRegIO.FromMemoryLoader
+        val loadSel = accMemory.io.LoadMatrixRegId === regIdx.U
+        val storeSel = accMemory.io.StoreMatrixRegId === regIdx.U
+        val loadWriteReq = accMemory.io.ToMatrixRegIO.LoadReadWriteRequest(MatrixRegTaskType.WriteFromMemoryLoaderIndex)
+        val storeReadReq = accMemory.io.ToMatrixRegIO.StoreReadWriteRequest(MatrixRegTaskType.ReadFromMemoryLoaderIndex)
 
         when(loadSel && storeSel && loadWriteReq && storeReadReq) {
-            assert(false.B, cf"[CUTETop] CML load/store target the same C MatrixReg($regIdx) in one cycle")
+            assert(false.B, cf"[CUTETop] accMemory load/store target the same ACC MatrixReg($regIdx) in one cycle")
         }
 
-        for (bank <- 0 until CMatrixRegNBanks) {
-            dest.ReadRequestToMatrixReg.BankAddr(bank).valid := storeSel && CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).valid
-            dest.ReadRequestToMatrixReg.BankAddr(bank).bits := CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).bits
+        for (bank <- 0 until AccMatrixRegNBanks) {
+            dest.ReadRequestToMatrixReg.BankAddr(bank).valid := storeSel && accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).valid
+            dest.ReadRequestToMatrixReg.BankAddr(bank).bits := accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).bits
             for (lane <- 0 until 2) {
                 val destWrite = dest.WriteRequestToMatrixReg.WriteRequest(bank)(lane)
-                val srcWrite = CML.io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(bank)(lane)
+                val srcWrite = accMemory.io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(bank)(lane)
                 destWrite.BankAddr.valid := loadSel && srcWrite.BankAddr.valid
                 destWrite.Data.valid := loadSel && srcWrite.Data.valid
                 destWrite.ByteMask.valid := loadSel && srcWrite.ByteMask.valid
@@ -875,68 +902,68 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
             }
         }
 
-        val loadReqForThisReg = Mux(loadSel, CML.io.ToMatrixRegIO.LoadReadWriteRequest, 0.U)
-        val storeReqForThisReg = Mux(storeSel, CML.io.ToMatrixRegIO.StoreReadWriteRequest, 0.U)
+        val loadReqForThisReg = Mux(loadSel, accMemory.io.ToMatrixRegIO.LoadReadWriteRequest, 0.U)
+        val storeReqForThisReg = Mux(storeSel, accMemory.io.ToMatrixRegIO.StoreReadWriteRequest, 0.U)
         dest.LoadReadWriteRequest := loadReqForThisReg
         dest.StoreReadWriteRequest := storeReqForThisReg
     }
 
-    val cmlLoadSelVec = VecInit((0 until CMatrixRegCount).map(i => CML.io.LoadMatrixRegId === i.U))
-    val cmlStoreSelVec = VecInit((0 until CMatrixRegCount).map(i => CML.io.StoreMatrixRegId === i.U))
-    for (bank <- 0 until CMatrixRegNBanks) {
-        val readRespValidChoices = (0 until CMatrixRegCount).map(i =>
-            cmlStoreSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank).valid
+    val accLoader0SelVec = VecInit((0 until AccMatrixRegCount).map(i => accMemory.io.LoadMatrixRegId === i.U))
+    val accStorer0SelVec = VecInit((0 until AccMatrixRegCount).map(i => accMemory.io.StoreMatrixRegId === i.U))
+    for (bank <- 0 until AccMatrixRegNBanks) {
+        val readRespValidChoices = (0 until AccMatrixRegCount).map(i =>
+            accStorer0SelVec(i) -> AccMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank).valid
         )
-        val readRespBitsChoices = (0 until CMatrixRegCount).map(i =>
-            cmlStoreSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank).bits
+        val readRespBitsChoices = (0 until AccMatrixRegCount).map(i =>
+            accStorer0SelVec(i) -> AccMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank).bits
         )
-        CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid := Mux1H(readRespValidChoices)
-        CML.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits := Mux1H(readRespBitsChoices)
+        accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid := Mux1H(readRespValidChoices)
+        accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits := Mux1H(readRespBitsChoices)
     }
 
-    val cmlLoadRwRespChoices = (0 until CMatrixRegCount).map(i => cmlLoadSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.LoadReadWriteResponse)
-    val cmlStoreRwRespChoices = (0 until CMatrixRegCount).map(i => cmlStoreSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.StoreReadWriteResponse)
-    CML.io.ToMatrixRegIO.LoadReadWriteResponse := Mux1H(cmlLoadRwRespChoices)
-    CML.io.ToMatrixRegIO.StoreReadWriteResponse := Mux1H(cmlStoreRwRespChoices)
+    val accLoader0RwRespChoices = (0 until AccMatrixRegCount).map(i => accLoader0SelVec(i) -> AccMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.LoadReadWriteResponse)
+    val accStorer0RwRespChoices = (0 until AccMatrixRegCount).map(i => accStorer0SelVec(i) -> AccMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.StoreReadWriteResponse)
+    accMemory.io.ToMatrixRegIO.LoadReadWriteResponse := Mux1H(accLoader0RwRespChoices)
+    accMemory.io.ToMatrixRegIO.StoreReadWriteResponse := Mux1H(accStorer0RwRespChoices)
 
-    for (regIdx <- 0 until CMatrixRegCount) {
-        val dest = CMatrixRegs(regIdx).io.MatrixRegIO.FromDataController
+    for (regIdx <- 0 until AccMatrixRegCount) {
+        val dest = AccMatrixRegs(regIdx).io.MatrixRegIO.FromDataController
         
         when(CDC.io.MatrixRegId === regIdx.U) {
-            for (bank <- 0 until CMatrixRegNBanks) {
+            for (bank <- 0 until AccMatrixRegNBanks) {
                 dest.ReadBankAddr(bank).valid := CDC.io.FromMatrixRegIO.ReadBankAddr(bank).valid
                 dest.WriteBankAddr(bank).valid := CDC.io.FromMatrixRegIO.WriteBankAddr(bank).valid
                 dest.WriteRequestData(bank).valid := CDC.io.FromMatrixRegIO.WriteRequestData(bank).valid
             }
             dest.ReadWriteRequest := CDC.io.FromMatrixRegIO.ReadWriteRequest
         }.otherwise {
-            for (bank <- 0 until CMatrixRegNBanks) {
+            for (bank <- 0 until AccMatrixRegNBanks) {
                 dest.ReadBankAddr(bank).valid := false.B
                 dest.WriteBankAddr(bank).valid := false.B
                 dest.WriteRequestData(bank).valid := false.B
             }
         }
 
-        for (bank <- 0 until CMatrixRegNBanks) {
+        for (bank <- 0 until AccMatrixRegNBanks) {
             dest.ReadBankAddr(bank).bits := CDC.io.FromMatrixRegIO.ReadBankAddr(bank).bits
             dest.WriteBankAddr(bank).bits := CDC.io.FromMatrixRegIO.WriteBankAddr(bank).bits
             dest.WriteRequestData(bank).bits := CDC.io.FromMatrixRegIO.WriteRequestData(bank).bits
         }
     }
 
-    val cdcSelVec = VecInit((0 until CMatrixRegCount).map(i => CDC.io.MatrixRegId === i.U))
-    for (bank <- 0 until CMatrixRegNBanks) {
-        val cdcReadRespValidChoices = (0 until CMatrixRegCount).map(i => cdcSelVec(i) ->
-            CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadResponseData(bank).valid
+    val cdcSelVec = VecInit((0 until AccMatrixRegCount).map(i => CDC.io.MatrixRegId === i.U))
+    for (bank <- 0 until AccMatrixRegNBanks) {
+        val cdcReadRespValidChoices = (0 until AccMatrixRegCount).map(i => cdcSelVec(i) ->
+            AccMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadResponseData(bank).valid
         )
-        val cdcReadRespBitsChoices = (0 until CMatrixRegCount).map(i => cdcSelVec(i) ->
-            CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadResponseData(bank).bits
+        val cdcReadRespBitsChoices = (0 until AccMatrixRegCount).map(i => cdcSelVec(i) ->
+            AccMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadResponseData(bank).bits
         )
         CDC.io.FromMatrixRegIO.ReadResponseData(bank).valid := Mux1H(cdcReadRespValidChoices)
         CDC.io.FromMatrixRegIO.ReadResponseData(bank).bits := Mux1H(cdcReadRespBitsChoices)
     }
-    val cdcRwRespChoices = (0 until CMatrixRegCount).map(i =>
-        cdcSelVec(i) -> CMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteResponse
+    val cdcRwRespChoices = (0 until AccMatrixRegCount).map(i =>
+        cdcSelVec(i) -> AccMatrixRegs(i).io.MatrixRegIO.FromDataController.ReadWriteResponse
       )
     CDC.io.FromMatrixRegIO.ReadWriteResponse := Mux1H(cdcRwRespChoices)
 }

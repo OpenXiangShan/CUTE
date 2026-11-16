@@ -6,14 +6,14 @@ import chisel3.util._
 import org.chipsalliance.cde.config._
 import utility.sram.SRAMTemplate
 
-class CMatrixRegIO(implicit p: Parameters) extends CuteBundle {
-    val FromDataController = new CDataControlMatrixRegIO
-    val FromMemoryLoader = new CMemoryLoaderMatrixRegIO
+class AccMatrixRegIO(implicit p: Parameters) extends CuteBundle {
+    val FromDataController = new AccDataControlMatrixRegIO
+    val FromMemoryLoader = new AccMemoryMatrixRegIO
 }
 
-class CMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
+class AccMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
     val io = IO(new Bundle {
-        val MatrixRegIO = new CMatrixRegIO
+        val MatrixRegIO = new AccMatrixRegIO
     })
 
     io.MatrixRegIO.FromDataController.ReadWriteResponse := io.MatrixRegIO.FromDataController.ReadWriteRequest
@@ -29,18 +29,18 @@ class CMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
 
     assert(
         !(decodeRequest.IsReadFromDataController && decodeRequest.IsReadFromMemoryLoader),
-        "CMatrixReg: data controller and memory loader reads cannot be active together"
+        "AccMatrixReg: data controller and memory loader reads cannot be active together"
     )
     assert(
         !(decodeRequest.IsWriteFromDataController && decodeRequest.IsWriteFromMemoryLoader),
-        "CMatrixReg: data controller and memory loader writes cannot be active together"
+        "AccMatrixReg: data controller and memory loader writes cannot be active together"
     )
 
-    val readRequestPerBankAddr = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(0.U(log2Ceil(CMatrixRegBankNEntries).W))))
-    val readRequestPerBankValid = WireInit(VecInit(Seq.fill(CMatrixRegNBanks)(false.B)))
-    val readRequestResponseValid = RegInit(VecInit(Seq.fill(CMatrixRegNBanks)(false.B)))
+    val readRequestPerBankAddr = WireInit(VecInit(Seq.fill(AccMatrixRegNBanks)(0.U(log2Ceil(AccMatrixRegBankNEntries).W))))
+    val readRequestPerBankValid = WireInit(VecInit(Seq.fill(AccMatrixRegNBanks)(false.B)))
+    val readRequestResponseValid = RegInit(VecInit(Seq.fill(AccMatrixRegNBanks)(false.B)))
 
-    for (bank <- 0 until CMatrixRegNBanks) {
+    for (bank <- 0 until AccMatrixRegNBanks) {
         readRequestPerBankAddr(bank) := Mux(
             decodeRequest.IsReadFromDataController,
             io.MatrixRegIO.FromDataController.ReadBankAddr(bank).bits,
@@ -54,26 +54,28 @@ class CMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
         readRequestResponseValid(bank) := readRequestPerBankValid(bank)
     }
 
-    val sramBanks = (0 until CMatrixRegNBanks).map { bankIdx =>
-        val bankDepthHalf = (CMatrixRegBankNEntries + 1) / 2
+    val sramBanks = (0 until AccMatrixRegNBanks).map { bankIdx =>
+        val bankDepthHalf = (AccMatrixRegBankNEntries + 1) / 2
         val evenBank = Module(new SRAMTemplate(
             gen = UInt(8.W),
             set = bankDepthHalf,
-            way = CMatrixRegEntryByteSize,
+            way = AccMatrixRegEntryByteSize,
             singlePort = true,
             latency = 1,
             hasMbist = false,
-            hasSramCtl = false
-        )).suggestName("CUTE-C-MatrixReg-Even-SRAM")
+            hasSramCtl = false,
+            suffix = Some("cute_cmat")
+        )).suggestName("CUTE-Acc-MatrixReg-Even-SRAM")
         val oddBank = Module(new SRAMTemplate(
             gen = UInt(8.W),
             set = bankDepthHalf,
-            way = CMatrixRegEntryByteSize,
+            way = AccMatrixRegEntryByteSize,
             singlePort = true,
             latency = 1,
             hasMbist = false,
-            hasSramCtl = false
-        )).suggestName("CUTE-C-MatrixReg-Odd-SRAM")
+            hasSramCtl = false,
+            suffix = Some("cute_cmat")
+        )).suggestName("CUTE-Acc-MatrixReg-Odd-SRAM")
 
         val readAddr = readRequestPerBankAddr(bankIdx)
         val readValid = readRequestPerBankValid(bankIdx)
@@ -109,17 +111,17 @@ class CMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
                 loaderWrites(lane).ByteMask.valid
             )
             loaderLaneValid(lane) := decodeRequest.IsWriteFromMemoryLoader && valids.andR
-            assert(valids === 0.U || valids.andR, "CMatrixReg: loader lane valids must agree")
+            assert(valids === 0.U || valids.andR, "AccMatrixReg: loader lane valids must agree")
         }
         when(loaderLaneValid(1)) {
-            assert(loaderLaneValid(0), "CMatrixReg: loader lane 1 requires lane 0")
+            assert(loaderLaneValid(0), "AccMatrixReg: loader lane 1 requires lane 0")
             assert(
                 loaderWrites(1).BankAddr.bits === loaderWrites(0).BankAddr.bits + 1.U,
-                "CMatrixReg: loader pair addresses must be consecutive"
+                "AccMatrixReg: loader pair addresses must be consecutive"
             )
             assert(
                 loaderWrites(1).BankAddr.bits(0) =/= loaderWrites(0).BankAddr.bits(0),
-                "CMatrixReg: loader pair must target opposite parity banks"
+                "AccMatrixReg: loader pair must target opposite parity banks"
             )
         }
 
@@ -129,8 +131,8 @@ class CMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
         val loaderOddSelect = VecInit((0 until 2).map { lane =>
             loaderLaneValid(lane) && loaderWrites(lane).BankAddr.bits(0)
         })
-        assert(PopCount(loaderEvenSelect) <= 1.U, "CMatrixReg: multiple loader writes target even SRAM")
-        assert(PopCount(loaderOddSelect) <= 1.U, "CMatrixReg: multiple loader writes target odd SRAM")
+        assert(PopCount(loaderEvenSelect) <= 1.U, "AccMatrixReg: multiple loader writes target even SRAM")
+        assert(PopCount(loaderOddSelect) <= 1.U, "AccMatrixReg: multiple loader writes target odd SRAM")
 
         val loaderEvenWrite = Mux1H(loaderEvenSelect, loaderWrites)
         val loaderOddWrite = Mux1H(loaderOddSelect, loaderWrites)
@@ -142,7 +144,7 @@ class CMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
         val evenWriteData = Mux(dcWritesEven, dcWriteData, loaderEvenWrite.Data.bits)
         val evenWriteMask = Mux(
             dcWritesEven,
-            Fill(CMatrixRegEntryByteSize, true.B),
+            Fill(AccMatrixRegEntryByteSize, true.B),
             loaderEvenWrite.ByteMask.bits
         )
         val oddWriteValid = dcWritesOdd || loaderOddSelect.asUInt.orR
@@ -150,23 +152,23 @@ class CMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
         val oddWriteData = Mux(dcWritesOdd, dcWriteData, loaderOddWrite.Data.bits)
         val oddWriteMask = Mux(
             dcWritesOdd,
-            Fill(CMatrixRegEntryByteSize, true.B),
+            Fill(AccMatrixRegEntryByteSize, true.B),
             loaderOddWrite.ByteMask.bits
         )
 
         evenBank.io.w.req.valid := evenWriteValid
         evenBank.io.w.req.bits.setIdx := evenWriteAddr >> 1
         evenBank.io.w.req.bits.waymask.get := evenWriteMask
-        evenBank.io.w.req.bits.data := evenWriteData.asTypeOf(Vec(CMatrixRegEntryByteSize, UInt(8.W)))
+        evenBank.io.w.req.bits.data := evenWriteData.asTypeOf(Vec(AccMatrixRegEntryByteSize, UInt(8.W)))
         oddBank.io.w.req.valid := oddWriteValid
         oddBank.io.w.req.bits.setIdx := oddWriteAddr >> 1
         oddBank.io.w.req.bits.waymask.get := oddWriteMask
-        oddBank.io.w.req.bits.data := oddWriteData.asTypeOf(Vec(CMatrixRegEntryByteSize, UInt(8.W)))
+        oddBank.io.w.req.bits.data := oddWriteData.asTypeOf(Vec(AccMatrixRegEntryByteSize, UInt(8.W)))
 
         assert(!(readValid && !readParity && evenWriteValid),
-            "CMatrixReg: even single-port SRAM read/write conflict")
+            "AccMatrixReg: even single-port SRAM read/write conflict")
         assert(!(readValid && readParity && oddWriteValid),
-            "CMatrixReg: odd single-port SRAM read/write conflict")
+            "AccMatrixReg: odd single-port SRAM read/write conflict")
 
         (evenBank, oddBank)
     }

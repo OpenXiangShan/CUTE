@@ -7,8 +7,8 @@ import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
 
 //MatrixTE
-//该模块的设计目标是，外积模块，组织多个ReducePE，来复用矩阵乘的数据，MatrixTE接受ABMatrixReg的数据，交给broadcaster，生成数据馈送至至ReducePE，将Reduce的输出数据准备馈送至MatrixRegC。
-//计算上来看，它的输入是两个向量，将两个向量广播成两个相同大小的矩阵后，将元素送入ReducuPE。向量的大小也很明显其一是Matrix_M，其二是Matrix_N，向量内的元素宽度是Reduce_Width
+// Broadcast TR operands across the outer-product PE array and collect results for AccMatrixReg.
+// Broadcast the two input vectors over Matrix_M rows and Matrix_N columns, with Reduce_Width-bit elements.
 class MatrixTE(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
         val VectorA = Flipped(DecoupledIO(UInt((ReduceWidth*Matrix_MN).W)))
@@ -27,19 +27,19 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     })
     dontTouch(io)
 
-    //实例化ReducePE
+    // Instantiate reduction PEs.
     val Matrix = VecInit.tabulate(Matrix_MN, Matrix_MN){(x,y) => Module(new FReducePE()(cuteFpeParameters)).io}
 
-    // 配置运算类型
+    // Configure the operation type.
     val ComputeType = Reg(UInt(MteComputeType.ComputeTypeBitWidth.W))
 
     when (io.ConfigInfo.MicroTaskValid) {
         ComputeType := io.ConfigInfo.computeType
     }
 
-    //直接驱动ReducePE的输入
-    //接下来给每个ReducePE的输入进行赋值
-    //broadcaster的逻辑
+    // Drive PE inputs directly.
+    // Connect the input of each reduction PE.
+    // Broadcast operand data.
     for (i <- 0 until Matrix_MN){
         for (j <- 0 until Matrix_MN){
             Matrix(i)(j).AVector.bits       := io.VectorA.bits((i+1)*ReduceWidth-1,(i)*ReduceWidth)
@@ -62,17 +62,17 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
         }
     }
 
-    //将每个ReducePE的输出拼接成一个矩阵，然后送入MatrixD
+    // Assemble PE outputs into MatrixD.
     val CurrentMatrixD = Wire(Vec(Matrix_MN*Matrix_MN, UInt(ResultWidth.W)))
     for (i <- 0 until Matrix_MN){
         for (j <- 0 until Matrix_MN){
             CurrentMatrixD(i*Matrix_MN+j) := Matrix(i)(j).DResult.bits
         }
     }
-    //这里asUInt可以将Vec(UInt)转换成UInt
+    // asUInt packs Vec[UInt] into a UInt.
     io.MatrixD.bits := CurrentMatrixD.asUInt
     io.MatrixD.valid := Matrix(0)(0).DResult.valid
-    //如果Matrix(i)(j)的每个vali都为true，那么MatrixD的valid才为true
+    // MatrixD is valid only when every PE output is valid.
     // val YJP_valid_count = RegInit(0.U(2.W))
     // val YJP_Count_number = RegInit(0.U(32.W))
     // when(io.VectorA.valid && io.VectorB.valid){
@@ -87,10 +87,10 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
     // }
     // io.MatrixD.valid := Matrix.map(_.map(_.ResultD.valid).reduce(_&&_)).reduce(_&&_)
 
-    //TODO:注意，这里的ready可以不用这么判断，我们所有PE是锁步的，能保证所有PE的数据同时到达，所以只要考察一个PE即可
-    //确定所有的ready信号
-    //当所有的ReducePE的输入都ready的时候，VectorA和VectorB的ready才为true
-    //注意这里如果是时序不足的点，很简单只用考察一个PE即可，因为所有PE是同步执行的，这里这样写是保证逻辑完整完备，代码可读性高
+    // TODO: lockstep PEs return together, so a single PE valid may be sufficient.
+    // Combine readiness from all PEs.
+    // VectorA and VectorB are ready only when every PE input is ready.
+    // Lockstep execution may allow a single PE ready for timing; the full reduction makes the contract explicit.
     val baseInputReady = Matrix(0)(0).AVector.ready && Matrix(0)(0).BVector.ready && Matrix(0)(0).CAdd.ready
     val scaleInputReady = Matrix(0)(0).AScale.zip(Matrix(0)(0).BScale).map { case (aScale, bScale) =>
         aScale.ready && bScale.ready
@@ -123,30 +123,30 @@ class MatrixTE(implicit p: Parameters) extends CuteModule{
             printf("[MatrixTE<%d>]: MatrixD:%x\n",io.DebugInfo.DebugTimeStampe,io.MatrixD.bits)
         }
     }
-    //全体PE对DC进行的完全同步的控制信号，保证每个PE的迭代器同步更新，保证每个Internal Reduce Dim的第一个次计算将C的数据送入PE，最后一次计算将PE的数据送回D
+    // Keep PE and data-controller iterators in lockstep; read C at the first internal K step and write D at the last.
     io.ComputeGo := ReducePEInputAllReady
 
-    //越浅的fifo，越少的能量消耗～
-    //直接送到CMatrixReg的数据，是最香的
-    //只要MatrixD的是ready的，就可以送数据
+    // Shallower FIFOs consume less energy.
+    // Prefer forwarding results directly to AccMatrixReg.
+    // Forward data whenever MatrixD is ready.
     for (i <- 0 until Matrix_MN){
         for (j <- 0 until Matrix_MN){
             Matrix(i)(j).DResult.ready := io.MatrixD.ready
         }
     }
 
-    //ReducePE和MatrixTE需要一个对于externalReduce的处理，以提高热效率，提供主频，减少对CMatrixReg的访问
-    //ExternalReduce是指，我们的MatrixReg内的Tensor的K维大于1时，可以减少从CMatrixReg的访问数据，让ReducePE使用自己暂存的累加结果后，再存至CMatrixReg
-    //Trick：再来，这里的K越大，我们的CSratchPad的平均访问次数就越少，就可以使用更慢更大的SRAM
-    //256/8 = 32，在K大小为256时，我们的ExternalK可以是256/32 = 8,如果K=128，那么ExternalK=4。此时对CSratchPad进行一次读写的时间就只有4个周期，虽然好像也没有问题。
-    //对于一个读+一个写端口的SRAM，我们确实可以在同一个周期内完成一次读一次写。但需要doublebuffer来阻挡从Memory到SRAM的数据。也就是K=32的情况，K=32的情况，用向量做Reduce就行了？
+    // External reduction reuses PE accumulators to improve timing and reduce AccMatrixReg traffic.
+    // For multiple K groups, retain partial sums in the PEs and write AccMatrixReg after the final group.
+    // Larger K reduces average accumulator SRAM traffic and may permit slower, larger SRAMs.
+    // Example: K=256 uses eight 32-byte groups; K=128 uses four, leaving four cycles per accumulator access.
+    // A 1r1w SRAM can read and write together; double buffering separates memory fills from computation.
 
-    //核心问题就是向量和矩阵算力的配比～～
-    //向量算力和矩阵算力的配比，就是在roofline图上，找的那个说得通的点，证明我们的设计是合理的～
+    // Balance vector and matrix compute throughput.
+    // Use a roofline model to assess the vector-to-matrix throughput ratio.
 
-    //算的时候，reducePE可以对256的数据进行n种不同的计算，256/8 = 32。
-    //这个(32,32)元素，送到PE里，可以得到(1,1)，(2,2)，(4,4)等的结果，影响ResultWidth的宽度，这会导致CMatrixReg的访存带宽相应的提升
-    //ResultWidth比较宽，导致CMatrixReg宽度过宽，比如(4,4)的就需要(4*4)(4*4)*32bit,4096bit的读写，但是C有个好处就是不需要每周期都读写4096，可以花4个周期读，再画4个周期写。这样就是要求ExternalK必须大于4+4(单读写口的话)，也就是对于张量来说最小是(4+4)(8)。张量是16*16*64的张量。
+    // A reduction PE can partition 256 input bits into several element shapes; 256 / 8 = 32.
+    // Shapes such as (1,1), (2,2), and (4,4) change ResultWidth and accumulator bandwidth requirements.
+    // A (4,4) shape needs 4096 result bits; spreading reads and writes over four cycles each requires ExternalK > 8.
 
 
 

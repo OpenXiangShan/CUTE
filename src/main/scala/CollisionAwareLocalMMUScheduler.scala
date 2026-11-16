@@ -6,16 +6,17 @@ import org.chipsalliance.cde.config.Parameters
 import utility.XSPerfAccumulate
 
 object LocalMMUSourceClass {
-  val CLoad = 0
-  val CStore = 1
-  val A = 2
+  val AccLoader0 = 0
+  val AccStorer0 = 1
+  val TrLoader0 = 2
   val AScale = 3
-  val B = 4
+  val TrLoader1 = 4
   val BScale = 5
-  val Count = 6
+  val TrStorer0 = 6
+  val Count = 7
   val None = Count
 
-  val names = Seq("CLoad", "CStore", "A", "AScale", "B", "BScale")
+  val names = Seq("CLoad", "CStore", "A", "AScale", "B", "BScale", "trStorer0")
 }
 
 class LocalMMUSchedulerCandidate(val bankCount: Int)(implicit p: Parameters) extends CuteBundle {
@@ -130,12 +131,13 @@ class CollisionAwareLocalMMUScheduler(
   }
 
   val priorityOrder = Seq(
-    LocalMMUSourceClass.CLoad,
-    LocalMMUSourceClass.A,
+    LocalMMUSourceClass.AccLoader0,
+    LocalMMUSourceClass.TrLoader0,
     LocalMMUSourceClass.AScale,
-    LocalMMUSourceClass.B,
+    LocalMMUSourceClass.TrLoader1,
     LocalMMUSourceClass.BScale,
-    LocalMMUSourceClass.CStore
+    LocalMMUSourceClass.AccStorer0,
+    LocalMMUSourceClass.TrStorer0
   )
 
   // Commit tiers progressively. Request lanes and addressed L2 banks selected
@@ -158,14 +160,18 @@ class CollisionAwareLocalMMUScheduler(
       !occupiedLanes(lane) && physicalFree
     }
     val tierSurvivor = source match {
-      case LocalMMUSourceClass.CLoad =>
+      case LocalMMUSourceClass.AccLoader0 =>
         domainMask(source, cLoadResponseChannels, cLoadLegacy, tierEligible)
-      case LocalMMUSourceClass.CStore =>
+      case LocalMMUSourceClass.AccStorer0 =>
         domainMask(source, cStoreResponseChannels, cStoreLegacy, tierEligible)
-      case LocalMMUSourceClass.A =>
+      // Store response channels carry only acknowledgements; no Omega data
+      // routing restriction. The selected store backend limits requests.
+      case LocalMMUSourceClass.TrStorer0 =>
+        identityMask(source, tierEligible)
+      case LocalMMUSourceClass.TrLoader0 =>
         if (!aLegacy && laneCount == 8 && aResponseChannels == laneCount) identityMask(source, tierEligible)
         else domainMask(source, aResponseChannels, aLegacy, tierEligible)
-      case LocalMMUSourceClass.B =>
+      case LocalMMUSourceClass.TrLoader1 =>
         if (!bLegacy && laneCount == 8 && bResponseChannels == laneCount) identityMask(source, tierEligible)
         else domainMask(source, bResponseChannels, bLegacy, tierEligible)
       case _ => VecInit((0 until laneCount).map(lane =>
@@ -187,16 +193,16 @@ class CollisionAwareLocalMMUScheduler(
     }
   }
   io.survivor := VecInit(
-    survivorBySource(LocalMMUSourceClass.CLoad),
-    survivorBySource(LocalMMUSourceClass.CStore),
-    survivorBySource(LocalMMUSourceClass.A),
-    survivorBySource(LocalMMUSourceClass.B)
+    survivorBySource(LocalMMUSourceClass.AccLoader0),
+    survivorBySource(LocalMMUSourceClass.AccStorer0),
+    survivorBySource(LocalMMUSourceClass.TrLoader0),
+    survivorBySource(LocalMMUSourceClass.TrLoader1)
   )
   io.collisionMasked := VecInit(
-    collisionBySource(LocalMMUSourceClass.CLoad),
-    collisionBySource(LocalMMUSourceClass.CStore),
-    collisionBySource(LocalMMUSourceClass.A),
-    collisionBySource(LocalMMUSourceClass.B)
+    collisionBySource(LocalMMUSourceClass.AccLoader0),
+    collisionBySource(LocalMMUSourceClass.AccStorer0),
+    collisionBySource(LocalMMUSourceClass.TrLoader0),
+    collisionBySource(LocalMMUSourceClass.TrLoader1)
   )
   for (source <- 0 until LocalMMUSourceClass.Count) {
     val offered = VecInit(io.candidates(source).map(_.valid)).asUInt
@@ -206,9 +212,9 @@ class CollisionAwareLocalMMUScheduler(
   }
   // Preserve the performance interface; no requests are held by this arbiter.
   io.held := 0.U
-  val abRefillFire = io.selectedFire(LocalMMUSourceClass.A) |
+  val abRefillFire = io.selectedFire(LocalMMUSourceClass.TrLoader0) |
     io.selectedFire(LocalMMUSourceClass.AScale) |
-    io.selectedFire(LocalMMUSourceClass.B) |
+    io.selectedFire(LocalMMUSourceClass.TrLoader1) |
     io.selectedFire(LocalMMUSourceClass.BScale)
   io.cLoadRefill := io.collisionMasked(0) & abRefillFire
 

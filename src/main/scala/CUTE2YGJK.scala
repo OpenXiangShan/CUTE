@@ -29,12 +29,12 @@ class WithCuteCoustomParams(val CoustomCuteParam:CuteParams = CuteParams.basePar
 class Cute2TL(implicit p: Parameters) extends LazyModule with CUTEImplParameters {
   lazy val module = new CUTE2TLImp(this)
   // Changed from single TLClientNode with Seq.tabulate to Seq of independent TLClientNodes
-  val node = Seq.tabulate(ABMatrixRegNBanks) { i =>
+  val node = Seq.tabulate(TrMatrixRegNBanks) { i =>
     TLClientNode(
       Seq(TLMasterPortParameters.v1(
         clients = Seq(TLMasterParameters.v1(
           name = s"CUTE_$i",
-          sourceId = IdRange(0, 1)  // 固定 source ID，信息通过 AmeIndex 传递
+          sourceId = IdRange(0, 1)  // Use a fixed source ID; carry request identity in AmeIndex.
         )),
         requestFields = Seq(
           MatrixField(2),
@@ -48,7 +48,7 @@ class Cute2TL(implicit p: Parameters) extends LazyModule with CUTEImplParameters
   }
 }
 
-//这里的CUTE到LLC的节点
+// CUTE-to-LLC connection node.
 
 class MatrixDataIO(implicit p: Parameters) extends CuteBundle {
   val data = UInt(512.W)
@@ -63,7 +63,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
   val io = IO(new Bundle{
     val mmu = (new MMU2TLIO)
     val idle = Output(Bool())
-    val matrix_data_in = Flipped(Vec(ABMatrixRegNBanks, Decoupled(new MatrixDataIO)))
+    val matrix_data_in = Flipped(Vec(TrMatrixRegNBanks, Decoupled(new MatrixDataIO)))
   })
 
   val time_stamp = RegInit(0.U(64.W))
@@ -71,7 +71,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
 
   class MemoryTraceEntry extends Bundle {
     val cycle = UInt(64.W)
-    val channel = UInt(log2Ceil(ABMatrixRegNBanks).W)
+    val channel = UInt(log2Ceil(TrMatrixRegNBanks).W)
     val address = UInt(MMUAddrWidth.W)
     val sourceId = UInt(64.W)
     val isWrite = Bool()
@@ -87,7 +87,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     ChiselDB.createTable("CUTEMemoryTrace", new MemoryTraceEntry, basicDB = true)
   )
 
-  for (channel <- 0 until ABMatrixRegNBanks) {
+  for (channel <- 0 until TrMatrixRegNBanks) {
     val edge_ch = edges(channel)
     val (tl_out_ch, _) = tl_outs(channel)
 
@@ -167,11 +167,11 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
       table.log(memoryTrace, mmuReq.fire, "MemoryRequest", clock, reset)
     }
 
-    // Direct pass-through for AML responses from TL-D channel
-    // 从 user 字段获取 AmeIndex（完全忽略 tlDBits.source）
+    // Direct pass-through for TrLoader0 responses from TL-D channel
+    // Recover AmeIndex from the user field; tlDBits.source is not used for this identity.
     val ameIndexFromUser = tlDBits.user.lift(AmeIndexKey).getOrElse(0.U)
 
-    // 注意：ameIndex 可以为 0（RequestSourceID 从 0 开始），不检查是否为 0
+    // AmeIndex may be zero because RequestSourceID starts at zero.
 
     mmuResp.valid := tlD.valid || matrixDataIn.valid
     mmuRespBits.ReseponseData := matrixDataIn.bits.data
@@ -182,11 +182,11 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     )
     mmuRespBits.ReseponseConherent := true.B
 
-    // Direct pass-through for AML matrix_data_in
+    // Direct pass-through for TrLoader0 matrix_data_in
     matrixDataIn.ready := mmuResp.ready
     tlD.ready := mmuResp.ready && !matrixDataIn.valid
 
-    // Debug output for AML channels
+    // Debug output for TrLoader0 channels
     when(mmuReq.fire){
       if (YJPDebugEnable)
       {
@@ -196,7 +196,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
       }
     }
 
-    // T7: 添加 AML Response 调试日志
+    // T7: Log TR loader responses.
     when(mmuResp.fire){
       if (YJPDebugEnable)
       {
@@ -205,7 +205,7 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
       }
     }
 
-    // T7: 添加 TL-D 通道状态调试日志
+    // T7: Log TileLink D-channel state.
     when(tlD.valid){
       if (YJPDebugEnable)
       {

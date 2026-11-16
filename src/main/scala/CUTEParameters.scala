@@ -70,12 +70,16 @@ object ResponseChannelHelper {
   }
 
   final case class LoaderBridgeChannelConfig(
-    a: LoaderMode,
-    b: LoaderMode,
-    cLoad: LoaderMode,
-    cStore: LoaderMode
+    trLoader0: LoaderMode,
+    trLoader1: LoaderMode,
+    accLoader0: LoaderMode,
+    accStorer0: LoaderMode,
+    trStorer0: LoaderMode = LegacyLoaderMode
   ) {
-    def render: String = s"A${a.renderToken}B${b.renderToken}CL${cLoad.renderToken}CS${cStore.renderToken}"
+    // Numeric TS0 limits requests only; legacy TS0 also serializes ACK delivery.
+    def trStoreRequestChannelCount: Int = trStorer0.responseChannelCount
+    def render: String = s"TL0${trLoader0.renderToken}TL1${trLoader1.renderToken}" +
+      s"AL0${accLoader0.renderToken}TS0${trStorer0.renderToken}AS0${accStorer0.renderToken}"
   }
 
   final case class LoaderRouteDescriptor(
@@ -93,7 +97,10 @@ object ResponseChannelHelper {
       sourceId(bankIdOffset + bankIdWidth - 1, bankIdOffset)
   }
 
-  private val LoaderBridgeChannelConfigPattern = "^A(L|1|2|4|8)B(L|1|2|4|8)CL(L|1|2|4|8)CS(L|1|2|4|8)$".r
+  private val LoaderBridgeChannelConfigPattern =
+    "^TL0(L|1|2|4|8)TL1(L|1|2|4|8)AL0(L|1|2|4|8)TS0(L|1|2|4|8)AS0(L|1|2|4|8)$".r
+  private val LegacyLoaderBridgeChannelConfigPattern =
+    "^A(L|1|2|4|8)B(L|1|2|4|8)CL(L|1|2|4|8)CS(L|1|2|4|8)(?:AS(1|2|4|8))?$".r
 
   def parseLoaderMode(token: String): LoaderMode = token match {
     case "L" => LegacyLoaderMode
@@ -102,25 +109,24 @@ object ResponseChannelHelper {
     case "4" => ParameterizedLoaderMode(4)
     case "8" => ParameterizedLoaderMode(8)
     case other =>
-      require(requirement = false, s"unsupported loader mode token '$other', expected one of L/1/2/4/8")
+      require(requirement = false, s"unsupported loader mode token '$other', expected L/1/2/4/8")
       LegacyLoaderMode
   }
 
   def parseLoaderBridgeChannelConfig(config: String): LoaderBridgeChannelConfig = {
-    val normalized = config.trim.toUpperCase
-    normalized match {
-      case LoaderBridgeChannelConfigPattern(a, b, cLoad, cStore) =>
-        LoaderBridgeChannelConfig(
-          a = parseLoaderMode(a),
-          b = parseLoaderMode(b),
-          cLoad = parseLoaderMode(cLoad),
-          cStore = parseLoaderMode(cStore)
-        )
+    config.trim.toUpperCase match {
+      case LoaderBridgeChannelConfigPattern(tl0, tl1, al0, ts0, as0) =>
+        LoaderBridgeChannelConfig(parseLoaderMode(tl0), parseLoaderMode(tl1),
+          parseLoaderMode(al0), parseLoaderMode(as0), parseLoaderMode(ts0))
+      case LegacyLoaderBridgeChannelConfigPattern(a, b, cl, cs, as) =>
+        // Preserve old omitted-AS behavior: AL means numeric TS01, not TS0L.
+        val storeWidth = Option(as).map(_.toInt).getOrElse(parseLoaderMode(a).responseChannelCount)
+        LoaderBridgeChannelConfig(parseLoaderMode(a), parseLoaderMode(b),
+          parseLoaderMode(cl), parseLoaderMode(cs), ParameterizedLoaderMode(storeWidth))
       case _ =>
-        require(
-          requirement = false,
-          s"invalid LoaderBridgeChannelConfig '$config', expected format like A1B1CL1CS8 or ALBLCLLCSL"
-        )
+        require(requirement = false,
+          s"invalid LoaderBridgeChannelConfig '$config', expected TL0LTL1LAL0LTS0LAS0L, " +
+            "TL08TL18AL08TS08AS08, or legacy A1B1CL1CS8[AS4]")
         LoaderBridgeChannelConfig(LegacyLoaderMode, LegacyLoaderMode, LegacyLoaderMode, LegacyLoaderMode)
     }
   }
@@ -272,7 +278,7 @@ object CuteParams {
 
     //default simple debug
     def simpleDebugParams = baseParams.copy(
-        Debug = CuteDebugParams.CMLDebugEnable
+        Debug = CuteDebugParams.AccMemoryDebugEnable
     )
 
     //dram&L2 performance test
@@ -322,7 +328,7 @@ object CuteParams {
             enableFp16Fp16 = true,
             enableBf16Fp32 = true,
         ),
-        // Debug = CuteDebugParams.AMLDebugEnable
+        // Debug = CuteDebugParams.TrLoader0DebugEnable
     )
 
     def CUTE_4Tops = baseParams.copy(
@@ -360,7 +366,7 @@ object CuteParams {
             enableFp16Fp16 = true,
             enableBf16Fp32 = true,
         ),
-        // Debug = CuteDebugParams.AMLDebugEnable
+        // Debug = CuteDebugParams.TrLoader0DebugEnable
     )
 
     def CUTE_1Tops = baseParams.copy(
@@ -371,7 +377,7 @@ object CuteParams {
         Tensor_K = 64,
         Matrix_MN = 4,
         ReduceWidthByte = 64,
-        // Debug = CuteDebugParams.AMLDebugEnable
+        // Debug = CuteDebugParams.TrLoader0DebugEnable
     )
 
     def CUTE_05Tops = baseParams.copy(
@@ -382,7 +388,7 @@ object CuteParams {
         Tensor_K = 64,
         Matrix_MN = 4,
         ReduceWidthByte = 32,
-        // Debug = CuteDebugParams.AMLDebugEnable
+        // Debug = CuteDebugParams.TrLoader0DebugEnable
     )
 
     def CUTE_512SCP(params: CuteParams) = params.copy(
@@ -460,7 +466,7 @@ object Cutev3Params {
 
     //default simple debug
     def simpleDebugParams = baseParams.copy(
-        Debug = CuteDebugParams.AMLDebugEnable
+        Debug = CuteDebugParams.TrLoader0DebugEnable
     )
 
     //dram&L2 performance test
@@ -472,7 +478,7 @@ object Cutev3Params {
         Tensor_K = 64,
         Matrix_MN = 8,
         ReduceWidthByte = 32,
-        Debug = CuteDebugParams.AMLDebugEnable
+        Debug = CuteDebugParams.TrLoader0DebugEnable
     )
 
     def CUTE_8Tops_128SCP = baseParams.copy(
@@ -491,7 +497,7 @@ object Cutev3Params {
             enableFp16Fp16 = true,
             enableBf16Fp32 = true,
         ),
-        // Debug = CuteDebugParams.AMLDebugEnable
+        // Debug = CuteDebugParams.TrLoader0DebugEnable
     )
 
 
@@ -502,17 +508,17 @@ object CuteDebugParams {
   // NoDebugParams:
   def NoDebug = CuteDebugParams()
 
-  def AMLDebugEnable = NoDebug.copy(
-    YJPAMLDebugEnable = true,
+  def TrLoader0DebugEnable = NoDebug.copy(
+    YJPTrLoader0DebugEnable = true,
   )
 
-  def CMLDebugEnable = NoDebug.copy(
-    YJPCMLDebugEnable = true,
+  def AccMemoryDebugEnable = NoDebug.copy(
+    YJPAccMemoryDebugEnable = true,
   )
 
   def ComputeDebugeNable = NoDebug.copy(
     // YJPMACDebugEnable = true,
-    YJPCMLDebugEnable = true,
+    YJPAccMemoryDebugEnable = true,
     // YJPDebugEnable = true,
   )
 
@@ -521,9 +527,9 @@ object CuteDebugParams {
     YJPADCDebugEnable = true,
     YJPBDCDebugEnable = true,
     YJPCDCDebugEnable = true,
-    YJPAMLDebugEnable = true,
-    YJPBMLDebugEnable = true,
-    YJPCMLDebugEnable = true,
+    YJPTrLoader0DebugEnable = true,
+    YJPTrLoader1DebugEnable = true,
+    YJPAccMemoryDebugEnable = true,
     YJPTASKDebugEnable = true,
     YJPVECDebugEnable = true,
     YJPMACDebugEnable = true,
@@ -536,9 +542,9 @@ case class CuteDebugParams(
     val YJPADCDebugEnable :Boolean  = false,
     val YJPBDCDebugEnable :Boolean  = false,
     val YJPCDCDebugEnable :Boolean  = false,
-    val YJPAMLDebugEnable :Boolean  = false,
-    val YJPBMLDebugEnable :Boolean  = false,
-    val YJPCMLDebugEnable :Boolean  = false,
+    val YJPTrLoader0DebugEnable :Boolean  = false,
+    val YJPTrLoader1DebugEnable :Boolean  = false,
+    val YJPAccMemoryDebugEnable :Boolean  = false,
     val YJPTASKDebugEnable :Boolean = false,
     val YJPVECDebugEnable :Boolean  = false,
     val YJPMACDebugEnable :Boolean  = false,
@@ -623,10 +629,10 @@ case class CuteParams(
 
     val ResultFIFODepth :Int = 8,    //MAC FIFO depth
 
-    val AMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering AML data to CCSP
-    val BMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering BML data to CCSP
-    val CMemoryLoaderReadFromMatrixRegFIFODepth :Int = 4, //FIFO for buffering CCSP data to CML
-    val CMemoryLoaderReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering CML data to CMReg
+    val TrLoader0ReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering trLoader0 data to CCSP
+    val TrLoader1ReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering trLoader1 data to CCSP
+    val AccStorer0ReadFromMatrixRegFIFODepth :Int = 4, //FIFO for buffering CCSP data to accMemory
+    val AccLoader0ReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering accMemory data to CMReg
 
     val VecTaskInstBufferDepth :Int = 32, //VecTask instruction buffer depth
     val VecTaskInstBufferSize :Int = 8, //number of VecTask instruction buffers
@@ -655,15 +661,16 @@ case class CuteParams(
 
     // User-facing loader response mode selector.
     // L means legacy single-channel loader; 1/2/4/8 mean parameterized bridge width.
-    val LoaderBridgeChannelConfig: String = "ALBLCLLCSL",
+    // Explicit physical-FU modes; the parser also accepts the old A/B/CL/CS[AS] grammar.
+    val LoaderBridgeChannelConfig: String = "TL0LTL1LAL0LTS0LAS0L",
 
     // Physical-design-oriented queue depths for multi-channel loaders / bridge.
-    val ABMultiResponseFifoDepth: Int = 2,
-    val CLoadMultiFillQueueDepth: Int = 2,
+    val TrLoadResponseFifoDepth: Int = 2,
+    val AccLoader0FillQueueDepth: Int = 2,
     val ResponseBridgeQueueDepth: Int = 8,
 
     // When enabled, CStore ack path bypasses the response bridge and only counts total acks.
-    val CStoreDirectAckCountMode: Boolean = true,
+    val AccStorer0DirectAckCountMode: Boolean = true,
 
     // Elastic safety buffer on every parameterized Omega input.
     val EnableOmegaInputQueue: Boolean = true,
@@ -674,42 +681,50 @@ case class CuteParams(
     // Reserved seed control; the current normal-load path does not invoke seed lookup.
     val ABPerfectBatchSeedEnable: Boolean = true,
 
-    // Shared AML/BML request-side C-tail mitigation; transpose and legacy paths stay natural.
+    // Shared trLoader0/trLoader1 request-side C-tail mitigation; transpose and legacy paths stay natural.
     val ABBatchScheduleEnable: Boolean = true,
     val ABBatchScheduleMode: String = ABBatchSchedule.Rotate,
     val ABBatchRotateOffset: Int = 1,
     val ABBatchPermutationMul: Int = 17
 ) {
     val parsedLoaderBridgeChannelConfig = ResponseChannelHelper.parseLoaderBridgeChannelConfig(LoaderBridgeChannelConfig)
-    val AMLChannelMode = parsedLoaderBridgeChannelConfig.a
-    val BMLChannelMode = parsedLoaderBridgeChannelConfig.b
-    val CLoadChannelMode = parsedLoaderBridgeChannelConfig.cLoad
-    val CStoreChannelMode = parsedLoaderBridgeChannelConfig.cStore
+    val TrLoader0ChannelMode = parsedLoaderBridgeChannelConfig.trLoader0
+    val TrLoader1ChannelMode = parsedLoaderBridgeChannelConfig.trLoader1
+    val AccLoader0ChannelMode = parsedLoaderBridgeChannelConfig.accLoader0
+    val AccStorer0ChannelMode = parsedLoaderBridgeChannelConfig.accStorer0
+    val TrStorer0RequestChannelCount = parsedLoaderBridgeChannelConfig.trStoreRequestChannelCount
+    val TrStorer0ChannelMode = parsedLoaderBridgeChannelConfig.trStorer0
+    // Old omitted-AS configurations retain their previous parameter checks.
+    if (LoaderBridgeChannelConfig.trim.toUpperCase.startsWith("TL0") ||
+        LoaderBridgeChannelConfig.trim.toUpperCase.matches(".*AS[1248]$")) {
+      require(TrStorer0RequestChannelCount <= TrMatrixRegNBanks,
+        s"TS0 request width ($TrStorer0RequestChannelCount) exceeds TR banks ($TrMatrixRegNBanks)")
+    }
 
-    val AMLRouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
-      "A", AMLChannelMode, ABMatrixRegNBanks, log2Ceil(ABMatrixRegBankNEntries))
-    val BMLRouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
-      "B", BMLChannelMode, ABMatrixRegNBanks, log2Ceil(ABMatrixRegBankNEntries))
-    val CLoadRouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
-      "CLoad", CLoadChannelMode, CMatrixRegNBanks, log2Ceil(CMatrixRegBankNEntries))
-    val CStoreRouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
-      "CStore", CStoreChannelMode, CMatrixRegNBanks, log2Ceil(CMatrixRegBankNEntries))
+    val TrLoader0RouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
+      "A", TrLoader0ChannelMode, TrMatrixRegNBanks, log2Ceil(TrMatrixRegBankNEntries))
+    val TrLoader1RouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
+      "B", TrLoader1ChannelMode, TrMatrixRegNBanks, log2Ceil(TrMatrixRegBankNEntries))
+    val AccLoader0RouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
+      "CLoad", AccLoader0ChannelMode, AccMatrixRegNBanks, log2Ceil(AccMatrixRegBankNEntries))
+    val AccStorer0RouteDescriptor = ResponseChannelHelper.LoaderRouteDescriptor(
+      "CStore", AccStorer0ChannelMode, AccMatrixRegNBanks, log2Ceil(AccMatrixRegBankNEntries))
 
     require(
-      CLoadChannelMode.isLegacy == CStoreChannelMode.isLegacy,
+      AccLoader0ChannelMode.isLegacy == AccStorer0ChannelMode.isLegacy,
       s"mixed legacy/parameterized C loader modes are not supported now: ${parsedLoaderBridgeChannelConfig.render}"
     )
-    require(ABMatrixRegNBanks >= 1 && isPow2(ABMatrixRegNBanks),
-      s"ABMatrixRegNBanks ($ABMatrixRegNBanks) must be a positive power of two")
-    require(CMatrixRegNBanks >= 1 && isPow2(CMatrixRegNBanks),
-      s"CMatrixRegNBanks ($CMatrixRegNBanks) must be a positive power of two")
+    require(TrMatrixRegNBanks >= 1 && isPow2(TrMatrixRegNBanks),
+      s"TrMatrixRegNBanks ($TrMatrixRegNBanks) must be a positive power of two")
+    require(AccMatrixRegNBanks >= 1 && isPow2(AccMatrixRegNBanks),
+      s"AccMatrixRegNBanks ($AccMatrixRegNBanks) must be a positive power of two")
     require(L2NBanks >= 1 && isPow2(L2NBanks),
       s"L2NBanks ($L2NBanks) must be a positive power of two")
     Seq(
-      "A" -> AMLChannelMode,
-      "B" -> BMLChannelMode,
-      "CLoad" -> CLoadChannelMode,
-      "CStore" -> CStoreChannelMode
+      "A" -> TrLoader0ChannelMode,
+      "B" -> TrLoader1ChannelMode,
+      "CLoad" -> AccLoader0ChannelMode,
+      "CStore" -> AccStorer0ChannelMode
     ).foreach { case (name, mode) =>
       require(Seq(1, 2, 4, 8).contains(mode.responseChannelCount),
         s"$name response channel count (${mode.responseChannelCount}) must be one of 1/2/4/8")
@@ -719,15 +734,15 @@ case class CuteParams(
     require(ABBatchSchedule.modes.contains(ABBatchScheduleMode), "unsupported AB batch schedule mode")
     require(ABBatchRotateOffset >= 0 && ABBatchPermutationMul > 0,
         "AB batch offset must be non-negative and multiplier must be positive")
-    if (L2NBanks == 8 && parsedLoaderBridgeChannelConfig ==
+    if (L2NBanks == 8 && parsedLoaderBridgeChannelConfig.copy(trStorer0 = ResponseChannelHelper.LegacyLoaderMode) ==
       ResponseChannelHelper.LoaderBridgeChannelConfig(
         ResponseChannelHelper.ParameterizedLoaderMode(8),
         ResponseChannelHelper.ParameterizedLoaderMode(8),
         ResponseChannelHelper.ParameterizedLoaderMode(8),
         ResponseChannelHelper.ParameterizedLoaderMode(8))) {
-      require(ABMatrixRegNBanks == L2NBanks && CMatrixRegNBanks == L2NBanks,
+      require(TrMatrixRegNBanks == L2NBanks && AccMatrixRegNBanks == L2NBanks,
         s"eight-bank perfect batching requires L2 and MatrixReg bank identity: " +
-          s"L2=$L2NBanks AB=$ABMatrixRegNBanks C=$CMatrixRegNBanks")
+          s"L2=$L2NBanks AB=$TrMatrixRegNBanks C=$AccMatrixRegNBanks")
     }
 
     // require(ReduceWidthByte == 64, "FP8/4 now only support 512 bit reduce width")
@@ -747,15 +762,15 @@ case class CuteParams(
     require((ReduceWidthByte & (ReduceWidthByte - 1)) == 0, "ReduceWidthByte must be power of 2")
     require((ResultWidthByte & (ResultWidthByte - 1)) == 0, "ResultWidthByte must be power of 2")
     require((ResultFIFODepth & (ResultFIFODepth - 1)) == 0, "ResultFIFODepth must be power of 2")
-    require((AMemoryLoaderReadFromMemoryFIFODepth & (AMemoryLoaderReadFromMemoryFIFODepth - 1)) == 0, "AMemoryLoaderReadFromMemoryFIFODepth must be power of 2")
-    require((BMemoryLoaderReadFromMemoryFIFODepth & (BMemoryLoaderReadFromMemoryFIFODepth - 1)) == 0, "BMemoryLoaderReadFromMemoryFIFODepth must be power of 2")
-    require((CMemoryLoaderReadFromMatrixRegFIFODepth & (CMemoryLoaderReadFromMatrixRegFIFODepth - 1)) == 0, "CMemoryLoaderReadFromMatrixRegFIFODepth must be power of 2")
-    require((CMemoryLoaderReadFromMemoryFIFODepth & (CMemoryLoaderReadFromMemoryFIFODepth - 1)) == 0, "CMemoryLoaderReadFromMemoryFIFODepth must be power of 2")
+    require((TrLoader0ReadFromMemoryFIFODepth & (TrLoader0ReadFromMemoryFIFODepth - 1)) == 0, "TrLoader0ReadFromMemoryFIFODepth must be power of 2")
+    require((TrLoader1ReadFromMemoryFIFODepth & (TrLoader1ReadFromMemoryFIFODepth - 1)) == 0, "TrLoader1ReadFromMemoryFIFODepth must be power of 2")
+    require((AccStorer0ReadFromMatrixRegFIFODepth & (AccStorer0ReadFromMatrixRegFIFODepth - 1)) == 0, "AccStorer0ReadFromMatrixRegFIFODepth must be power of 2")
+    require((AccLoader0ReadFromMemoryFIFODepth & (AccLoader0ReadFromMemoryFIFODepth - 1)) == 0, "AccLoader0ReadFromMemoryFIFODepth must be power of 2")
     require((VecTaskInstBufferDepth & (VecTaskInstBufferDepth - 1)) == 0, "VecTaskInstBufferDepth must be power of 2")
     require((VecTaskInstBufferSize & (VecTaskInstBufferSize - 1)) == 0, "VecTaskInstBufferSize must be power of 2")
     require((VecTaskDataBufferDepth & (VecTaskDataBufferDepth - 1)) == 0, "VecTaskDataBufferDepth must be power of 2")
-    require(ABMultiResponseFifoDepth >= 1, "ABMultiResponseFifoDepth must be >= 1")
-    require(CLoadMultiFillQueueDepth >= 1, "CLoadMultiFillQueueDepth must be >= 1")
+    require(TrLoadResponseFifoDepth >= 1, "TRLoadResponseFifoDepth must be >= 1")
+    require(AccLoader0FillQueueDepth >= 1, "AccLoader0FillQueueDepth must be >= 1")
     require(ResponseBridgeQueueDepth >= 1, "ResponseBridgeQueueDepth must be >= 1")
     require(Seq(4, 8, 16).contains(TaskCtrlIssueWindowDepth), "TaskCtrlIssueWindowDepth only supports 4/8/16")
     require(Seq(8, 16, 32).contains(MsyncRegs), "MsyncRegs only supports 8/16/32")
@@ -775,7 +790,7 @@ case class CuteParams(
 
     def outsideDataWidthByte = outsideDataWidth / 8
     def ReduceWidth = ReduceWidthByte * 8
-    def ABMLNeedMRegFillTable = ReduceWidthByte < outsideDataWidthByte //when returned memory data cannot be written in one cycle, ABML needs a writeback buffer
+    def TrLoadNeedsFillTable = ReduceWidthByte < outsideDataWidthByte //buffer returned memory data when it cannot be written in one cycle
     def ResultWidth = ResultWidthByte * 8
     def ApplicationMaxTensorSizeBitSize = log2Ceil(ApplicationMaxTensorSize) + 1
     def MMUDataWidth = outsideDataWidth //MMU data bus width
@@ -797,25 +812,25 @@ case class CuteParams(
     //128*(4*256/8); one read covers a 128*128 tensor
     //one compute takes (128/4)*(128/4)*4 = 4096 cycles; one read takes 128*4 = 512 cycles.
     //sequential reads must be considered; MatrixReg should be banked
-    def ABMatrixRegSize = Tensor_MN * ReduceGroupSize * ReduceWidthByte //reduce
-    def CMatrixRegSize = Tensor_MN * Tensor_MN * ResultWidthByte //result
+    def TrMatrixRegSize = Tensor_MN * ReduceGroupSize * ReduceWidthByte //reduce
+    def AccMatrixRegSize = Tensor_MN * Tensor_MN * ResultWidthByte //result
 
     //the current MatrixReg design is split into Tensor_T banks; each access fetches Tensor_T items from different banks and concatenates them
-    def ABMatrixRegEntryByteSize = ReduceWidthByte //bandwidth suitable for feeding TE
-    def CMatrixRegEntryByteSize = Matrix_MN*ResultWidthByte //bandwidth for reads and writes
-    def ABMatrixRegEntryBitSize = ReduceWidthByte * 8 //bandwidth suitable for feeding TE
-    def CMatrixRegEntryBitSize = Matrix_MN*ResultWidthByte * 8//bandwidth for reads and writes
-    def ABMatrixRegNBanks = Matrix_MN //note that this is strongly tied to Matrix_MN and is generally an integer multiple of Matrix_MN
-    def CMatrixRegNBanks = Matrix_MN //convenient for reorder
-    def Trans_Load_Size = outsideDataWidthByte / ABMatrixRegNBanks
-    def ABMatrixReg_Total_Bandwidth = ABMatrixRegNBanks * ABMatrixRegEntryByteSize  //total bandwidth of ABMatrixReg
-    def CMatrixReg_Total_Bandwidth = CMatrixRegNBanks * CMatrixRegEntryByteSize  //total bandwidth of CMatrixReg
-    def ABMatrixReg_Total_Bandwidth_Bit = ABMatrixRegNBanks * ABMatrixRegEntryByteSize * 8  //total bandwidth of ABMatrixReg
-    def CMatrixReg_Total_Bandwidth_Bit = CMatrixRegNBanks * CMatrixRegEntryByteSize * 8  //total bandwidth of CMatrixReg
-    def ABMatrixRegBankSize = ABMatrixRegSize / ABMatrixRegNBanks
-    def CMatrixRegBankSize = CMatrixRegSize / CMatrixRegNBanks
-    def ABMatrixRegBankNEntries = ABMatrixRegBankSize / ABMatrixRegEntryByteSize
-    def CMatrixRegBankNEntries = CMatrixRegBankSize / CMatrixRegEntryByteSize
+    def TrMatrixRegEntryByteSize = ReduceWidthByte //bandwidth suitable for feeding TE
+    def AccMatrixRegEntryByteSize = Matrix_MN*ResultWidthByte //bandwidth for reads and writes
+    def TrMatrixRegEntryBitSize = ReduceWidthByte * 8 //bandwidth suitable for feeding TE
+    def AccMatrixRegEntryBitSize = Matrix_MN*ResultWidthByte * 8//bandwidth for reads and writes
+    def TrMatrixRegNBanks = Matrix_MN //note that this is strongly tied to Matrix_MN and is generally an integer multiple of Matrix_MN
+    def AccMatrixRegNBanks = Matrix_MN //convenient for reorder
+    def Trans_Load_Size = outsideDataWidthByte / TrMatrixRegNBanks
+    def TrMatrixReg_Total_Bandwidth = TrMatrixRegNBanks * TrMatrixRegEntryByteSize  //total bandwidth of TrMatrixReg
+    def AccMatrixReg_Total_Bandwidth = AccMatrixRegNBanks * AccMatrixRegEntryByteSize  //total bandwidth of AccMatrixReg
+    def TrMatrixReg_Total_Bandwidth_Bit = TrMatrixRegNBanks * TrMatrixRegEntryByteSize * 8  //total bandwidth of TrMatrixReg
+    def AccMatrixReg_Total_Bandwidth_Bit = AccMatrixRegNBanks * AccMatrixRegEntryByteSize * 8  //total bandwidth of AccMatrixReg
+    def TrMatrixRegBankSize = TrMatrixRegSize / TrMatrixRegNBanks
+    def AccMatrixRegBankSize = AccMatrixRegSize / AccMatrixRegNBanks
+    def TrMatrixRegBankNEntries = TrMatrixRegBankSize / TrMatrixRegEntryByteSize
+    def AccMatrixRegBankNEntries = AccMatrixRegBankSize / AccMatrixRegEntryByteSize
 
     /**
      * Scale Factor Parameters
@@ -827,7 +842,7 @@ case class CuteParams(
 
     // require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
     require(outsideDataWidthByte <= Tensor_K, "outsideDataWidthByte must be less than or equal to Tensor_K, or a load will exceed the subtensor in micro load")
-    require(outsideDataWidthByte % ABMatrixRegNBanks == 0, "outsideDataWidthByte must be divisible by ABMatrixRegNBanks for transpose load")
+    require(outsideDataWidthByte % TrMatrixRegNBanks == 0, "outsideDataWidthByte must be divisible by TrMatrixRegNBanks for transpose load")
 
 }
 
@@ -858,11 +873,11 @@ trait HasCuteParams {
     def DecodedAmuCtrlFIFODepth = TaskCtrlIssueWindowDepth  // Decoded AMU instruction FIFO depth, tied to the issue window
     def DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) // Bit width of the decoded AMU instruction FIFO depth
 
-    def ABMatrixRegCount = 4
-    def CMatrixRegCount = 4
-    def ABMatrixRegIdWidth = log2Ceil(ABMatrixRegCount)
-    def CMatrixRegIdWidth = log2Ceil(CMatrixRegCount)
-    def MatrixRegIdWidth = ABMatrixRegIdWidth max CMatrixRegIdWidth
+    def TrMatrixRegCount = 4
+    def AccMatrixRegCount = 4
+    def TrMatrixRegIdWidth = log2Ceil(TrMatrixRegCount)
+    def AccMatrixRegIdWidth = log2Ceil(AccMatrixRegCount)
+    def MatrixRegIdWidth = TrMatrixRegIdWidth max AccMatrixRegIdWidth
 
     def vpnBits = MMUParams.vpnBits
     def ppnBits = MMUParams.ppnBits
@@ -877,9 +892,9 @@ trait HasCuteParams {
     def YJPADCDebugEnable   = DebugParams.YJPADCDebugEnable
     def YJPBDCDebugEnable   = DebugParams.YJPBDCDebugEnable
     def YJPCDCDebugEnable   = DebugParams.YJPCDCDebugEnable
-    def YJPAMLDebugEnable   = DebugParams.YJPAMLDebugEnable
-    def YJPBMLDebugEnable   = DebugParams.YJPBMLDebugEnable
-    def YJPCMLDebugEnable   = DebugParams.YJPCMLDebugEnable
+    def YJPTrLoader0DebugEnable   = DebugParams.YJPTrLoader0DebugEnable
+    def YJPTrLoader1DebugEnable   = DebugParams.YJPTrLoader1DebugEnable
+    def YJPAccMemoryDebugEnable   = DebugParams.YJPAccMemoryDebugEnable
     def YJPTASKDebugEnable        = DebugParams.YJPTASKDebugEnable
     def YJPVECDebugEnable         = DebugParams.YJPVECDebugEnable
     def YJPMACDebugEnable         = DebugParams.YJPMACDebugEnable
@@ -894,7 +909,7 @@ trait HasCuteParams {
     def mxfp8ScaleWidth = ReduceWidth * 8 / 8 / 32 //total scale width accepted by one PE per cycle [single scale width 8-bit, single element width 4-bit, groupsize 32]
     def nvfp4ScaleWidth = ReduceWidth * 8 / 4 / 16 //total scale width accepted by one PE per cycle [single scale width 8-bit, single element width 4-bit, groupsize 16]
     def mxfp4ScaleWidth = ReduceWidth * 8 / 4 / 32 //total scale width accepted by one PE per cycle [single scale width 8-bit, single element width 4-bit, groupsize 32]
-    def ABMLNeedMRegFillTable = cuteParams.ABMLNeedMRegFillTable
+    def TrLoadNeedsFillTable = cuteParams.TrLoadNeedsFillTable
     def ResultWidthByte = cuteParams.ResultWidthByte
     def ResultWidth = cuteParams.ResultWidth
     def VectorWidth = cuteParams.VectorWidth
@@ -914,39 +929,39 @@ trait HasCuteParams {
     def Tensor_K = cuteParams.Tensor_K
     def MatrixRegMaxTensorDim = cuteParams.MatrixRegMaxTensorDim
     def MatrixRegMaxTensorDimBitSize = cuteParams.MatrixRegMaxTensorDimBitSize
-    def ABMatrixRegSize = cuteParams.ABMatrixRegSize
-    def CMatrixRegSize = cuteParams.CMatrixRegSize
+    def TrMatrixRegSize = cuteParams.TrMatrixRegSize
+    def AccMatrixRegSize = cuteParams.AccMatrixRegSize
     def Matrix_MN = cuteParams.Matrix_MN
-    def ABMatrixRegEntryByteSize = cuteParams.ABMatrixRegEntryByteSize
-    def CMatrixRegEntryByteSize = cuteParams.CMatrixRegEntryByteSize
-    def ABMatrixRegEntryBitSize = cuteParams.ABMatrixRegEntryBitSize
-    def CMatrixRegEntryBitSize = cuteParams.CMatrixRegEntryBitSize
-    def ABMatrixRegNBanks = cuteParams.ABMatrixRegNBanks
-    def CMatrixRegNBanks = cuteParams.CMatrixRegNBanks
+    def TrMatrixRegEntryByteSize = cuteParams.TrMatrixRegEntryByteSize
+    def AccMatrixRegEntryByteSize = cuteParams.AccMatrixRegEntryByteSize
+    def TrMatrixRegEntryBitSize = cuteParams.TrMatrixRegEntryBitSize
+    def AccMatrixRegEntryBitSize = cuteParams.AccMatrixRegEntryBitSize
+    def TrMatrixRegNBanks = cuteParams.TrMatrixRegNBanks
+    def AccMatrixRegNBanks = cuteParams.AccMatrixRegNBanks
     def Trans_Load_Size = cuteParams.Trans_Load_Size
-    def ABMatrixReg_Total_Bandwidth = cuteParams.ABMatrixReg_Total_Bandwidth
-    def CMatrixReg_Total_Bandwidth = cuteParams.CMatrixReg_Total_Bandwidth
-    def ABMatrixReg_Total_Bandwidth_Bit = cuteParams.ABMatrixReg_Total_Bandwidth_Bit
-    def CMatrixReg_Total_Bandwidth_Bit = cuteParams.CMatrixReg_Total_Bandwidth_Bit
-    def ABMatrixRegBankSize = cuteParams.ABMatrixRegBankSize
-    def CMatrixRegBankSize = cuteParams.CMatrixRegBankSize
-    def ABMatrixRegBankNEntries = cuteParams.ABMatrixRegBankNEntries
-    def CMatrixRegBankNEntries = cuteParams.CMatrixRegBankNEntries
+    def TrMatrixReg_Total_Bandwidth = cuteParams.TrMatrixReg_Total_Bandwidth
+    def AccMatrixReg_Total_Bandwidth = cuteParams.AccMatrixReg_Total_Bandwidth
+    def TrMatrixReg_Total_Bandwidth_Bit = cuteParams.TrMatrixReg_Total_Bandwidth_Bit
+    def AccMatrixReg_Total_Bandwidth_Bit = cuteParams.AccMatrixReg_Total_Bandwidth_Bit
+    def TrMatrixRegBankSize = cuteParams.TrMatrixRegBankSize
+    def AccMatrixRegBankSize = cuteParams.AccMatrixRegBankSize
+    def TrMatrixRegBankNEntries = cuteParams.TrMatrixRegBankNEntries
+    def AccMatrixRegBankNEntries = cuteParams.AccMatrixRegBankNEntries
     def ScaleWidth = cuteParams.ScaleWidth
     def ABScaleBankNEntries = cuteParams.ABScaleBankNEntries
     def ABScaleNSlices = cuteParams.ABScaleNSlices
     def ResultFIFODepth = cuteParams.ResultFIFODepth
-    def AMemoryLoaderReadFromMemoryFIFODepth = cuteParams.AMemoryLoaderReadFromMemoryFIFODepth
-    def BMemoryLoaderReadFromMemoryFIFODepth = cuteParams.BMemoryLoaderReadFromMemoryFIFODepth
-    def CMemoryLoaderReadFromMatrixRegFIFODepth = cuteParams.CMemoryLoaderReadFromMatrixRegFIFODepth
-    def CMemoryLoaderReadFromMemoryFIFODepth = cuteParams.CMemoryLoaderReadFromMemoryFIFODepth
+    def TrLoader0ReadFromMemoryFIFODepth = cuteParams.TrLoader0ReadFromMemoryFIFODepth
+    def TrLoader1ReadFromMemoryFIFODepth = cuteParams.TrLoader1ReadFromMemoryFIFODepth
+    def AccStorer0ReadFromMatrixRegFIFODepth = cuteParams.AccStorer0ReadFromMatrixRegFIFODepth
+    def AccLoader0ReadFromMemoryFIFODepth = cuteParams.AccLoader0ReadFromMemoryFIFODepth
     def VecTaskInstBufferDepth = cuteParams.VecTaskInstBufferDepth
     def VecTaskInstBufferSize = cuteParams.VecTaskInstBufferSize
     def VecTaskDataBufferDepth = cuteParams.VecTaskDataBufferDepth
-    def ABMultiResponseFifoDepth = cuteParams.ABMultiResponseFifoDepth
-    def CLoadMultiFillQueueDepth = cuteParams.CLoadMultiFillQueueDepth
+    def TrLoadResponseFifoDepth = cuteParams.TrLoadResponseFifoDepth
+    def AccLoader0FillQueueDepth = cuteParams.AccLoader0FillQueueDepth
     def ResponseBridgeQueueDepth = cuteParams.ResponseBridgeQueueDepth
-    def CStoreDirectAckCountMode = cuteParams.CStoreDirectAckCountMode
+    def AccStorer0DirectAckCountMode = cuteParams.AccStorer0DirectAckCountMode
     def ReduceGroupSize = cuteParams.ReduceGroupSize
     def EnableDifftest = cuteParams.EnableDifftest
     def EnableMatrixPrefetch = cuteParams.EnableMatrixPrefetch
@@ -961,24 +976,24 @@ trait HasCuteParams {
     def ABBatchRotateOffset: Int = cuteParams.ABBatchRotateOffset
     def ABBatchPermutationMul: Int = cuteParams.ABBatchPermutationMul
     def parsedLoaderBridgeChannelConfig = cuteParams.parsedLoaderBridgeChannelConfig
-    def AMLChannelMode = cuteParams.AMLChannelMode
-    def BMLChannelMode = cuteParams.BMLChannelMode
-    def CLoadChannelMode = cuteParams.CLoadChannelMode
-    def CStoreChannelMode = cuteParams.CStoreChannelMode
-    def AMLUseLegacyLoader = AMLChannelMode.isLegacy
-    def BMLUseLegacyLoader = BMLChannelMode.isLegacy
-    def CLoadUseLegacyLoader = CLoadChannelMode.isLegacy
-    def CStoreUseLegacyLoader = CStoreChannelMode.isLegacy
-    def AMLResponseChannelCount = AMLChannelMode.responseChannelCount
-    def BMLResponseChannelCount = BMLChannelMode.responseChannelCount
-    def CLoadBridgeResponseChannelCount = CLoadChannelMode.responseChannelCount
-    def CStoreBridgeResponseChannelCount = CStoreChannelMode.responseChannelCount
-    def CStoreDiffTestLaneCount: Int = CStoreBridgeResponseChannelCount
-    def CMLUseMultiChannelLoader = !CLoadUseLegacyLoader
-    def AMLRouteDescriptor = cuteParams.AMLRouteDescriptor
-    def BMLRouteDescriptor = cuteParams.BMLRouteDescriptor
-    def CLoadRouteDescriptor = cuteParams.CLoadRouteDescriptor
-    def CStoreRouteDescriptor = cuteParams.CStoreRouteDescriptor
+    def TrLoader0ChannelMode = cuteParams.TrLoader0ChannelMode
+    def TrLoader1ChannelMode = cuteParams.TrLoader1ChannelMode
+    def AccLoader0ChannelMode = cuteParams.AccLoader0ChannelMode
+    def AccStorer0ChannelMode = cuteParams.AccStorer0ChannelMode
+    def TrLoader0UseLegacyLoader = TrLoader0ChannelMode.isLegacy
+    def TrLoader1UseLegacyLoader = TrLoader1ChannelMode.isLegacy
+    def AccLoader0UseLegacyLoader = AccLoader0ChannelMode.isLegacy
+    def AccStorer0UseLegacyLoader = AccStorer0ChannelMode.isLegacy
+    def TrStorer0UseLegacyLoader = cuteParams.TrStorer0ChannelMode.isLegacy
+    def TrStorer0RequestChannelCount = cuteParams.TrStorer0RequestChannelCount
+    def TrLoader0ResponseChannelCount = TrLoader0ChannelMode.responseChannelCount
+    def TrLoader1ResponseChannelCount = TrLoader1ChannelMode.responseChannelCount
+    def AccLoader0BridgeResponseChannelCount = AccLoader0ChannelMode.responseChannelCount
+    def AccStorer0BridgeResponseChannelCount = AccStorer0ChannelMode.responseChannelCount
+    def TrLoader0RouteDescriptor = cuteParams.TrLoader0RouteDescriptor
+    def TrLoader1RouteDescriptor = cuteParams.TrLoader1RouteDescriptor
+    def AccLoader0RouteDescriptor = cuteParams.AccLoader0RouteDescriptor
+    def AccStorer0RouteDescriptor = cuteParams.AccStorer0RouteDescriptor
 
     def MinGroupSize = FPEparams.MinGroupSize //minimum compute group size of FPE
     def MinDataTypeWidth = FPEparams.MinDataTypeWidth //minimum data type width of FPE
@@ -1047,7 +1062,7 @@ class AfterOpsInterface()(implicit p: Parameters) extends CuteBundle{
     //can accept per-cycle data from CDC matching MReg and TE width, and perform splitting, reordering, scaling, transposition, and other complex vector tasks inside this module
     val CDCDataToInterface     = DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W))
     val InterfaceToCDCData     = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
-    // val CDCStoreAddr                        = Input(UInt(log2Ceil(CMatrixRegBankNEntries).W))
+    // val CDCStoreAddr                        = Input(UInt(log2Ceil(AccMatrixRegBankNEntries).W))
 
     val VecInstQueueID = UInt(1.W)
 }
@@ -1129,7 +1144,7 @@ class ADCMicroTaskConfigBaseIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
+    val MatrixRegId                       = UInt(TrMatrixRegIdWidth.W)
 
     val Is_Transpose                        = (Bool())      //whether transpose is needed
 
@@ -1151,7 +1166,7 @@ class BDCMicroTaskConfigBaseIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
+    val MatrixRegId                       = UInt(TrMatrixRegIdWidth.W)
 
     val Is_Transpose                        = (Bool())      //whether transpose is needed
 
@@ -1185,7 +1200,7 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
+    val MatrixRegId                       = UInt(AccMatrixRegIdWidth.W)
 
     val Is_Transpose                        = (Bool())      //whether transpose is needed
     val Is_AfterOps_Tile                    = (Bool())      //whether this is a tile that requires post-ops, including transpose
@@ -1205,10 +1220,10 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
-class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationTensor_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
+class TrLoadTensorInfo()(implicit p: Parameters) extends CuteBundle{
+    val baseVaddr   = (UInt(MMUAddrWidth.W))
     // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))//may be gone already
-    val ApplicationTensor_A_Stride_M    = (UInt(MMUAddrWidth.W))//address offset increment for the next M
+    val stride    = (UInt(MMUAddrWidth.W))//address offset increment for the next M
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
     val HasTail                         = Bool()
     val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
@@ -1221,15 +1236,15 @@ class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
-class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
+class TrLoadTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
-    val ApplicationTensor_A = new ApplicationTensor_A_Info
+    val Tensor = new TrLoadTensorInfo
     
     val LoadTaskInfo = (new LoadTask_Info)
 
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
+    val MatrixRegId                       = UInt(TrMatrixRegIdWidth.W)
     val PrefetchTaskId                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.taskIdWidth.W))
     val PrefetchStream                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.streamWidth.W))
 
@@ -1260,28 +1275,6 @@ class ASLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
 }
 
-class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-
-    val ApplicationTensor_B = (new ApplicationTensor_B_Info)
-
-    val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegId                       = UInt(ABMatrixRegIdWidth.W)
-    val PrefetchTaskId                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.taskIdWidth.W))
-    val PrefetchStream                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.streamWidth.W))
-
-    val Conherent                           = (Bool())      //whether coherence is needed
-    val Is_Transpose                        = (Bool())      //whether transpose is needed
-
-    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
-    val MicroTaskValid                      = (Bool())       //current task configuration is valid
-    val MicroTaskEndValid                   = Flipped(Bool())//current task completed
-    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
-
-    val pc                                = Option.when(EnableDifftest) (UInt(64.W))
-    val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
-}
-
 class BSLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val ApplicationScale_B = (new ApplicationScale_B_Info)
@@ -1295,16 +1288,6 @@ class BSLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskValid                      = (Bool())       //current task configuration is valid
     val MicroTaskEndValid                   = Flipped(Bool())//current task completed
     val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
-}
-
-class ApplicationTensor_B_Info()(implicit p: Parameters) extends CuteBundle{
-    val ApplicationTensor_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
-    val BlockTensor_B_BaseVaddr         = (UInt(MMUAddrWidth.W))
-    val ApplicationTensor_B_Stride_N    = (UInt(MMUAddrWidth.W))//address offset increment for the next N
-    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
-    val HasTail                         = Bool()
-    val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
-    val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
 class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
@@ -1335,7 +1318,7 @@ class LoadTask_Info()(implicit p: Parameters) extends CuteBundle{
     val Is_RepeatRowLoad = (Bool())
     val Is_FullLoad = (Bool())
 }
-class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
+class AccMemoryTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     //this is Tensor C, the invariant part from the accumulator-register perspective
 
     val ApplicationTensor_C = (new ApplicationTensor_C_Info)
@@ -1348,7 +1331,7 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val Is_Transpose                        = (Bool())      //whether transpose is needed
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
+    val MatrixRegId                       = UInt(AccMatrixRegIdWidth.W)
     val PrefetchTaskId                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.taskIdWidth.W))
     val PrefetchStream                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.streamWidth.W))
     // C-store writebacks do not train L2 prefetching. Keep a separate
@@ -1381,17 +1364,17 @@ class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 //MemoryLoader and data-control are separated to exploit the window period so the single-read/single-write MatrixReg can run independently
 //is there an SRAM that can read and write simultaneously? I can guarantee no writes hit the same location, but let us use double buffering first....
 //we account for response latency, so there is also a FIFO between DataControl and MatrixReg. Since the future SRAM is expected to be a simple module, keep the FIFO in DataControl so MatrixReg stays as simple as possible.
-class ABDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(ABMatrixRegBankNLines), and it is input data that requires handshaking
-    val BankAddr = Flipped(DecoupledIO(Vec(ABMatrixRegNBanks, (UInt(log2Ceil(ABMatrixRegBankNEntries).W)))))
+class TrDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(TrMatrixRegBankNLines), and it is input data that requires handshaking
+    val BankAddr = Flipped(DecoupledIO(Vec(TrMatrixRegNBanks, (UInt(log2Ceil(TrMatrixRegBankNEntries).W)))))
     //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
-    val Data = Valid(Vec(ABMatrixRegNBanks, UInt(ABMatrixRegEntryBitSize.W)))
+    val Data = Valid(Vec(TrMatrixRegNBanks, UInt(TrMatrixRegEntryBitSize.W)))
     //chosen selects the MatrixReg; it is a Bool. We use double buffering, selecting one for output and one for loading
     // val Chosen = Input(Bool())
 }
 
 class ABScaleControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(ABMatrixRegBankNLines), and it is input data that requires handshaking
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(TrMatrixRegBankNLines), and it is input data that requires handshaking
     val BankAddr = Flipped(DecoupledIO(UInt(log2Ceil(ABScaleBankNEntries).W)))
     //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
     val Data = Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W)))
@@ -1407,14 +1390,14 @@ class MatrixRegLoaderWriteLane(addrWidth: Int, dataWidth: Int, maskWidth: Int)(i
 }
 
 // unified AB MemoryLoader interface, with ZeroFill support
-class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+class TrLoadMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // When MemLoader is working, active will be true.
     // Otherwise, active will be false.
     val active = Input(Bool())
-    val WriteRequest = Flipped(Vec(ABMatrixRegNBanks, Vec(2, new MatrixRegLoaderWriteLane(
-        log2Ceil(ABMatrixRegBankNEntries),
-        ABMatrixRegEntryBitSize,
-        ABMatrixRegEntryByteSize
+    val WriteRequest = Flipped(Vec(TrMatrixRegNBanks, Vec(2, new MatrixRegLoaderWriteLane(
+        log2Ceil(TrMatrixRegBankNEntries),
+        TrMatrixRegEntryBitSize,
+        TrMatrixRegEntryByteSize
     ))))
     def BankAddr: Seq[Valid[UInt]] = WriteRequest.map(_(0).BankAddr)
     def Data: Seq[Valid[UInt]] = WriteRequest.map(_(0).Data)
@@ -1430,36 +1413,36 @@ class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // val Chosen = Input(Bool())
 }
 
-class CDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(CMatrixRegBankNLines), and it is input data that requires handshaking
-    val ReadBankAddr = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W)))))
-    val WriteBankAddr = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W)))))
+class AccDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(AccMatrixRegBankNLines), and it is input data that requires handshaking
+    val ReadBankAddr = Flipped((Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W)))))
+    val WriteBankAddr = Flipped((Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W)))))
     //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt
-    val ReadResponseData = (Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W))))
-    val WriteRequestData = Flipped((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W)))))
+    val ReadResponseData = (Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryBitSize.W))))
+    val WriteRequestData = Flipped((Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryBitSize.W)))))
     //chosen selects the MatrixReg; it is a Bool. We use double buffering, selecting one for output and one for loading
     val ReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     val ReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     // val Chosen = Input(Bool())
 }
 
-class CMemoryLoaderWriteRequestIO(implicit p: Parameters) extends CuteBundle {
-    val WriteRequest = Flipped(Vec(CMatrixRegNBanks, Vec(2, new MatrixRegLoaderWriteLane(
-        log2Ceil(CMatrixRegBankNEntries),
-        CMatrixRegEntryBitSize,
-        CMatrixRegEntryByteSize
+class AccLoadMatrixRegIO(implicit p: Parameters) extends CuteBundle {
+    val WriteRequest = Flipped(Vec(AccMatrixRegNBanks, Vec(2, new MatrixRegLoaderWriteLane(
+        log2Ceil(AccMatrixRegBankNEntries),
+        AccMatrixRegEntryBitSize,
+        AccMatrixRegEntryByteSize
     ))))
     def BankAddr: Seq[Valid[UInt]] = WriteRequest.map(_(0).BankAddr)
     def Data: Seq[Valid[UInt]] = WriteRequest.map(_(0).Data)
     def ByteMask: Seq[Valid[UInt]] = WriteRequest.map(_(0).ByteMask)
 }
 
-class CMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+class AccMemoryMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val ReadRequestToMatrixReg = (new Bundle{
-        val BankAddr = Flipped(Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W))))
-        val ReadResponseData = ((Vec(CMatrixRegNBanks, Valid(UInt(CMatrixRegEntryBitSize.W)))))
+        val BankAddr = Flipped(Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W))))
+        val ReadResponseData = ((Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryBitSize.W)))))
     })
-    val WriteRequestToMatrixReg = new CMemoryLoaderWriteRequestIO
+    val WriteRequestToMatrixReg = new AccLoadMatrixRegIO
     val LoadReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     val StoreReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     val LoadReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
@@ -1495,25 +1478,25 @@ class MMUResponseIO(implicit p: Parameters) extends CuteBundle{
 class LocalMMUIO(implicit p: Parameters) extends CuteBundle{
 
     //issued memory request
-    val Request = Flipped(Vec(ABMatrixRegNBanks, DecoupledIO(new MMURequestIO)))
+    val Request = Flipped(Vec(TrMatrixRegNBanks, DecoupledIO(new MMURequestIO)))
     //transaction ID of the TL link to which the read request is dispatched
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))
     val nonConherentRequsetSourceID = Valid(UInt(MemorysourceMaxNumBitSize.W))
 
     //the MemoryLoader is guaranteed to receive the response back!
-    val Response = Vec(ABMatrixRegNBanks, DecoupledIO(new MMUResponseIO))
+    val Response = Vec(TrMatrixRegNBanks, DecoupledIO(new MMUResponseIO))
 }
 
 class MMU2TLIO(implicit p: Parameters) extends CuteBundle{
 
     //issued memory request
-    val Request = Flipped(Vec(ABMatrixRegNBanks, DecoupledIO(new MMURequestIO)))
+    val Request = Flipped(Vec(TrMatrixRegNBanks, DecoupledIO(new MMURequestIO)))
     //transaction ID of the TL link to which the read request is dispatched
     val ConherentRequsetSourceID = Valid(UInt(LLCSourceMaxNumBitSize.W))
     val nonConherentRequsetSourceID = Valid(UInt(MemorysourceMaxNumBitSize.W))
 
     //the MemoryLoader is guaranteed to receive the response back!
-    val Response = Vec(ABMatrixRegNBanks, DecoupledIO(new MMUResponseIO))
+    val Response = Vec(TrMatrixRegNBanks, DecoupledIO(new MMUResponseIO))
 }
 
 class FReducePEDataType {
@@ -1652,7 +1635,7 @@ case object  ElementDataType extends Field[UInt]{
     val DataTypeWidth4  = 7.U(DataTypeBitWidth.W)
 }
 
-case object  CMemoryLoaderTaskType extends Field[UInt]{
+case object  AccMemoryTaskType extends Field[UInt]{
     val TypeBitWidth = 4
     val TaskTypeUndef = 0.U(TypeBitWidth.W)
     val TaskTypeTensorZeroLoad = 1.U(TypeBitWidth.W) //fill the data with 0 directly; in practice this does nothing, and it can write to SRAM by default, ignoring previous SRAM contents

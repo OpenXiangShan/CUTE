@@ -27,9 +27,9 @@ class TransposeReadResponse(implicit p: Parameters) extends CuteBundle {
 }
 
 class TransposeWriteback(implicit p: Parameters) extends CuteBundle {
-  val address = Vec(ABMatrixRegNBanks, UInt(log2Ceil(ABMatrixRegBankNEntries).W))
-  val data = Vec(ABMatrixRegNBanks, UInt(ABMatrixRegEntryBitSize.W))
-  val mask = Vec(ABMatrixRegNBanks, UInt(ABMatrixRegEntryByteSize.W))
+  val address = Vec(TrMatrixRegNBanks, UInt(log2Ceil(TrMatrixRegBankNEntries).W))
+  val data = Vec(TrMatrixRegNBanks, UInt(TrMatrixRegEntryBitSize.W))
+  val mask = Vec(TrMatrixRegNBanks, UInt(TrMatrixRegEntryByteSize.W))
   val last = Bool()
 }
 
@@ -46,8 +46,8 @@ class TransposeWriteback(implicit p: Parameters) extends CuteBundle {
 class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends CuteModule {
   require(outsideDataWidthByte == 64, "SP-2 banks hold one 64-byte response")
   require(Set(1, 2, 4, 8).contains(memoryPorts))
-  require(Set(4, 8).contains(ABMatrixRegNBanks))
-  require(isPow2(ABMatrixRegEntryByteSize) && ABMatrixRegEntryByteSize >= 32)
+  require(Set(4, 8).contains(TrMatrixRegNBanks))
+  require(isPow2(TrMatrixRegEntryByteSize) && TrMatrixRegEntryByteSize >= 32)
 
   val io = IO(new Bundle {
     val command = Flipped(Decoupled(new TransposeLoadCommand))
@@ -58,8 +58,8 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
     val busy = Output(Bool())
   })
 
-  private val banks = ABMatrixRegNBanks
-  private val entryBytes = ABMatrixRegEntryByteSize
+  private val banks = TrMatrixRegNBanks
+  private val entryBytes = TrMatrixRegEntryByteSize
   private val dimBits = MatrixRegMaxTensorDimBitSize
   private val command = Reg(new TransposeLoadCommand)
   private val active = RegInit(false.B)
@@ -102,7 +102,7 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
       for (b <- 0 until banks) {
         stage1.data(b) := MuxLookup(stage0Offset, 0.U)(
           (0 until entryBytes by 8).map(offset => offset.U ->
-            (stage0.data(b) << (8 * offset))(ABMatrixRegEntryBitSize - 1, 0)))
+            (stage0.data(b) << (8 * offset))(TrMatrixRegEntryBitSize - 1, 0)))
         stage1.mask(b) := MuxLookup(stage0Offset, 0.U)(
           (0 until entryBytes by 8).map(offset => offset.U ->
             (stage0.mask(b) << offset)(entryBytes - 1, 0)))
@@ -233,7 +233,7 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
         val data = Cat(rowBytes.reverse.map(x => x((b + 1) * e * 8 - 1, b * e * 8)))
         val mask = VecInit((0 until 8 * e).map(i =>
           expected(drainSlot)(i / e) && column +& b.U < command.columns)).asUInt
-        (lg.U, data.pad(ABMatrixRegEntryBitSize), mask.pad(entryBytes))
+        (lg.U, data.pad(TrMatrixRegEntryBitSize), mask.pad(entryBytes))
       }
       stage0.data(b) := MuxLookup(command.elementLgBytes, 0.U)(fragments.map(x => x._1 -> x._2))
       stage0.mask(b) := MuxLookup(command.elementLgBytes, 0.U)(fragments.map(x => x._1 -> x._3))
@@ -251,20 +251,75 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
   }
 }
 
-/** AML-side adapter for selecting normal loads or the transpose engine. */
+/** Signal contract implemented by each TR store backend. */
+trait TrStoreTransposeTarget { this: CuteModule =>
+  protected def storeIo: TrStoreIO
+  protected def storeCommand: TrStoreCommand
+  protected def storeState: UInt
+  protected def storeCaptureState: UInt
+  protected def storeRowIter: UInt
+  protected def storeByteOffset: UInt
+  protected def storePhase: UInt
+  protected def storePhaseCount: UInt
+  protected def storeElementLgBytes: UInt
+  protected def storeReadLaneCount: Int
+  protected def storeTransposeDataBuffer: Vec[Vec[Vec[UInt]]]
+}
+
+/** Shared transpose-specific TR store address and data mapping. */
+trait HasTransposeStoreEngine extends CUTEImplParameters { this: TrStoreTransposeTarget =>
+  protected def transposeStoreDatapath(): Unit = {
+    when (storeCommand.transpose) {
+      storePhaseCount := (64 / TrMatrixRegNBanks).U >> storeElementLgBytes
+      for (bank <- 0 until TrMatrixRegNBanks;
+           lane <- 0 until storeReadLaneCount) {
+        val registerRow = (storeByteOffset >> storeElementLgBytes) +
+          storePhase * TrMatrixRegNBanks.U + bank.U
+        storeIo.read.BankAddr.bits(bank)(lane) :=
+          (registerRow / TrMatrixRegNBanks.U) * ReduceGroupSize.U +
+            ((storeRowIter << storeElementLgBytes) / TrMatrixRegEntryByteSize.U) + lane.U
+      }
+    }
+    when (storeState === storeCaptureState && storeIo.read.Data.valid && storeCommand.transpose) {
+      for (lg <- 0 to 2) {
+        val elementBytes = 1 << lg
+        when (storeElementLgBytes === lg.U) {
+          val byteOffset = (storeRowIter << lg)(log2Ceil(TrMatrixRegEntryByteSize) - 1, 0)
+          for (readLaneContext <- 0 until storeReadLaneCount) {
+            for (step <- 0 until 64 / (TrMatrixRegNBanks * elementBytes)) {
+              when (storePhase === step.U) {
+                for (lane <- 0 until TrMatrixRegNBanks;
+                     bank <- 0 until TrMatrixRegNBanks;
+                     byte <- 0 until elementBytes) {
+                  val sourceBytes = storeIo.read.Data.bits(bank)(readLaneContext).asTypeOf(
+                    Vec(TrMatrixRegEntryByteSize, UInt(8.W)))
+                  storeTransposeDataBuffer(readLaneContext)(lane)(step * TrMatrixRegNBanks * elementBytes +
+                    bank * elementBytes + byte) :=
+                    sourceBytes(byteOffset + (lane * elementBytes + byte).U)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/** trLoader0-side adapter for selecting normal loads or the transpose engine. */
 trait HasTransposeLoadEngine { this: CuteModule =>
   protected def connectTransposeLoadEngine(
-      config: AMLMicroTaskConfigIO, memory: LocalMMUIO,
-      target: ABMemoryLoaderMatrixRegIO, targetId: UInt,
-      normalConfig: AMLMicroTaskConfigIO, normalMemory: LocalMMUIO,
-      normalTarget: ABMemoryLoaderMatrixRegIO, normalId: UInt,
+      config: TrLoadTaskConfigIO, memory: LocalMMUIO,
+      target: TrLoadMatrixRegIO, targetId: UInt,
+      normalConfig: TrLoadTaskConfigIO, normalMemory: LocalMMUIO,
+      normalTarget: TrLoadMatrixRegIO, normalId: UInt,
       legacy: Boolean, diffIndex: Int
   )(implicit p: Parameters): Unit = {
-    val ports = if (legacy) 1 else ABMatrixRegNBanks
+    val ports = if (legacy) 1 else TrMatrixRegNBanks
     val engine = Module(new TransposeLoadEngine(ports))
     val busy = RegInit(false.B)
     val transpose = RegInit(false.B)
-    val regId = Reg(UInt(ABMatrixRegIdWidth.W))
+    val regId = Reg(UInt(TrMatrixRegIdWidth.W))
     val coherent = Reg(Bool())
     val accepted = config.MicroTaskValid && config.MicroTaskReady
 
@@ -274,15 +329,15 @@ trait HasTransposeLoadEngine { this: CuteModule =>
     normalMemory.ConherentRequsetSourceID := memory.ConherentRequsetSourceID
     normalMemory.nonConherentRequsetSourceID := memory.nonConherentRequsetSourceID
 
-    val app = config.ApplicationTensor_A
+    val app = config.Tensor
     val lgBytes = MuxLookup(app.dataType, 0.U(2.W))(Seq(
       ElementDataType.DataTypeWidth8 -> 0.U,
       ElementDataType.DataTypeWidth16 -> 1.U,
       ElementDataType.DataTypeWidth32 -> 2.U))
     val fullBytes = app.K_Beat_Count << 6
     val rowBytes = Mux(app.HasTail, fullBytes - 64.U + app.TailByteMask, fullBytes)
-    engine.io.command.bits.base := app.ApplicationTensor_A_BaseVaddr
-    engine.io.command.bits.stride := app.ApplicationTensor_A_Stride_M
+    engine.io.command.bits.base := app.baseVaddr
+    engine.io.command.bits.stride := app.stride
     engine.io.command.bits.rows := config.MatrixRegTensor_M
     engine.io.command.bits.columns := rowBytes >> lgBytes
     engine.io.command.bits.elementLgBytes := lgBytes
@@ -305,10 +360,10 @@ trait HasTransposeLoadEngine { this: CuteModule =>
     }
     when(config.MicroTaskEndValid && config.MicroTaskEndReady) { busy := false.B }
 
-    val bankBits = log2Ceil(ABMatrixRegNBanks)
-    val bankOffset = log2Ceil(ABMatrixRegBankNEntries)
+    val bankBits = log2Ceil(TrMatrixRegNBanks)
+    val bankOffset = log2Ceil(TrMatrixRegBankNEntries)
     require(bankOffset >= 2, "transpose tag needs slot and upper source-row bits")
-    for (lane <- 0 until ABMatrixRegNBanks) {
+    for (lane <- 0 until TrMatrixRegNBanks) {
       val useTranspose = busy && transpose
       memory.Request(lane) <> normalMemory.Request(lane)
       normalMemory.Response(lane) <> memory.Response(lane)
@@ -350,7 +405,7 @@ trait HasTransposeLoadEngine { this: CuteModule =>
       targetId := regId
       target.active := true.B
       target.WriteRequest := 0.U.asTypeOf(target.WriteRequest)
-      for (bank <- 0 until ABMatrixRegNBanks) {
+      for (bank <- 0 until TrMatrixRegNBanks) {
         val valid = engine.io.writeback.valid && engine.io.writeback.bits.mask(bank).orR
         target.BankAddr(bank).valid := valid
         target.BankAddr(bank).bits := engine.io.writeback.bits.address(bank)
@@ -362,8 +417,8 @@ trait HasTransposeLoadEngine { this: CuteModule =>
     }
 
     if (EnableDifftest) {
-      DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_WORDS_PER_BANK", ABMatrixRegEntryBitSize / 64)
-      DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", ABMatrixRegSize)
+      DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_WORDS_PER_BANK", TrMatrixRegEntryBitSize / 64)
+      DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", TrMatrixRegSize)
       val pc = RegEnable(config.pc.get, accepted)
       val coreid = RegEnable(config.coreid.get, accepted)
       val events = MatrixRegWriteProbes.genWriteProbes(MatrixRegWriteProbes.abLoadHash, ports = 2)
@@ -374,14 +429,14 @@ trait HasTransposeLoadEngine { this: CuteModule =>
         event.coreid := coreid
         event.finish := (if (port == 0) config.MicroTaskEndValid && config.MicroTaskEndReady else false.B)
         event.valid := target.WriteRequest.map(_(port).BankAddr.valid).reduce(_ || _) || event.finish
-        val words = event.data.length / ABMatrixRegNBanks
+        val words = event.data.length / TrMatrixRegNBanks
         event.bankValid := VecInit(target.WriteRequest.map(_(port).BankAddr.valid)).asUInt
-        for (bank <- 0 until ABMatrixRegNBanks) {
+        for (bank <- 0 until TrMatrixRegNBanks) {
           val write = target.WriteRequest(bank)(port)
           event.bankAddr(bank) := write.BankAddr.bits
           event.bankMask.get(bank) := write.ByteMask.bits
           for (word <- 0 until words) {
-            event.data(bank * words + word) := (if (word < ABMatrixRegEntryBitSize / 64)
+            event.data(bank * words + word) := (if (word < TrMatrixRegEntryBitSize / 64)
               write.Data.bits(word * 64 + 63, word * 64) else 0.U)
           }
         }

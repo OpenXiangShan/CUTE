@@ -143,7 +143,7 @@ class ABPerfectBatchSelectorSpec extends AnyFlatSpec with ChiselScalatestTester 
     }
   }
 
-  it should "match the reviewed CML selector for randomized candidate windows" in {
+  it should "match the reviewed accMemory selector for randomized candidate windows" in {
     val random = new scala.util.Random(0x006ab)
     test(new ABPerfectBatchSelectorHarness) { dut =>
       for (_ <- 0 until 100) {

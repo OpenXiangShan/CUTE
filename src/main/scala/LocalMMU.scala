@@ -7,12 +7,13 @@ import utility._
 
 class LocalMMU()(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
-        val ALocalMMUIO = (new LocalMMUIO)
-        val BLocalMMUIO = (new LocalMMUIO)
+        val trLoader0Memory = (new LocalMMUIO)
+        val trLoader1Memory = (new LocalMMUIO)
         val BSLocalMMUIO = (new LocalMMUIO)
         val ASLocalMMUIO = (new LocalMMUIO)
-        val CLoadLocalMMUIO = (new LocalMMUIO)
-        val CStoreLocalMMUIO = (new LocalMMUIO)
+        val accLoader0Memory = (new LocalMMUIO)
+        val accStorer0Memory = (new LocalMMUIO)
+        val trStorer0Memory = new LocalMMUIO
         val LastLevelCacheTLIO = Flipped(new MMU2TLIO)
         val perfProbe = Output(new LocalMMUPerfProbe)
     })
@@ -20,14 +21,14 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     val logTime = RegInit(0.U(64.W))
     logTime := logTime + 1.U
 
-    //8通道并行访存：同时处理所有8个通道的请求
-    //每个通道独立处理，不需要仲裁
+    // Process up to eight memory-request channels in parallel.
+    // Each physical channel handles its selected request independently.
 
-    // 统一处理 ABCScale 五类 MMUIO 的 Request/Response
-    val abcss = Seq(io.ALocalMMUIO, io.BLocalMMUIO, io.CLoadLocalMMUIO, io.CStoreLocalMMUIO, io.ASLocalMMUIO, io.BSLocalMMUIO)
+    // Route requests and responses for the TR, ACC and optional scale memory clients.
+    val abcss = Seq(io.trLoader0Memory, io.trLoader1Memory, io.accLoader0Memory, io.accStorer0Memory, io.ASLocalMMUIO, io.BSLocalMMUIO, io.trStorer0Memory)
 
     // Initialize all channels to false.B
-    for (mmuio <- abcss; i <- 0 until ABMatrixRegNBanks) {
+    for (mmuio <- abcss; i <- 0 until TrMatrixRegNBanks) {
         mmuio.Request(i).ready := false.B
         mmuio.Response(i).valid := false.B
         mmuio.Response(i).bits := 0.U.asTypeOf(mmuio.Response(i).bits)
@@ -38,10 +39,10 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     }
 
     // Initialize LLC IO
-    for (i <- 0 until ABMatrixRegNBanks) {
+    for (i <- 0 until TrMatrixRegNBanks) {
         io.LastLevelCacheTLIO.Request(i).valid := false.B
         io.LastLevelCacheTLIO.Request(i).bits := 0.U.asTypeOf(io.LastLevelCacheTLIO.Request(i).bits)
-        // 默认拉低：仅在选择 A 矩阵时置位
+        // Default low; assert only for the selected memory client.
         io.LastLevelCacheTLIO.Request(i).bits.isA := false.B
         io.LastLevelCacheTLIO.Response(i).ready := false.B
     }
@@ -49,12 +50,14 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     // Low three bits identify the request source.
     // encodedId = (origId << 3) | sourceTag
     val SourceTagWidth = 3
-    val AReadTag  = 0.U(SourceTagWidth.W) // A 读
-    val BReadTag  = 1.U(SourceTagWidth.W) // B 读
-    val CReadTag  = 2.U(SourceTagWidth.W) // C 读（与 CUTE2YGJK 中 CReadTag 保持一致）
-    val CWriteTag = 3.U(SourceTagWidth.W) // C 写（与 CUTE2YGJK 中 CWriteTag 保持一致）
-    val ASReadTag = 4.U(SourceTagWidth.W) // AS 读 - 使用独立channel，tag可以复用
-    val BSReadTag = 5.U(SourceTagWidth.W) // BS 读 - 使用独立channel，tag可以复用
+    val TrLoad0Tag  = 0.U(SourceTagWidth.W) // TR loader 0 reads.
+    val TrLoad1Tag  = 1.U(SourceTagWidth.W) // TR loader 1 reads.
+    val AccLoad0Tag  = 2.U(SourceTagWidth.W) // ACC loader 0 reads; keep this tag consistent with CUTE2YGJK.
+    val AccStore0Tag = 3.U(SourceTagWidth.W) // ACC storer 0 writes; keep this tag consistent with CUTE2YGJK.
+    val ASReadTag = 4.U(SourceTagWidth.W) // A-side scale reads use their own source tag.
+    val BSReadTag = 5.U(SourceTagWidth.W) // B-side scale reads use their own source tag.
+
+    val TrStore0Tag = 6.U(SourceTagWidth.W)
 
     def encodeSourceId(origId: UInt, tag: UInt): UInt = {
         (origId << SourceTagWidth) | tag
@@ -86,38 +89,40 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     val allocFull = allocatedBusy.reduce(_&&_)
 
     val scheduler = Module(new CollisionAwareLocalMMUScheduler(
-        laneCount = ABMatrixRegNBanks,
-        bankCount = ABMatrixRegNBanks,
-        aResponseChannels = AMLResponseChannelCount,
-        bResponseChannels = BMLResponseChannelCount,
-        cLoadResponseChannels = CLoadBridgeResponseChannelCount,
-        cStoreResponseChannels = CStoreBridgeResponseChannelCount,
-        aLegacy = AMLUseLegacyLoader,
-        bLegacy = BMLUseLegacyLoader,
-        cLoadLegacy = CLoadUseLegacyLoader,
-        cStoreLegacy = CStoreUseLegacyLoader || CStoreDirectAckCountMode
+        laneCount = TrMatrixRegNBanks,
+        bankCount = TrMatrixRegNBanks,
+        aResponseChannels = TrLoader0ResponseChannelCount,
+        bResponseChannels = TrLoader1ResponseChannelCount,
+        cLoadResponseChannels = AccLoader0BridgeResponseChannelCount,
+        cStoreResponseChannels = AccStorer0BridgeResponseChannelCount,
+        aLegacy = TrLoader0UseLegacyLoader,
+        bLegacy = TrLoader1UseLegacyLoader,
+        cLoadLegacy = AccLoader0UseLegacyLoader,
+        cStoreLegacy = AccStorer0UseLegacyLoader || AccStorer0DirectAckCountMode
     ))
 
     val requestSources = Seq(
-        io.CLoadLocalMMUIO.Request,
-        io.CStoreLocalMMUIO.Request,
-        io.ALocalMMUIO.Request,
+        io.accLoader0Memory.Request,
+        io.accStorer0Memory.Request,
+        io.trLoader0Memory.Request,
         io.ASLocalMMUIO.Request,
-        io.BLocalMMUIO.Request,
-        io.BSLocalMMUIO.Request
+        io.trLoader1Memory.Request,
+        io.BSLocalMMUIO.Request,
+        io.trStorer0Memory.Request
     )
-    val sourceTags = Seq(CReadTag, CWriteTag, AReadTag, ASReadTag, BReadTag, BSReadTag)
+    val sourceTags = Seq(AccLoad0Tag, AccStore0Tag, TrLoad0Tag, ASReadTag, TrLoad1Tag, BSReadTag, TrStore0Tag)
     val routeDescriptors = Seq(
-        CLoadRouteDescriptor,
-        CStoreRouteDescriptor,
-        AMLRouteDescriptor,
-        AMLRouteDescriptor,
-        BMLRouteDescriptor,
-        BMLRouteDescriptor
+        AccLoader0RouteDescriptor,
+        AccStorer0RouteDescriptor,
+        TrLoader0RouteDescriptor,
+        TrLoader0RouteDescriptor,
+        TrLoader1RouteDescriptor,
+        TrLoader1RouteDescriptor,
+        TrLoader0RouteDescriptor
     )
-    val sourceIsWrite = Seq(false, true, false, false, false, false)
-    val sourceIsAcc = Seq(true, true, false, false, false, false)
-    val sourceIsA = Seq(false, false, true, false, false, false)
+    val sourceIsWrite = Seq(false, true, false, false, false, false, true)
+    val sourceIsAcc = Seq(true, true, false, false, false, false, false)
+    val sourceIsA = Seq(false, false, true, false, false, false, true)
 
     // The combinational scheduler consumes this ID on the same fire as the loader.
     // No unaccepted request retains an earlier allocation across backpressure.
@@ -127,7 +132,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         mmuio.nonConherentRequsetSourceID := io.LastLevelCacheTLIO.nonConherentRequsetSourceID
     }
 
-    for (source <- 0 until LocalMMUSourceClass.Count; i <- 0 until ABMatrixRegNBanks) {
+    for (source <- 0 until LocalMMUSourceClass.Count; i <- 0 until TrMatrixRegNBanks) {
         val req = requestSources(source)(i)
         val candidate = scheduler.io.candidates(source)(i)
         val useAllocatedId = req.bits.UseAllocatedSourceID
@@ -161,7 +166,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         }
     }
 
-    for (i <- 0 until ABMatrixRegNBanks) {
+    for (i <- 0 until TrMatrixRegNBanks) {
         scheduler.io.llc(i).ready := io.LastLevelCacheTLIO.Request(i).ready
         io.LastLevelCacheTLIO.Request(i).valid := scheduler.io.llc(i).valid
         io.LastLevelCacheTLIO.Request(i).bits := scheduler.io.llc(i).bits
@@ -169,13 +174,13 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
 
     }
 
-    //8通道并行响应处理：按 encodedId 低位标签路由到对应的 MMU IO
-    for (i <- 0 until ABMatrixRegNBanks) {
+    // Route parallel responses using the low source-tag bits of encodedId.
+    for (i <- 0 until TrMatrixRegNBanks) {
         val llc_response = io.LastLevelCacheTLIO.Response(i)
-        val a_mmu_response = io.ALocalMMUIO.Response(i)
-        val b_mmu_response = io.BLocalMMUIO.Response(i)
-        val c_mmu_response = io.CLoadLocalMMUIO.Response(i)
-        val c_store_mmu_response = io.CStoreLocalMMUIO.Response(i)
+        val a_mmu_response = io.trLoader0Memory.Response(i)
+        val b_mmu_response = io.trLoader1Memory.Response(i)
+        val c_mmu_response = io.accLoader0Memory.Response(i)
+        val c_store_mmu_response = io.accStorer0Memory.Response(i)
         val as_mmu_response = io.ASLocalMMUIO.Response(i)
         val bs_mmu_response = io.BSLocalMMUIO.Response(i)
 
@@ -187,27 +192,12 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         loaderSourceId := restoreLoaderSourceId(origId)
         val data = llc_response.bits.ReseponseData
 
-        // 默认保持 ready 低电平，后续根据路由目的端覆盖
+        // Default ready low; override it for the selected response destination.
         llc_response.ready := false.B
 
-        // 需要根据tag和channel来路由
-        // AReadTag(0) -> A
-        // BReadTag(1) -> B
-        // CReadTag(2), CWriteTag(3) -> C
-        // ASReadTag(0) on AS channel -> AS (使用不同channel区分)
-        // BSReadTag(1) on BS channel -> BS
-        // 这里简化处理：检查原始请求哪个有效来决定路由
-        // 更精确的做法是记录每个channel当前处理的请求类型
-
+        // Response tags identify physical FUs, independently of the A/B opcode.
         when(llc_response.valid) {
-            // 简化路由：根据tag直接路由
-            // 注意：AS/BS 使用与 A/B 相同的 tag，但请求源不同
-            // 由于 AS/BS 有独立的channel，我们需要额外信息来区分
-            // 这里使用 sourceid 的高位来记录原始请求类型
-
-            // 简化方案：直接根据tag路由
-            when(tag === AReadTag) {
-                // 需要区分 A 和 AS - 通过检查哪个请求在飞行中
+            when(tag === TrLoad0Tag) {
                 a_mmu_response.valid := true.B
                 a_mmu_response.bits := llc_response.bits
                 a_mmu_response.bits.ReseponseSourceID := loaderSourceId
@@ -218,7 +208,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-            }.elsewhen(tag === BReadTag) {
+            }.elsewhen(tag === TrLoad1Tag) {
                 b_mmu_response.valid := true.B
                 b_mmu_response.bits := llc_response.bits
                 b_mmu_response.bits.ReseponseSourceID := loaderSourceId
@@ -251,7 +241,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-            }.elsewhen(tag === CReadTag) {
+            }.elsewhen(tag === AccLoad0Tag) {
                 c_mmu_response.valid := true.B
                 c_mmu_response.bits := llc_response.bits
                 c_mmu_response.bits.ReseponseSourceID := loaderSourceId
@@ -262,7 +252,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
-            }.elsewhen(tag === CWriteTag) {
+            }.elsewhen(tag === AccStore0Tag) {
                 c_store_mmu_response.valid := true.B
                 c_store_mmu_response.bits := llc_response.bits
                 // Store acknowledgements carry no data. The shared response data
@@ -277,6 +267,13 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
                         allocatedBusy(allocIdx) := false.B
                     }
                 }
+            }.elsewhen(tag === TrStore0Tag) {
+                val response = io.trStorer0Memory.Response(i)
+                response.valid := true.B
+                response.bits := llc_response.bits
+                response.bits.ReseponseData := 0.U
+                response.bits.ReseponseSourceID := loaderSourceId
+                llc_response.ready := response.ready
             }.otherwise{
                 assert(false.B, cf"Unsupported tag ${tag} in LLC response routing")
             }
@@ -297,13 +294,13 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     val outReqFire = VecInit(io.LastLevelCacheTLIO.Request.map(_.fire))
     val outReqIsWr = VecInit(io.LastLevelCacheTLIO.Request.map(_.bits.RequestType_isWrite))
     val outReqMask32B = VecInit(io.LastLevelCacheTLIO.Request.map(req => PopCount(req.bits.RequestMask) >> 5))
-    val outReqRdFire = VecInit((0 until ABMatrixRegNBanks).map(i => outReqFire(i) && !outReqIsWr(i)))
-    val outReqWrFire = VecInit((0 until ABMatrixRegNBanks).map(i => outReqFire(i) && outReqIsWr(i)))
+    val outReqRdFire = VecInit((0 until TrMatrixRegNBanks).map(i => outReqFire(i) && !outReqIsWr(i)))
+    val outReqWrFire = VecInit((0 until TrMatrixRegNBanks).map(i => outReqFire(i) && outReqIsWr(i)))
 
     io.perfProbe.rdReq := outReqRdFire.asUInt.orR
     io.perfProbe.wrReq := outReqWrFire.asUInt.orR
-    io.perfProbe.rd32BReq := (0 until ABMatrixRegNBanks).map(i => Mux(outReqRdFire(i), outReqMask32B(i), 0.U)).reduce(_ +& _)
-    io.perfProbe.wr32BReq := (0 until ABMatrixRegNBanks).map(i => Mux(outReqWrFire(i), outReqMask32B(i), 0.U)).reduce(_ +& _)
+    io.perfProbe.rd32BReq := (0 until TrMatrixRegNBanks).map(i => Mux(outReqRdFire(i), outReqMask32B(i), 0.U)).reduce(_ +& _)
+    io.perfProbe.wr32BReq := (0 until TrMatrixRegNBanks).map(i => Mux(outReqWrFire(i), outReqMask32B(i), 0.U)).reduce(_ +& _)
     for (source <- 0 until LocalMMUSourceClass.Count) {
         io.perfProbe.offered(source) := PopCount(scheduler.io.candidates(source).map(_.valid))
         io.perfProbe.issued(source) := PopCount(scheduler.io.candidates(source).map(_.fire))
@@ -323,12 +320,12 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         PopCount(reqs.map(_.fire))
     }
 
-    XSPerfAccumulate("CUTE_MMU_A_rd_request", countRequestFire(io.ALocalMMUIO.Request, req => !req.bits.RequestType_isWrite))
-    XSPerfAccumulate("CUTE_MMU_A_wr_request", countRequestFire(io.ALocalMMUIO.Request, req => req.bits.RequestType_isWrite))
-    XSPerfAccumulate("CUTE_MMU_B_rd_request", countRequestFire(io.BLocalMMUIO.Request, req => !req.bits.RequestType_isWrite))
-    XSPerfAccumulate("CUTE_MMU_B_wr_request", countRequestFire(io.BLocalMMUIO.Request, req => req.bits.RequestType_isWrite))
-    XSPerfAccumulate("CUTE_MMU_CLoad_request", countAllRequestFire(io.CLoadLocalMMUIO.Request))
-    XSPerfAccumulate("CUTE_MMU_CStore_request", countAllRequestFire(io.CStoreLocalMMUIO.Request))
+    XSPerfAccumulate("CUTE_MMU_A_rd_request", countRequestFire(io.trLoader0Memory.Request, req => !req.bits.RequestType_isWrite))
+    XSPerfAccumulate("CUTE_MMU_A_wr_request", countRequestFire(io.trLoader0Memory.Request, req => req.bits.RequestType_isWrite))
+    XSPerfAccumulate("CUTE_MMU_B_rd_request", countRequestFire(io.trLoader1Memory.Request, req => !req.bits.RequestType_isWrite))
+    XSPerfAccumulate("CUTE_MMU_B_wr_request", countRequestFire(io.trLoader1Memory.Request, req => req.bits.RequestType_isWrite))
+    XSPerfAccumulate("CUTE_MMU_CLoad_request", countAllRequestFire(io.accLoader0Memory.Request))
+    XSPerfAccumulate("CUTE_MMU_CStore_request", countAllRequestFire(io.accStorer0Memory.Request))
     XSPerfAccumulate("CUTE_MMU_AS_rd_request", countRequestFire(io.ASLocalMMUIO.Request, req => !req.bits.RequestType_isWrite))
     XSPerfAccumulate("CUTE_MMU_BS_rd_request", countRequestFire(io.BSLocalMMUIO.Request, req => !req.bits.RequestType_isWrite))
 }

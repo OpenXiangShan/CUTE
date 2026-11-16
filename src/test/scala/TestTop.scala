@@ -76,14 +76,14 @@ class TestTop()(implicit p: Parameters) extends LazyModule {
     // memory access between CUTE and HBL2
     cute_tl.module.io.mmu <> cute.io.mmu2llc
     val tl_data_in = cute_tl.module.io.matrix_data_in
-    for (channel <- 0 until cute.ABMatrixRegNBanks) {
+    for (channel <- 0 until cute.TrMatrixRegNBanks) {
       tl_data_in(channel).valid := io.matrix_data_in.valid && io.matrix_data_in.bits.channel === channel.U
       tl_data_in(channel).bits := 0.U.asTypeOf(tl_data_in(channel).bits)
       tl_data_in(channel).bits.source := io.matrix_data_in.bits.sourceId
       tl_data_in(channel).bits.data := io.matrix_data_in.bits.data.data
     }
     io.matrix_data_in.ready := MuxLookup(io.matrix_data_in.bits.channel, false.B)(
-      (0 until cute.ABMatrixRegNBanks).map(channel => channel.U -> tl_data_in(channel).ready)
+      (0 until cute.TrMatrixRegNBanks).map(channel => channel.U -> tl_data_in(channel).ready)
     )
 
     val timer = WireDefault(0.U(64.W))

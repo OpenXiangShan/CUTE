@@ -192,16 +192,16 @@ object MatrixRegWriteProbes {
 
   val abLoadHash: MatrixRegWriteProbe = MatrixRegWriteProbe(
     useHash = true,
-    banks = _.ABMatrixRegNBanks,
-    bankBytes = _.ABMatrixRegEntryByteSize,
-    regBytes = _.ABMatrixRegSize,
+    banks = _.TrMatrixRegNBanks,
+    bankBytes = _.TrMatrixRegEntryByteSize,
+    regBytes = _.TrMatrixRegSize,
     rowBytes = _.Tensor_K
   )
   val cLoadHash: MatrixRegWriteProbe = MatrixRegWriteProbe(
     useHash = true,
-    banks = _.CMatrixRegNBanks,
-    bankBytes = _.CMatrixRegEntryByteSize,
-    regBytes = _.CMatrixRegSize,
+    banks = _.AccMatrixRegNBanks,
+    bankBytes = _.AccMatrixRegEntryByteSize,
+    regBytes = _.AccMatrixRegSize,
     rowBytes = params => params.Tensor_MN * params.ResultWidthByte
   )
   val abLoadNoHash: MatrixRegWriteProbe = abLoadHash.copy(useHash = false)

@@ -5,22 +5,22 @@ import chiseltest._
 import org.chipsalliance.cde.config.Parameters
 import org.scalatest.flatspec.AnyFlatSpec
 
-class CMatrixRegDataControllerCompatibilitySpec extends AnyFlatSpec with ChiselScalatestTester {
+class AccMatrixRegDataControllerCompatibilitySpec extends AnyFlatSpec with ChiselScalatestTester {
   import LoaderBankedWriteTestUtils._
 
-  behavior of "CMatrixReg data-controller compatibility"
+  behavior of "AccMatrixReg data-controller compatibility"
 
   it should "preserve single-row writes, task response, parity addressing, and one-cycle reads" in {
     implicit val p: Parameters = parameters
-    test(new CMatrixReg(0)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    test(new AccMatrixReg(0)).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       clearCInputs(dut)
       dut.reset.poke(true.B)
       dut.clock.step(2)
       dut.reset.poke(false.B)
 
       val io = dut.io.MatrixRegIO
-      val dataEven = BigInt("6a" * dut.CMatrixRegEntryByteSize, 16)
-      val dataOdd = BigInt("b5" * dut.CMatrixRegEntryByteSize, 16)
+      val dataEven = BigInt("6a" * dut.AccMatrixRegEntryByteSize, 16)
+      val dataOdd = BigInt("b5" * dut.AccMatrixRegEntryByteSize, 16)
       Seq((2, dataEven), (3, dataOdd)).foreach { case (addr, data) =>
         io.FromDataController.ReadWriteRequest.poke(2.U)
         io.FromDataController.WriteBankAddr(0).valid.poke(true.B)

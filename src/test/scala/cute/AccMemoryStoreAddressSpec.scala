@@ -6,21 +6,21 @@ import chiseltest._
 import org.chipsalliance.cde.config.{Config, Parameters}
 import org.scalatest.flatspec.AnyFlatSpec
 
-object CMemoryLoaderStoreAddressTestConfig {
+object AccMemoryStoreAddressTestConfig {
   val params: Parameters = new Config((_, _, _) => {
     case CuteParamsKey => CuteParams.CUTE_8Tops_512SCP
   })
 }
 
-class CMemoryLoaderStoreAddressHarness(implicit p: Parameters) extends CuteModule {
+class AccMemoryStoreAddressHarness(implicit p: Parameters) extends CuteModule {
   val io = IO(new Bundle {
     val start = Input(Bool())
     val transpose = Input(Bool())
     val taskReady = Output(Bool())
-    val bankAddr = Output(Vec(CMatrixRegNBanks, Valid(UInt(log2Ceil(CMatrixRegBankNEntries).W))))
+    val bankAddr = Output(Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W))))
   })
 
-  val loader = Module(new CMemoryLoader)
+  val loader = Module(new AccMemoryLegacy)
   loader.io.DebugInfo.DebugTimeStampe := 0.U
 
   loader.io.LoadLocalMMUIO.ConherentRequsetSourceID.valid := true.B
@@ -31,7 +31,7 @@ class CMemoryLoaderStoreAddressHarness(implicit p: Parameters) extends CuteModul
   loader.io.StoreLocalMMUIO.ConherentRequsetSourceID.bits := 0.U
   loader.io.StoreLocalMMUIO.nonConherentRequsetSourceID.valid := false.B
   loader.io.StoreLocalMMUIO.nonConherentRequsetSourceID.bits := 0.U
-  for (channel <- 0 until ABMatrixRegNBanks) {
+  for (channel <- 0 until TrMatrixRegNBanks) {
     loader.io.LoadLocalMMUIO.Request(channel).ready := true.B
     loader.io.LoadLocalMMUIO.Response(channel).valid := false.B
     loader.io.LoadLocalMMUIO.Response(channel).bits := 0.U.asTypeOf(new MMUResponseIO)
@@ -42,7 +42,7 @@ class CMemoryLoaderStoreAddressHarness(implicit p: Parameters) extends CuteModul
 
   loader.io.ToMatrixRegIO.LoadReadWriteResponse := loader.io.ToMatrixRegIO.LoadReadWriteRequest
   loader.io.ToMatrixRegIO.StoreReadWriteResponse := loader.io.ToMatrixRegIO.StoreReadWriteRequest
-  for (bank <- 0 until CMatrixRegNBanks) {
+  for (bank <- 0 until AccMatrixRegNBanks) {
     loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid := false.B
     loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits := 0.U
   }
@@ -80,18 +80,18 @@ class CMemoryLoaderStoreAddressHarness(implicit p: Parameters) extends CuteModul
   io.taskReady := config.StoreMicroTaskReady
 }
 
-class CMemoryLoaderStoreAddressSpec extends AnyFlatSpec with ChiselScalatestTester {
+class AccMemoryStoreAddressSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "the legacy C memory loader store address generator"
 
   private def checkAddresses(transpose: Boolean, expected: Seq[Int]): Unit = {
-    test(new CMemoryLoaderStoreAddressHarness()(CMemoryLoaderStoreAddressTestConfig.params)) { dut =>
+    test(new AccMemoryStoreAddressHarness()(AccMemoryStoreAddressTestConfig.params)) { dut =>
       dut.reset.poke(true.B)
       dut.clock.step(2)
       dut.reset.poke(false.B)
       dut.io.start.poke(false.B)
       dut.io.transpose.poke(transpose.B)
 
-      assert(dut.io.taskReady.peek().litToBoolean, "CML store did not become ready")
+      assert(dut.io.taskReady.peek().litToBoolean, "accMemory store did not become ready")
       dut.io.start.poke(true.B)
       dut.clock.step()
       dut.io.start.poke(false.B)

@@ -1,7 +1,7 @@
 package cute
 
 /** Recorded zames C-load stimulus and the software-side exact route oracle. */
-object CMLPerfectBatchTestUtils {
+object AccLoadPerfectBatchTestUtils {
   val baseAddress: BigInt = BigInt("80049e00", 16)
   val rowStride: BigInt = BigInt("440", 16)
   val matrixM: Int = 128

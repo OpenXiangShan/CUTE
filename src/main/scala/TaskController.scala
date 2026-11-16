@@ -29,11 +29,12 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val ASC_MicroTask_Config = Option.when(cuteMatrixExtension.enableScalingFactor)(new ASCMicroTaskConfigIO)
   val BSC_MicroTask_Config = Option.when(cuteMatrixExtension.enableScalingFactor)(new BSCMicroTaskConfigIO)
   val CDC_MicroTask_Config = new CDCMicroTaskConfigIO
-  val AML_MicroTask_Config = new AMLMicroTaskConfigIO
-  val BML_MicroTask_Config = new BMLMicroTaskConfigIO
+  val trLoader0Config = new TrLoadTaskConfigIO
+  val trLoader1Config = new TrLoadTaskConfigIO
   val ASL_MicroTask_Config = Option.when(cuteMatrixExtension.enableScalingFactor)(new ASLMicroTaskConfigIO)
   val BSL_MicroTask_Config = Option.when(cuteMatrixExtension.enableScalingFactor)(new BSLMicroTaskConfigIO)
-  val CML_MicroTask_Config = new CMLMicroTaskConfigIO
+  val accMemoryConfig = new AccMemoryTaskConfigIO
+  val trStorer0 = new TrStoreControlIO
   val MTE_MicroTask_Config = new MTEMicroTaskConfigIO
   val DebugTimeStampe = Input(UInt(32.W))
   val perfProbe = Output(new TaskControllerPerfProbe)
@@ -78,6 +79,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private val SeqIdWidth = 16
 
   // ===================== Default output assignments =====================
+  io.trStorer0.command.valid := false.B
+  io.trStorer0.command.bits := 0.U.asTypeOf(io.trStorer0.command.bits)
+  io.trStorer0.done.ready := false.B
   io.ygjkctrl.mrelease.valid := false.B
   io.ygjkctrl.mrelease.bits := 0.U.asTypeOf(new MreleaseIO)
 
@@ -140,20 +144,20 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     io.CDC_MicroTask_Config.coreid.get := 0.U
   }
 
-  io.AML_MicroTask_Config.ApplicationTensor_A := 0.U.asTypeOf(io.AML_MicroTask_Config.ApplicationTensor_A)
-  io.AML_MicroTask_Config.LoadTaskInfo := 0.U.asTypeOf(io.AML_MicroTask_Config.LoadTaskInfo)
-  io.AML_MicroTask_Config.MatrixRegTensor_M := 0.U
-  io.AML_MicroTask_Config.MatrixRegTensor_K := 0.U
-  io.AML_MicroTask_Config.Conherent := false.B
-  io.AML_MicroTask_Config.Is_Transpose := false.B
-  io.AML_MicroTask_Config.MatrixRegId := 0.U
-  io.AML_MicroTask_Config.PrefetchTaskId.foreach(_ := 0.U)
-  io.AML_MicroTask_Config.PrefetchStream.foreach(_ := MatrixPrefetchStream.none)
-  io.AML_MicroTask_Config.MicroTaskValid := false.B
-  io.AML_MicroTask_Config.MicroTaskEndReady := false.B
-  if (EnableDifftest) {
-    io.AML_MicroTask_Config.pc.get := 0.U
-    io.AML_MicroTask_Config.coreid.get := 0.U
+  for (cfg <- Seq(io.trLoader0Config, io.trLoader1Config)) {
+    cfg.Tensor := 0.U.asTypeOf(cfg.Tensor)
+    cfg.LoadTaskInfo := 0.U.asTypeOf(cfg.LoadTaskInfo)
+    cfg.MatrixRegTensor_M := 0.U
+    cfg.MatrixRegTensor_K := 0.U
+    cfg.MatrixRegId := 0.U
+    cfg.Conherent := false.B
+    cfg.Is_Transpose := false.B
+    cfg.PrefetchTaskId.foreach(_ := 0.U)
+    cfg.PrefetchStream.foreach(_ := MatrixPrefetchStream.none)
+    cfg.MicroTaskValid := false.B
+    cfg.MicroTaskEndReady := false.B
+    cfg.pc.foreach(_ := 0.U)
+    cfg.coreid.foreach(_ := 0.U)
   }
 
   io.ASL_MicroTask_Config.foreach { cfg =>
@@ -165,21 +169,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     cfg.MicroTaskEndReady := false.B
   }
 
-  io.BML_MicroTask_Config.ApplicationTensor_B := 0.U.asTypeOf(io.BML_MicroTask_Config.ApplicationTensor_B)
-  io.BML_MicroTask_Config.MatrixRegTensor_N := 0.U
-  io.BML_MicroTask_Config.MatrixRegTensor_K := 0.U
-  io.BML_MicroTask_Config.Conherent := false.B
-  io.BML_MicroTask_Config.Is_Transpose := false.B
-  io.BML_MicroTask_Config.MatrixRegId := 0.U
-  io.BML_MicroTask_Config.PrefetchTaskId.foreach(_ := 0.U)
-  io.BML_MicroTask_Config.PrefetchStream.foreach(_ := MatrixPrefetchStream.none)
-  io.BML_MicroTask_Config.MicroTaskValid := false.B
-  io.BML_MicroTask_Config.MicroTaskEndReady := false.B
-  if (EnableDifftest) {
-    io.BML_MicroTask_Config.pc.get := 0.U
-    io.BML_MicroTask_Config.coreid.get := 0.U
-  }
-
   io.BSL_MicroTask_Config.foreach { cfg =>
     cfg.ApplicationScale_B := 0.U.asTypeOf(cfg.ApplicationScale_B)
     cfg.MatrixRegTensor_N := 0.U
@@ -189,24 +178,24 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     cfg.MicroTaskEndReady := false.B
   }
 
-  io.CML_MicroTask_Config.ApplicationTensor_C := 0.U.asTypeOf(io.CML_MicroTask_Config.ApplicationTensor_C)
-  io.CML_MicroTask_Config.ApplicationTensor_D := 0.U.asTypeOf(io.CML_MicroTask_Config.ApplicationTensor_D)
-  io.CML_MicroTask_Config.LoadTaskInfo := 0.U.asTypeOf(io.CML_MicroTask_Config.LoadTaskInfo)
-  io.CML_MicroTask_Config.Conherent := false.B
-  io.CML_MicroTask_Config.Is_Transpose := false.B
-  io.CML_MicroTask_Config.MatrixRegTensor_M := 0.U
-  io.CML_MicroTask_Config.MatrixRegTensor_N := 0.U
-  io.CML_MicroTask_Config.MatrixRegId := 0.U
-  io.CML_MicroTask_Config.PrefetchTaskId.foreach(_ := 0.U)
-  io.CML_MicroTask_Config.PrefetchStream.foreach(_ := MatrixPrefetchStream.none)
-  io.CML_MicroTask_Config.StoreTraceTag.foreach(_ := 0.U)
-  io.CML_MicroTask_Config.LoadMicroTaskValid := false.B
-  io.CML_MicroTask_Config.LoadMicroTaskEndReady := false.B
-  io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
-  io.CML_MicroTask_Config.StoreMicroTaskEndReady := false.B
+  io.accMemoryConfig.ApplicationTensor_C := 0.U.asTypeOf(io.accMemoryConfig.ApplicationTensor_C)
+  io.accMemoryConfig.ApplicationTensor_D := 0.U.asTypeOf(io.accMemoryConfig.ApplicationTensor_D)
+  io.accMemoryConfig.LoadTaskInfo := 0.U.asTypeOf(io.accMemoryConfig.LoadTaskInfo)
+  io.accMemoryConfig.Conherent := false.B
+  io.accMemoryConfig.Is_Transpose := false.B
+  io.accMemoryConfig.MatrixRegTensor_M := 0.U
+  io.accMemoryConfig.MatrixRegTensor_N := 0.U
+  io.accMemoryConfig.MatrixRegId := 0.U
+  io.accMemoryConfig.PrefetchTaskId.foreach(_ := 0.U)
+  io.accMemoryConfig.PrefetchStream.foreach(_ := MatrixPrefetchStream.none)
+  io.accMemoryConfig.StoreTraceTag.foreach(_ := 0.U)
+  io.accMemoryConfig.LoadMicroTaskValid := false.B
+  io.accMemoryConfig.LoadMicroTaskEndReady := false.B
+  io.accMemoryConfig.StoreMicroTaskValid := false.B
+  io.accMemoryConfig.StoreMicroTaskEndReady := false.B
   if (EnableDifftest) {
-    io.CML_MicroTask_Config.pc.get := 0.U
-    io.CML_MicroTask_Config.coreid.get := 0.U
+    io.accMemoryConfig.pc.get := 0.U
+    io.accMemoryConfig.coreid.get := 0.U
   }
 
   io.MTE_MicroTask_Config.MicroTaskValid := false.B
@@ -398,15 +387,16 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val computeIssueIdx = RegInit(0.U(ComputeFifoIdxWidth.W))
   val storeIssueIdx = RegInit(0.U(StoreFifoIdxWidth.W))
 
-  val fuAML = RegInit(0.U.asTypeOf(new FuTracker))
-  val fuBML = RegInit(0.U.asTypeOf(new FuTracker))
-  val fuCMLLoad = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuTrLoader0 = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuTrLoader1 = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuAccLoader0 = RegInit(0.U.asTypeOf(new FuTracker))
   val fuCompute = RegInit(0.U.asTypeOf(new FuTracker))
-  val fuCMLStore = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuTrStorer0 = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuAccStorer0 = RegInit(0.U.asTypeOf(new FuTracker))
 
   private def slotOH(idx: UInt): UInt = UIntToOH(idx, WinDepth)
-  private def abIdx(x: UInt): UInt = x(ABMatrixRegIdWidth - 1, 0)
-  private def cIdx(x: UInt): UInt = x(CMatrixRegIdWidth - 1, 0)
+  private def abIdx(x: UInt): UInt = x(TrMatrixRegIdWidth - 1, 0)
+  private def cIdx(x: UInt): UInt = x(AccMatrixRegIdWidth - 1, 0)
 
   private def decodeMma(ctrl: AmuCtrlIO): AmuMmaIO = ctrl.data.asTypeOf(new AmuMmaIO)
   private def decodeLsu(ctrl: AmuCtrlIO): AmuLsuIO = ctrl.data.asTypeOf(new AmuLsuIO)
@@ -443,39 +433,46 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   // ===================== Done handshakes (level-ready) =====================
-  val amlOwnerValid = fuAML.busy && slots(fuAML.ownerSlot).valid
-  val bmlOwnerValid = fuBML.busy && slots(fuBML.ownerSlot).valid
-  val cmlLoadOwnerValid = fuCMLLoad.busy && slots(fuCMLLoad.ownerSlot).valid
-  val cmlStoreOwnerValid = fuCMLStore.busy && slots(fuCMLStore.ownerSlot).valid
+  val trLoader0OwnerValid = fuTrLoader0.busy && slots(fuTrLoader0.ownerSlot).valid
+  val trLoader1OwnerValid = fuTrLoader1.busy && slots(fuTrLoader1.ownerSlot).valid
+  val accLoader0OwnerValid = fuAccLoader0.busy && slots(fuAccLoader0.ownerSlot).valid
+  val trStorer0OwnerValid = fuTrStorer0.busy && slots(fuTrStorer0.ownerSlot).valid
+  val accStorer0OwnerValid = fuAccStorer0.busy && slots(fuAccStorer0.ownerSlot).valid
   val computeOwnerValid = fuCompute.busy && slots(fuCompute.ownerSlot).valid
 
-  io.AML_MicroTask_Config.MicroTaskEndReady := amlOwnerValid
-  io.BML_MicroTask_Config.MicroTaskEndReady := bmlOwnerValid
-  io.CML_MicroTask_Config.LoadMicroTaskEndReady := cmlLoadOwnerValid
-  io.CML_MicroTask_Config.StoreMicroTaskEndReady := cmlStoreOwnerValid
+  io.trLoader0Config.MicroTaskEndReady := trLoader0OwnerValid
+  io.trLoader1Config.MicroTaskEndReady := trLoader1OwnerValid
+  io.accMemoryConfig.LoadMicroTaskEndReady := accLoader0OwnerValid
+  io.accMemoryConfig.StoreMicroTaskEndReady := accStorer0OwnerValid
+  io.trStorer0.done.ready := trStorer0OwnerValid
   io.ADC_MicroTask_Config.MicroTaskEndReady := computeOwnerValid
   io.BDC_MicroTask_Config.MicroTaskEndReady := computeOwnerValid
   io.CDC_MicroTask_Config.MicroTaskEndReady := computeOwnerValid
 
-  val amlDone = io.AML_MicroTask_Config.MicroTaskEndValid && io.AML_MicroTask_Config.MicroTaskEndReady
-  val bmlDone = io.BML_MicroTask_Config.MicroTaskEndValid && io.BML_MicroTask_Config.MicroTaskEndReady
-  val cmlLoadDone = io.CML_MicroTask_Config.LoadMicroTaskEndValid && io.CML_MicroTask_Config.LoadMicroTaskEndReady
-  val cmlStoreDone = io.CML_MicroTask_Config.StoreMicroTaskEndValid && io.CML_MicroTask_Config.StoreMicroTaskEndReady
+  val trLoader0Done = io.trLoader0Config.MicroTaskEndValid && io.trLoader0Config.MicroTaskEndReady
+  val trLoader1Done = io.trLoader1Config.MicroTaskEndValid && io.trLoader1Config.MicroTaskEndReady
+  val accLoader0Done = io.accMemoryConfig.LoadMicroTaskEndValid && io.accMemoryConfig.LoadMicroTaskEndReady
+  val trStorer0Done = io.trStorer0.done.fire
+  val accStorer0Done = io.accMemoryConfig.StoreMicroTaskEndValid && io.accMemoryConfig.StoreMicroTaskEndReady
+  val storeDone = trStorer0Done || accStorer0Done
+  when(io.trStorer0.done.valid) { assert(trStorer0OwnerValid, "TaskController: trStorer0 done without owner") }
+  // Independent FU owners; all stores remain ordered by waitCompleteMask.
+  assert(!(fuTrStorer0.busy && fuAccStorer0.busy), "TaskController: ordered stores must not overlap")
   val adcDone = io.ADC_MicroTask_Config.MicroTaskEndValid && io.ADC_MicroTask_Config.MicroTaskEndReady
   val bdcDone = io.BDC_MicroTask_Config.MicroTaskEndValid && io.BDC_MicroTask_Config.MicroTaskEndReady
   val cdcDone = io.CDC_MicroTask_Config.MicroTaskEndValid && io.CDC_MicroTask_Config.MicroTaskEndReady
 
-  when(io.AML_MicroTask_Config.MicroTaskEndValid) {
-    assert(amlOwnerValid, "TaskController: AML done without valid owner")
+  when(io.trLoader0Config.MicroTaskEndValid) {
+    assert(trLoader0OwnerValid, "TaskController: trLoader0 done without valid owner")
   }
-  when(io.BML_MicroTask_Config.MicroTaskEndValid) {
-    assert(bmlOwnerValid, "TaskController: BML done without valid owner")
+  when(io.trLoader1Config.MicroTaskEndValid) {
+    assert(trLoader1OwnerValid, "TaskController: trLoader1 done without valid owner")
   }
-  when(io.CML_MicroTask_Config.LoadMicroTaskEndValid) {
-    assert(cmlLoadOwnerValid, "TaskController: CML-load done without valid owner")
+  when(io.accMemoryConfig.LoadMicroTaskEndValid) {
+    assert(accLoader0OwnerValid, "TaskController: accMemory-load done without valid owner")
   }
-  when(io.CML_MicroTask_Config.StoreMicroTaskEndValid) {
-    assert(cmlStoreOwnerValid, "TaskController: CML-store done without valid owner")
+  when(io.accMemoryConfig.StoreMicroTaskEndValid) {
+    assert(accStorer0OwnerValid, "TaskController: accMemory-store done without valid owner")
   }
   when(io.ADC_MicroTask_Config.MicroTaskEndValid) {
     assert(computeOwnerValid, "TaskController: ADC done without valid owner")
@@ -534,6 +531,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val readAVec = VecInit(slots.map(s => s.valid && s.readADone)).asUInt
   val readBVec = VecInit(slots.map(s => s.valid && s.readBDone)).asUInt
 
+  val trLoader0Ready = !fuTrLoader0.busy && io.trLoader0Config.MicroTaskReady
+  val trLoader1Ready = !fuTrLoader1.busy && io.trLoader1Config.MicroTaskReady
+  def trLoadReady(lsu: AmuLsuIO): Bool =
+    Mux(lsu.transpose, trLoader0Ready, trLoader1Ready || trLoader0Ready)
+
   val readyBySlot = Wire(Vec(WinDepth, Bool()))
   readyBySlot.foreach(_ := false.B)
   for (slotIdx <- 0 until WinDepth) {
@@ -553,14 +555,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val slotFuReady = Mux(
       slotCanConsider,
       MuxLookup(slot.opKind.asUInt, true.B)(Seq(
-        TaskCtrlOpKind.LoadA.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
-        TaskCtrlOpKind.LoadB.asUInt -> Mux(decodeLsu(slot.entry.ctrl).transpose,
-          !fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady,
-          !fuBML.busy && io.BML_MicroTask_Config.MicroTaskReady),
-        TaskCtrlOpKind.LoadC.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
-        TaskCtrlOpKind.ZeroAcc.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
-        TaskCtrlOpKind.ZeroTr.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
-        TaskCtrlOpKind.Store.asUInt -> (!fuCMLStore.busy && io.CML_MicroTask_Config.StoreMicroTaskReady),
+        TaskCtrlOpKind.LoadA.asUInt -> trLoadReady(decodeLsu(slot.entry.ctrl)),
+        TaskCtrlOpKind.LoadB.asUInt -> trLoadReady(decodeLsu(slot.entry.ctrl)),
+        TaskCtrlOpKind.LoadC.asUInt -> (!fuAccLoader0.busy && io.accMemoryConfig.LoadMicroTaskReady),
+        TaskCtrlOpKind.ZeroAcc.asUInt -> (!fuAccLoader0.busy && io.accMemoryConfig.LoadMicroTaskReady),
+        TaskCtrlOpKind.ZeroTr.asUInt -> (!fuTrLoader0.busy && io.trLoader0Config.MicroTaskReady),
+        TaskCtrlOpKind.Store.asUInt -> Mux(decodeLsu(slot.entry.ctrl).isacc,
+          !fuAccStorer0.busy && io.accMemoryConfig.StoreMicroTaskReady,
+          !fuTrStorer0.busy && io.trStorer0.command.ready),
         TaskCtrlOpKind.Compute.asUInt -> (!fuCompute.busy && io.ADC_MicroTask_Config.MicroTaskReady && io.BDC_MicroTask_Config.MicroTaskReady && io.CDC_MicroTask_Config.MicroTaskReady),
         TaskCtrlOpKind.Release.asUInt -> true.B,
         TaskCtrlOpKind.NopLike.asUInt -> true.B
@@ -606,10 +608,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val headSlot = slots(winHead)
 
   val headDoneByFu =
-    (amlDone && fuAML.busy && fuAML.ownerSlot === winHead) ||
-    (bmlDone && fuBML.busy && fuBML.ownerSlot === winHead) ||
-    (cmlLoadDone && fuCMLLoad.busy && fuCMLLoad.ownerSlot === winHead) ||
-    (cmlStoreDone && fuCMLStore.busy && fuCMLStore.ownerSlot === winHead) ||
+    (trLoader0Done && fuTrLoader0.busy && fuTrLoader0.ownerSlot === winHead) ||
+    (trLoader1Done && fuTrLoader1.busy && fuTrLoader1.ownerSlot === winHead) ||
+    (accLoader0Done && fuAccLoader0.busy && fuAccLoader0.ownerSlot === winHead) ||
+    (trStorer0Done && fuTrStorer0.busy && fuTrStorer0.ownerSlot === winHead) ||
+    (accStorer0Done && fuAccStorer0.busy && fuAccStorer0.ownerSlot === winHead) ||
     (cdcDone && fuCompute.busy && fuCompute.ownerSlot === winHead)
 
   val headCompletedAfterDone = headSlot.completed || headDoneByFu
@@ -627,6 +630,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   // ===================== Issue dispatch bridge =====================
   val issueCtrl = issueSlot.entry.ctrl
   val issueLsu = decodeLsu(issueCtrl)
+  val issueTrLoader1 = !issueLsu.transpose && trLoader1Ready
   val issueMma = decodeMma(issueCtrl)
   val issueArith = decodeArith(issueCtrl)
 
@@ -743,11 +747,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     allocDesc.innerCount := loadBeatCount(allocInnerDim, deqLsu.widths)
     allocDesc.rowBytes := loadByteCount(allocInnerDim, deqLsu.widths).pad(32)
     val aNormalPrefetchGroupWidth =
-      if (AMLUseLegacyLoader) Matrix_MN else ABMatrixRegNBanks
+      if (TrLoader0UseLegacyLoader) Matrix_MN else TrMatrixRegNBanks
     allocDesc.groupWidth := MuxLookup(deqOpKind.asUInt, Matrix_MN.U)(Seq(
       TaskCtrlOpKind.LoadA.asUInt -> Mux(
         deqLsu.transpose,
-        ABMatrixRegEntryByteSize.U,
+        TrMatrixRegEntryByteSize.U,
         aNormalPrefetchGroupWidth.U
       )
     ))
@@ -780,8 +784,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       )
     }
 
-    when(cmlStoreDone && decodeLsu(slots(fuCMLStore.ownerSlot).entry.ctrl).isacc) {
-      val storeOwner = slots(fuCMLStore.ownerSlot)
+    when(accStorer0Done) {
+      val storeOwner = slots(fuAccStorer0.ownerSlot)
       matrixPrefetch.cStoreEnd.valid := true.B
       matrixPrefetch.cStoreEnd.bits := MatrixPrefetchTagCodec.encode(
         true.B,
@@ -793,131 +797,46 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   when(issueFire) {
     switch(issueSlot.opKind) {
-      is(TaskCtrlOpKind.LoadA) {
-        val regIdx = issueLsu.ms(1, 0)
-        val matrixDim = Mux(issueLsu.transpose, issueLsu.column, issueLsu.row)
-        val reduceDim = Mux(issueLsu.transpose, issueLsu.row, issueLsu.column)
-        val kVal = loadBeatCount(reduceDim, issueLsu.widths)
-
-        io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := issueLsu.baseAddr
-        io.AML_MicroTask_Config.ApplicationTensor_A.ApplicationTensor_A_Stride_M := issueLsu.stride
-        io.AML_MicroTask_Config.ApplicationTensor_A.dataType := loadDataType(issueLsu.widths)
-        io.AML_MicroTask_Config.ApplicationTensor_A.HasTail := loadHasTail(reduceDim, issueLsu.widths)
-        io.AML_MicroTask_Config.ApplicationTensor_A.TailByteMask := loadTailByteMask(reduceDim, issueLsu.widths)
-        io.AML_MicroTask_Config.ApplicationTensor_A.K_Beat_Count := kVal
-        io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
-        io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
-        io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-        io.AML_MicroTask_Config.MatrixRegTensor_M := matrixDim
-        io.AML_MicroTask_Config.MatrixRegTensor_K := kVal
-        io.AML_MicroTask_Config.MatrixRegId := regIdx
-        io.AML_MicroTask_Config.PrefetchTaskId.foreach(_ := issueSlot.seqId)
-        io.AML_MicroTask_Config.PrefetchStream.foreach(_ := MatrixPrefetchStream.a)
-        io.AML_MicroTask_Config.Conherent := true.B
-        io.AML_MicroTask_Config.Is_Transpose := issueLsu.transpose
-        io.AML_MicroTask_Config.MicroTaskValid := true.B
-        if (EnableDifftest) {
-          io.AML_MicroTask_Config.pc.get := issueCtrl.pc.get
-          io.AML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
-        }
-
-        loadAllocateEvent.eventType := 0.U
-        loadAllocateEvent.regId := regIdx
-        loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
-        loadAllocateEvent.needMask := "b001".U
-        loadAllocateEvent.row := issueLsu.row
-        loadAllocateEvent.column := issueLsu.column
-        loadAllocateEvent.transpose := issueLsu.transpose
-        loadAllocateEvent.isAcc := false.B
-        loadAllocateEvent.slotId := issueSlotIdx
-        loadAllocateEvent.seqId := issueSlot.seqId
-        loadAllocateEventEn := true.B
-
-        loadIssueEvent.eventType := 1.U
-        loadIssueEvent.regId := regIdx
-        loadIssueEvent.fifoIdx := issueSlot.fifoIdx
-        loadIssueEvent.needMask := "b001".U
-        loadIssueEvent.row := issueLsu.row
-        loadIssueEvent.column := issueLsu.column
-        loadIssueEvent.transpose := issueLsu.transpose
-        loadIssueEvent.isAcc := false.B
-        loadIssueEvent.slotId := issueSlotIdx
-        loadIssueEvent.seqId := issueSlot.seqId
-        loadIssueEventEn := true.B
-      }
-
-      is(TaskCtrlOpKind.LoadB) {
-        val regIdx = issueLsu.ms(1, 0)
-        val matrixDim = Mux(issueLsu.transpose, issueLsu.row, issueLsu.column)
-        val reduceDim = Mux(issueLsu.transpose, issueLsu.column, issueLsu.row)
-        val kVal = loadBeatCount(reduceDim, issueLsu.widths)
-
-        io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr := issueLsu.baseAddr
-        io.BML_MicroTask_Config.ApplicationTensor_B.ApplicationTensor_B_Stride_N := issueLsu.stride
-        io.BML_MicroTask_Config.ApplicationTensor_B.BlockTensor_B_BaseVaddr := issueLsu.baseAddr
-        io.BML_MicroTask_Config.ApplicationTensor_B.dataType := loadDataType(issueLsu.widths)
-        io.BML_MicroTask_Config.ApplicationTensor_B.HasTail := loadHasTail(reduceDim, issueLsu.widths)
-        io.BML_MicroTask_Config.ApplicationTensor_B.TailByteMask := loadTailByteMask(reduceDim, issueLsu.widths)
-        io.BML_MicroTask_Config.ApplicationTensor_B.K_Beat_Count := kVal
-        io.BML_MicroTask_Config.MatrixRegTensor_N := matrixDim
-        io.BML_MicroTask_Config.MatrixRegTensor_K := kVal
-        io.BML_MicroTask_Config.MatrixRegId := regIdx
-        io.BML_MicroTask_Config.PrefetchTaskId.foreach(_ := issueSlot.seqId)
-        io.BML_MicroTask_Config.PrefetchStream.foreach(_ := MatrixPrefetchStream.b)
-        io.BML_MicroTask_Config.Conherent := true.B
-        io.BML_MicroTask_Config.Is_Transpose := issueLsu.transpose
-        io.BML_MicroTask_Config.MicroTaskValid := !issueLsu.transpose
-        if (EnableDifftest) {
-          io.BML_MicroTask_Config.pc.get := issueCtrl.pc.get
-          io.BML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
-        }
-
-        // Both transpose instructions share the AML-hosted engine. Keep
-        // LoadB's architectural dimensions/register semantics; change only
-        // the physical FU that owns dispatch, completion and writeback.
-        when(issueLsu.transpose) {
-          val cfg = io.AML_MicroTask_Config
-          cfg.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr := issueLsu.baseAddr
-          cfg.ApplicationTensor_A.ApplicationTensor_A_Stride_M := issueLsu.stride
-          cfg.ApplicationTensor_A.dataType := loadDataType(issueLsu.widths)
-          cfg.ApplicationTensor_A.HasTail := loadHasTail(reduceDim, issueLsu.widths)
-          cfg.ApplicationTensor_A.TailByteMask := loadTailByteMask(reduceDim, issueLsu.widths)
-          cfg.ApplicationTensor_A.K_Beat_Count := kVal
+      is(TaskCtrlOpKind.LoadA, TaskCtrlOpKind.LoadB) {
+        val isB = issueSlot.opKind === TaskCtrlOpKind.LoadB
+        // Geometry is architectural; execution unit selection must not swap A/B meaning.
+        val matrixDim = Mux(isB ^ issueLsu.transpose, issueLsu.column, issueLsu.row)
+        val reduceDim = Mux(isB ^ issueLsu.transpose, issueLsu.row, issueLsu.column)
+        val beatCount = loadBeatCount(reduceDim, issueLsu.widths)
+        for ((cfg, unit) <- Seq(io.trLoader0Config, io.trLoader1Config).zipWithIndex) {
+          cfg.Tensor.baseVaddr := issueLsu.baseAddr
+          cfg.Tensor.stride := issueLsu.stride
+          cfg.Tensor.dataType := loadDataType(issueLsu.widths)
+          cfg.Tensor.HasTail := loadHasTail(reduceDim, issueLsu.widths)
+          cfg.Tensor.TailByteMask := loadTailByteMask(reduceDim, issueLsu.widths)
+          cfg.Tensor.K_Beat_Count := beatCount
           cfg.LoadTaskInfo.Is_FullLoad := true.B
           cfg.MatrixRegTensor_M := matrixDim
-          cfg.MatrixRegTensor_K := kVal
-          cfg.MatrixRegId := regIdx
+          cfg.MatrixRegTensor_K := beatCount
+          cfg.MatrixRegId := issueLsu.ms(1, 0)
+          cfg.PrefetchTaskId.foreach(_ := issueSlot.seqId)
+          cfg.PrefetchStream.foreach(_ := Mux(isB, MatrixPrefetchStream.b, MatrixPrefetchStream.a))
           cfg.Conherent := true.B
-          cfg.Is_Transpose := true.B
-          cfg.MicroTaskValid := true.B
-          if (EnableDifftest) {
-            cfg.pc.get := issueCtrl.pc.get
-            cfg.coreid.get := issueCtrl.coreid.get
-          }
+          cfg.Is_Transpose := issueLsu.transpose
+          cfg.MicroTaskValid := (if (unit == 1) issueTrLoader1 else !issueTrLoader1)
+          cfg.pc.zip(issueCtrl.pc).foreach { case (to, from) => to := from }
+          cfg.coreid.zip(issueCtrl.coreid).foreach { case (to, from) => to := from }
         }
 
-        loadAllocateEvent.eventType := 0.U
-        loadAllocateEvent.regId := regIdx
-        loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
-        loadAllocateEvent.needMask := Mux(issueLsu.transpose, "b001".U, "b010".U)
-        loadAllocateEvent.row := issueLsu.row
-        loadAllocateEvent.column := issueLsu.column
-        loadAllocateEvent.transpose := issueLsu.transpose
-        loadAllocateEvent.isAcc := false.B
-        loadAllocateEvent.slotId := issueSlotIdx
-        loadAllocateEvent.seqId := issueSlot.seqId
+        // Existing event positions identify physical TL0/TL1, not the A/B opcode.
+        for ((event, kind) <- Seq(loadAllocateEvent -> 0, loadIssueEvent -> 1)) {
+          event.eventType := kind.U
+          event.regId := issueLsu.ms(1, 0)
+          event.fifoIdx := issueSlot.fifoIdx
+          event.needMask := Mux(issueTrLoader1, "b010".U, "b001".U)
+          event.row := issueLsu.row
+          event.column := issueLsu.column
+          event.transpose := issueLsu.transpose
+          event.isAcc := false.B
+          event.slotId := issueSlotIdx
+          event.seqId := issueSlot.seqId
+        }
         loadAllocateEventEn := true.B
-
-        loadIssueEvent.eventType := 1.U
-        loadIssueEvent.regId := regIdx
-        loadIssueEvent.fifoIdx := issueSlot.fifoIdx
-        loadIssueEvent.needMask := Mux(issueLsu.transpose, "b001".U, "b010".U)
-        loadIssueEvent.row := issueLsu.row
-        loadIssueEvent.column := issueLsu.column
-        loadIssueEvent.transpose := issueLsu.transpose
-        loadIssueEvent.isAcc := false.B
-        loadIssueEvent.slotId := issueSlotIdx
-        loadIssueEvent.seqId := issueSlot.seqId
         loadIssueEventEn := true.B
       }
 
@@ -927,28 +846,28 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         val matrixDimN = Mux(issueLsu.transpose, issueLsu.row, issueLsu.column)
         val nVal = loadBeatCount(matrixDimN, issueLsu.widths)
 
-        io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := issueLsu.baseAddr
-        io.CML_MicroTask_Config.ApplicationTensor_C.ApplicationTensor_C_Stride_M := issueLsu.stride
-        io.CML_MicroTask_Config.ApplicationTensor_C.BlockTensor_C_BaseVaddr := issueLsu.baseAddr
-        io.CML_MicroTask_Config.ApplicationTensor_C.dataType := loadDataType(issueLsu.widths)
-        io.CML_MicroTask_Config.ApplicationTensor_C.HasTail := loadHasTail(matrixDimN, issueLsu.widths)
-        io.CML_MicroTask_Config.ApplicationTensor_C.TailByteMask := loadTailByteMask(matrixDimN, issueLsu.widths)
-        io.CML_MicroTask_Config.ApplicationTensor_C.N_Beat_Count := nVal
-        io.CML_MicroTask_Config.Conherent := true.B
-        io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := true.B
-        io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
-        io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-        io.CML_MicroTask_Config.MatrixRegTensor_M := matrixDimM
-        io.CML_MicroTask_Config.MatrixRegTensor_N := matrixDimN
-        io.CML_MicroTask_Config.MatrixRegId := regIdx
-        io.CML_MicroTask_Config.PrefetchTaskId.foreach(_ := issueSlot.seqId)
-        io.CML_MicroTask_Config.PrefetchStream.foreach(_ := MatrixPrefetchStream.cLoad)
-        io.CML_MicroTask_Config.Is_Transpose := issueLsu.transpose
-        io.CML_MicroTask_Config.LoadMicroTaskValid := true.B
-        io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
+        io.accMemoryConfig.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := issueLsu.baseAddr
+        io.accMemoryConfig.ApplicationTensor_C.ApplicationTensor_C_Stride_M := issueLsu.stride
+        io.accMemoryConfig.ApplicationTensor_C.BlockTensor_C_BaseVaddr := issueLsu.baseAddr
+        io.accMemoryConfig.ApplicationTensor_C.dataType := loadDataType(issueLsu.widths)
+        io.accMemoryConfig.ApplicationTensor_C.HasTail := loadHasTail(matrixDimN, issueLsu.widths)
+        io.accMemoryConfig.ApplicationTensor_C.TailByteMask := loadTailByteMask(matrixDimN, issueLsu.widths)
+        io.accMemoryConfig.ApplicationTensor_C.N_Beat_Count := nVal
+        io.accMemoryConfig.Conherent := true.B
+        io.accMemoryConfig.LoadTaskInfo.Is_FullLoad := true.B
+        io.accMemoryConfig.LoadTaskInfo.Is_ZeroLoad := false.B
+        io.accMemoryConfig.LoadTaskInfo.Is_RepeatRowLoad := false.B
+        io.accMemoryConfig.MatrixRegTensor_M := matrixDimM
+        io.accMemoryConfig.MatrixRegTensor_N := matrixDimN
+        io.accMemoryConfig.MatrixRegId := regIdx
+        io.accMemoryConfig.PrefetchTaskId.foreach(_ := issueSlot.seqId)
+        io.accMemoryConfig.PrefetchStream.foreach(_ := MatrixPrefetchStream.cLoad)
+        io.accMemoryConfig.Is_Transpose := issueLsu.transpose
+        io.accMemoryConfig.LoadMicroTaskValid := true.B
+        io.accMemoryConfig.StoreMicroTaskValid := false.B
         if (EnableDifftest) {
-          io.CML_MicroTask_Config.pc.get := issueCtrl.pc.get
-          io.CML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+          io.accMemoryConfig.pc.get := issueCtrl.pc.get
+          io.accMemoryConfig.coreid.get := issueCtrl.coreid.get
         }
 
         loadAllocateEvent.eventType := 0.U
@@ -979,20 +898,20 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       is(TaskCtrlOpKind.ZeroAcc) {
         val regIdx = issueArith.md(1, 0)
 
-        io.CML_MicroTask_Config.ApplicationTensor_C.dataType := ElementDataType.DataTypeWidth32
-        io.CML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
-        io.CML_MicroTask_Config.MatrixRegTensor_N := cuteParams.Tensor_MN.U
-        io.CML_MicroTask_Config.MatrixRegId := regIdx
-        io.CML_MicroTask_Config.LoadMicroTaskValid := true.B
-        io.CML_MicroTask_Config.StoreMicroTaskValid := false.B
-        io.CML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
-        io.CML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
-        io.CML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-        io.CML_MicroTask_Config.Conherent := true.B
-        io.CML_MicroTask_Config.Is_Transpose := false.B
+        io.accMemoryConfig.ApplicationTensor_C.dataType := ElementDataType.DataTypeWidth32
+        io.accMemoryConfig.MatrixRegTensor_M := cuteParams.Tensor_MN.U
+        io.accMemoryConfig.MatrixRegTensor_N := cuteParams.Tensor_MN.U
+        io.accMemoryConfig.MatrixRegId := regIdx
+        io.accMemoryConfig.LoadMicroTaskValid := true.B
+        io.accMemoryConfig.StoreMicroTaskValid := false.B
+        io.accMemoryConfig.LoadTaskInfo.Is_ZeroLoad := true.B
+        io.accMemoryConfig.LoadTaskInfo.Is_FullLoad := false.B
+        io.accMemoryConfig.LoadTaskInfo.Is_RepeatRowLoad := false.B
+        io.accMemoryConfig.Conherent := true.B
+        io.accMemoryConfig.Is_Transpose := false.B
         if (EnableDifftest) {
-          io.CML_MicroTask_Config.pc.get := issueCtrl.pc.get
-          io.CML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+          io.accMemoryConfig.pc.get := issueCtrl.pc.get
+          io.accMemoryConfig.coreid.get := issueCtrl.coreid.get
         }
 
         loadAllocateEvent.eventType := 0.U
@@ -1023,19 +942,19 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       is(TaskCtrlOpKind.ZeroTr) {
         val regIdx = issueArith.md(1, 0)
 
-        io.AML_MicroTask_Config.ApplicationTensor_A.dataType := ElementDataType.DataTypeWidth8
-        io.AML_MicroTask_Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
-        io.AML_MicroTask_Config.MatrixRegTensor_K := cuteParams.Tensor_K.U / ReduceWidthByte.U
-        io.AML_MicroTask_Config.MatrixRegId := regIdx
-        io.AML_MicroTask_Config.MicroTaskValid := true.B
-        io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := true.B
-        io.AML_MicroTask_Config.LoadTaskInfo.Is_FullLoad := false.B
-        io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
-        io.AML_MicroTask_Config.Conherent := true.B
-        io.AML_MicroTask_Config.Is_Transpose := false.B
+        io.trLoader0Config.Tensor.dataType := ElementDataType.DataTypeWidth8
+        io.trLoader0Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
+        io.trLoader0Config.MatrixRegTensor_K := cuteParams.Tensor_K.U / ReduceWidthByte.U
+        io.trLoader0Config.MatrixRegId := regIdx
+        io.trLoader0Config.MicroTaskValid := true.B
+        io.trLoader0Config.LoadTaskInfo.Is_ZeroLoad := true.B
+        io.trLoader0Config.LoadTaskInfo.Is_FullLoad := false.B
+        io.trLoader0Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
+        io.trLoader0Config.Conherent := true.B
+        io.trLoader0Config.Is_Transpose := false.B
         if (EnableDifftest) {
-          io.AML_MicroTask_Config.pc.get := issueCtrl.pc.get
-          io.AML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+          io.trLoader0Config.pc.get := issueCtrl.pc.get
+          io.trLoader0Config.coreid.get := issueCtrl.coreid.get
         }
 
         loadAllocateEvent.eventType := 0.U
@@ -1132,7 +1051,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
             desc.outerCount := issueLsu.row
             desc.innerCount := loadBeatCount(issueLsu.column, issueLsu.widths)
             desc.rowBytes := loadByteCount(issueLsu.column, issueLsu.widths)
-            desc.groupWidth := CMatrixRegNBanks.U
+            desc.groupWidth := AccMatrixRegNBanks.U
             desc.transpose := issueLsu.transpose
             cStoreDescEn.get := true.B
             if (EnableDifftest) {
@@ -1141,29 +1060,43 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
           }
         }
 
-        io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_BaseVaddr := issueLsu.baseAddr
-        io.CML_MicroTask_Config.ApplicationTensor_D.ApplicationTensor_D_Stride_M := issueLsu.stride
-        io.CML_MicroTask_Config.ApplicationTensor_D.BlockTensor_D_BaseVaddr := issueLsu.baseAddr
-        io.CML_MicroTask_Config.ApplicationTensor_D.dataType := loadDataType(issueLsu.widths)
-        io.CML_MicroTask_Config.Conherent := true.B
-        io.CML_MicroTask_Config.Is_Transpose := issueLsu.transpose
-        io.CML_MicroTask_Config.MatrixRegTensor_M := issueLsu.row
-        io.CML_MicroTask_Config.MatrixRegTensor_N := issueLsu.column
-        io.CML_MicroTask_Config.MatrixRegId := regIdx
         when(issueLsu.isacc) {
-          io.CML_MicroTask_Config.StoreTraceTag.foreach { tag =>
+          io.accMemoryConfig.ApplicationTensor_D.ApplicationTensor_D_BaseVaddr := issueLsu.baseAddr
+          io.accMemoryConfig.ApplicationTensor_D.ApplicationTensor_D_Stride_M := issueLsu.stride
+          io.accMemoryConfig.ApplicationTensor_D.BlockTensor_D_BaseVaddr := issueLsu.baseAddr
+          io.accMemoryConfig.ApplicationTensor_D.dataType := loadDataType(issueLsu.widths)
+          io.accMemoryConfig.Conherent := true.B
+          io.accMemoryConfig.Is_Transpose := issueLsu.transpose
+          io.accMemoryConfig.MatrixRegTensor_M := issueLsu.row
+          io.accMemoryConfig.MatrixRegTensor_N := issueLsu.column
+          io.accMemoryConfig.MatrixRegId := regIdx
+          io.accMemoryConfig.StoreTraceTag.foreach { tag =>
             tag := MatrixPrefetchTagCodec.encode(
               true.B,
               MatrixPrefetchStream.cStore,
               issueSlot.seqId
             )
           }
-        }
-        io.CML_MicroTask_Config.LoadMicroTaskValid := false.B
-        io.CML_MicroTask_Config.StoreMicroTaskValid := true.B
-        if (EnableDifftest) {
-          io.CML_MicroTask_Config.pc.get := issueCtrl.pc.get
-          io.CML_MicroTask_Config.coreid.get := issueCtrl.coreid.get
+          io.accMemoryConfig.LoadMicroTaskValid := false.B
+          io.accMemoryConfig.StoreMicroTaskValid := true.B
+          if (EnableDifftest) {
+            io.accMemoryConfig.pc.get := issueCtrl.pc.get
+            io.accMemoryConfig.coreid.get := issueCtrl.coreid.get
+          }
+
+        }.otherwise {
+          val command = io.trStorer0.command
+          command.valid := true.B
+          command.bits.regId := regIdx
+          command.bits.base := issueLsu.baseAddr
+          command.bits.stride := issueLsu.stride
+          // Both A and B stores use trStorer0. B packets are K/N; TR images are N/K.
+          command.bits.rows := Mux(issueLsu.isB, issueLsu.column, issueLsu.row)
+          command.bits.columns := Mux(issueLsu.isB, issueLsu.row, issueLsu.column)
+          command.bits.widths := issueLsu.widths
+          command.bits.transpose := issueLsu.transpose
+          command.bits.pc.zip(issueCtrl.pc).foreach { case (to, from) => to := from }
+          command.bits.coreid.zip(issueCtrl.coreid).foreach { case (to, from) => to := from }
         }
 
         storeIssueEvent.eventType := 0.U
@@ -1195,32 +1128,34 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   // ===================== State update: done -> retire -> enqueue -> issue =====================
-  when(amlDone) {
-    val owner = fuAML.ownerSlot
-    assert(slots(owner).valid, "TaskController: AML owner slot invalid on done")
+  when(trLoader0Done) {
+    val owner = fuTrLoader0.ownerSlot
+    assert(slots(owner).valid, "TaskController: trLoader0 owner slot invalid on done")
     slots(owner).completed := true.B
-    fuAML.busy := false.B
+    fuTrLoader0.busy := false.B
   }
 
-  when(bmlDone) {
-    val owner = fuBML.ownerSlot
-    assert(slots(owner).valid, "TaskController: BML owner slot invalid on done")
+  when(trLoader1Done) {
+    val owner = fuTrLoader1.ownerSlot
+    assert(slots(owner).valid, "TaskController: trLoader1 owner slot invalid on done")
     slots(owner).completed := true.B
-    fuBML.busy := false.B
+    fuTrLoader1.busy := false.B
   }
 
-  when(cmlLoadDone) {
-    val owner = fuCMLLoad.ownerSlot
-    assert(slots(owner).valid, "TaskController: CML-load owner slot invalid on done")
+  when(accLoader0Done) {
+    val owner = fuAccLoader0.ownerSlot
+    assert(slots(owner).valid, "TaskController: accMemory-load owner slot invalid on done")
     slots(owner).completed := true.B
-    fuCMLLoad.busy := false.B
+    fuAccLoader0.busy := false.B
   }
 
-  when(cmlStoreDone) {
-    val owner = fuCMLStore.ownerSlot
-    assert(slots(owner).valid, "TaskController: CML-store owner slot invalid on done")
-    slots(owner).completed := true.B
-    fuCMLStore.busy := false.B
+  for ((done, fu) <- Seq((trStorer0Done, fuTrStorer0), (accStorer0Done, fuAccStorer0))) {
+    when(done) {
+      val owner = fu.ownerSlot
+      assert(slots(owner).valid, "TaskController: store owner slot invalid on done")
+      slots(owner).completed := true.B
+      fu.busy := false.B
+    }
   }
 
   when(adcDone) {
@@ -1425,6 +1360,13 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         deqOpKind === TaskCtrlOpKind.Release,
         olderValid && (older.opKind === TaskCtrlOpKind.Store),
         olderValid && (
+          // Keep stores in instruction order, even when an older one waits
+          // for load data; no address-overlap detector is introduced here.
+          (deqOpKind === TaskCtrlOpKind.Store && olderIsStore) ||
+          // An older TR store retains its read resource until completion.
+          (deqOpKind === TaskCtrlOpKind.Compute && olderStoreReadsAB &&
+            (abIdx(olderLsu.ms) === abIdx(decodeMma(deqCtrl).ms1) ||
+              abIdx(olderLsu.ms) === abIdx(decodeMma(deqCtrl).ms2))) ||
           (olderWritesAB && newReadsAB && olderWriteABHitForNewRead) ||
           (olderWritesC && newReadsC && olderWriteCHitForNewRead) ||
           (olderWritesAB && newWritesAB && olderWriteABHitForNewWrite) ||
@@ -1435,8 +1377,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       )
 
       depCompleteBits(j) := depCompleteJ
-      depReadABits(j) := (deqOpKind =/= TaskCtrlOpKind.Release) && olderValid && newWritesAB && olderReadsABByComputeA
-      depReadBBits(j) := (deqOpKind =/= TaskCtrlOpKind.Release) && olderValid && newWritesAB && olderReadsABByComputeB
+      depReadABits(j) := (deqOpKind =/= TaskCtrlOpKind.Release) && olderValid && (
+        (newWritesAB && olderReadsABByComputeA) ||
+        (deqStoreReadsAB && isReadAOfCompute(older.opKind, olderMma, deqLsu.ms)))
+      depReadBBits(j) := (deqOpKind =/= TaskCtrlOpKind.Release) && olderValid && (
+        (newWritesAB && olderReadsABByComputeB) ||
+        (deqStoreReadsAB && isReadBOfCompute(older.opKind, olderMma, deqLsu.ms)))
     }
 
     newSlot.waitCompleteMask := depCompleteBits.asUInt
@@ -1450,38 +1396,39 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     slots(issueSlotIdx).issued := true.B
 
     switch(issueSlot.opKind) {
-      is(TaskCtrlOpKind.LoadA) {
-        fuAML.busy := true.B
-        fuAML.ownerSlot := issueSlotIdx
-      }
-      is(TaskCtrlOpKind.LoadB) {
-        when(issueLsu.transpose) {
-          fuAML.busy := true.B
-          fuAML.ownerSlot := issueSlotIdx
+      is(TaskCtrlOpKind.LoadA, TaskCtrlOpKind.LoadB) {
+        when(issueTrLoader1) {
+          fuTrLoader1.busy := true.B
+          fuTrLoader1.ownerSlot := issueSlotIdx
         }.otherwise {
-          fuBML.busy := true.B
-          fuBML.ownerSlot := issueSlotIdx
+          fuTrLoader0.busy := true.B
+          fuTrLoader0.ownerSlot := issueSlotIdx
         }
       }
       is(TaskCtrlOpKind.LoadC) {
-        fuCMLLoad.busy := true.B
-        fuCMLLoad.ownerSlot := issueSlotIdx
+        fuAccLoader0.busy := true.B
+        fuAccLoader0.ownerSlot := issueSlotIdx
       }
       is(TaskCtrlOpKind.ZeroAcc) {
-        fuCMLLoad.busy := true.B
-        fuCMLLoad.ownerSlot := issueSlotIdx
+        fuAccLoader0.busy := true.B
+        fuAccLoader0.ownerSlot := issueSlotIdx
       }
       is(TaskCtrlOpKind.ZeroTr) {
-        fuAML.busy := true.B
-        fuAML.ownerSlot := issueSlotIdx
+        fuTrLoader0.busy := true.B
+        fuTrLoader0.ownerSlot := issueSlotIdx
       }
       is(TaskCtrlOpKind.Compute) {
         fuCompute.busy := true.B
         fuCompute.ownerSlot := issueSlotIdx
       }
       is(TaskCtrlOpKind.Store) {
-        fuCMLStore.busy := true.B
-        fuCMLStore.ownerSlot := issueSlotIdx
+        when(issueLsu.isacc) {
+          fuAccStorer0.busy := true.B
+          fuAccStorer0.ownerSlot := issueSlotIdx
+        }.otherwise {
+          fuTrStorer0.busy := true.B
+          fuTrStorer0.ownerSlot := issueSlotIdx
+        }
       }
       is(TaskCtrlOpKind.Release) {
         slots(issueSlotIdx).completed := true.B
@@ -1531,8 +1478,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   // ===================== Finish events (load/store) =====================
-  when(amlDone) {
-    val owner = fuAML.ownerSlot
+  when(trLoader0Done) {
+    val owner = fuTrLoader0.ownerSlot
     val slot = slots(owner)
     val op = slot.opKind
     val lsu = decodeLsu(slot.entry.ctrl)
@@ -1552,8 +1499,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     loadAFinishEventEn := true.B
   }
 
-  when(bmlDone) {
-    val owner = fuBML.ownerSlot
+  when(trLoader1Done) {
+    val owner = fuTrLoader1.ownerSlot
     val slot = slots(owner)
     val lsu = decodeLsu(slot.entry.ctrl)
 
@@ -1570,8 +1517,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     loadBFinishEventEn := true.B
   }
 
-  when(cmlLoadDone) {
-    val owner = fuCMLLoad.ownerSlot
+  when(accLoader0Done) {
+    val owner = fuAccLoader0.ownerSlot
     val slot = slots(owner)
     val op = slot.opKind
     val lsu = decodeLsu(slot.entry.ctrl)
@@ -1593,8 +1540,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     loadCFinishEventEn := true.B
   }
 
-  when(cmlStoreDone) {
-    val owner = fuCMLStore.ownerSlot
+  when(storeDone) {
+    val owner = Mux(trStorer0Done, fuTrStorer0.ownerSlot, fuAccStorer0.ownerSlot)
     val slot = slots(owner)
     val lsu = decodeLsu(slot.entry.ctrl)
 
@@ -1661,9 +1608,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val releaseDone = issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
   io.perfProbe.ownedWork := ownedWork
   io.perfProbe.retire := retireFire
-  io.perfProbe.loadADone := loadAFinishEventEn
-  io.perfProbe.loadBDone := loadBFinishEventEn
-  io.perfProbe.loadCDone := loadCFinishEventEn
+  io.perfProbe.trLoader0Done := loadAFinishEventEn
+  io.perfProbe.trLoader1Done := loadBFinishEventEn
+  io.perfProbe.accLoader0Done := loadCFinishEventEn
   io.perfProbe.storeDone := storeFinishEventEn
   io.perfProbe.compDone := computeWriteCFinishEventEn
   io.perfProbe.releaseDone := releaseDone
@@ -1671,9 +1618,10 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.perfProbe.mmaFp16Done := computeWriteCFinishEventEn && (mmaDoneType === MteComputeType.F16F16F32)
   io.perfProbe.mmaBf16Done := computeWriteCFinishEventEn && (mmaDoneType === MteComputeType.BF16BF16F32)
   io.perfProbe.mmaTf32Done := computeWriteCFinishEventEn && (mmaDoneType === MteComputeType.TF32TF32F32)
-  io.perfProbe.amlActive := fuAML.busy
-  io.perfProbe.bmlActive := fuBML.busy
-  io.perfProbe.cmlLoadActive := fuCMLLoad.busy
+  // Retain observer ABI: trLoader0/trLoader1 are physical TL0/TL1 activity, independent of opcode.
+  io.perfProbe.trLoader0Active := fuTrLoader0.busy
+  io.perfProbe.trLoader1Active := fuTrLoader1.busy
+  io.perfProbe.accLoader0Active := fuAccLoader0.busy
   io.perfProbe.mteActive := fuCompute.busy
-  io.perfProbe.cmlStoreActive := fuCMLStore.busy
+  io.perfProbe.accStorer0Active := fuAccStorer0.busy
 }
