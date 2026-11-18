@@ -47,8 +47,9 @@ class TrMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
     val storeReadValid = io.MatrixRegIO.FromStore.BankAddr.valid
     assert(!(computeReadValid && storeReadValid),
         "TrMatrixReg: compute and TR store cannot read the same register in one cycle")
-    val computeReadGo = computeReadValid && !storeReadValid && !writeGo
-    val storeReadGo = storeReadValid && !computeReadValid && !writeGo
+    // Task scheduling excludes simultaneous readers; keep write priority local.
+    val computeReadGo = computeReadValid && !writeGo
+    val storeReadGo = storeReadValid && !writeGo
     io.MatrixRegIO.FromDataController.BankAddr.ready := computeReadGo
     io.MatrixRegIO.FromDataController.Data.valid := RegNext(computeReadGo, false.B)
     io.MatrixRegIO.FromStore.BankAddr.ready := storeReadGo
@@ -102,7 +103,8 @@ class TrMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
         }
         val storeEvenAddr = Mux1H(storeEvenSelect, storeReadAddrs)
         val storeOddAddr = Mux1H(storeOddSelect, storeReadAddrs)
-        val s1StoreParity = RegNext(VecInit(storeReadAddrs.map(_.apply(0))))
+        // A paired request always covers opposite parity SRAMs.
+        val s1StoreParity = RegNext(storeReadAddrs(0)(0))
 
         evenBank.io.r.req.valid :=
             (computeReadGo && !readParity) || (storeReadGo && storeEvenSelect.asUInt.orR)
@@ -125,7 +127,7 @@ class TrMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
         dataControllerData(bankIdx) := readData
         for (lane <- 0 until io.MatrixRegIO.FromStore.readLanes) {
             io.MatrixRegIO.FromStore.Data.bits(bankIdx)(lane) :=
-                Mux(s1StoreParity(lane), oddReadData, evenReadData)
+                Mux(if (lane == 0) s1StoreParity else !s1StoreParity, oddReadData, evenReadData)
         }
 
         val evenSelect = VecInit((0 until 2).map { lane =>

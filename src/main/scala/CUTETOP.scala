@@ -861,19 +861,13 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
         TrMatrixRegs(r).io.MatrixRegIO.FromDataController <> trReadRouter.io.registers(r)
     }
 
-    trStorer0.io.read.BankAddr.ready := false.B
-    trStorer0.io.read.Data.valid := false.B
-    trStorer0.io.read.Data.bits := 0.U.asTypeOf(trStorer0.io.read.Data.bits)
+    val trStorePorts = TrMatrixRegs.map(_.io.MatrixRegIO.FromStore)
+    val trStoreSelect = VecInit((0 until TrMatrixRegCount).map(r => trStorer0.io.regId === r.U))
+    trStorer0.io.read.BankAddr.ready := Mux1H(trStoreSelect, trStorePorts.map(_.BankAddr.ready))
+    trStorer0.io.read.Data := Mux1H(trStoreSelect, trStorePorts.map(_.Data))
     for (r <- 0 until TrMatrixRegCount) {
-        val storePort = TrMatrixRegs(r).io.MatrixRegIO.FromStore
-        val selected = trStorer0.io.regId === r.U
-        storePort.BankAddr.valid := selected && trStorer0.io.read.BankAddr.valid
-        storePort.BankAddr.bits := trStorer0.io.read.BankAddr.bits
-        when(selected) {
-            trStorer0.io.read.BankAddr.ready := storePort.BankAddr.ready
-            trStorer0.io.read.Data.valid := storePort.Data.valid
-            trStorer0.io.read.Data.bits := storePort.Data.bits
-        }
+        trStorePorts(r).BankAddr.valid := trStoreSelect(r) && trStorer0.io.read.BankAddr.valid
+        trStorePorts(r).BankAddr.bits := trStorer0.io.read.BankAddr.bits
     }
 
     for (regIdx <- 0 until AccMatrixRegCount) {

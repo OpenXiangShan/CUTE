@@ -70,6 +70,10 @@ class TrMatrixRegBankedWriteSpec extends AnyFlatSpec with ChiselScalatestTester 
       dut.reset.poke(false.B)
       dut.clock.step()
       dut.io.MatrixRegIO.FromDataController.Data.valid.expect(false.B)
+      // The valid-qualified SRAM ports stay idle until a client requests a read.
+      dut.io.MatrixRegIO.FromDataController.BankAddr.ready.expect(false.B)
+      dut.io.MatrixRegIO.FromStore.BankAddr.ready.expect(false.B)
+      dut.io.MatrixRegIO.FromStore.Data.valid.expect(false.B)
 
       val fullMask = (BigInt(1) << dut.TrMatrixRegEntryByteSize) - 1
       val data2 = BigInt("22" * dut.TrMatrixRegEntryByteSize, 16)
@@ -154,4 +158,43 @@ class TrMatrixRegBankedWriteSpec extends AnyFlatSpec with ChiselScalatestTester 
       assertThrows[Exception](dut.clock.step())
     }
   }
+
+  behavior of "TrMatrixReg read routing"
+
+  it should "bind responses to accepted requests across idle IDs, stalls and target changes" in {
+    implicit val p: Parameters = parameters
+    test(new TrMatrixRegReadPortRouter).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      var accepted = Seq.empty[(Int, Int)]
+      for (cycle <- 0 until 48) {
+        val active = Seq(cycle % 4 != 0, cycle % 3 != 0)
+        // Both idle IDs may coincide; only active readers participate in selection.
+        val ids = if (cycle % 4 == 0) Seq(0, 0) else Seq(cycle % 4, (cycle + 1) % 4)
+        for (client <- 0 until 2) {
+          dut.io.regIds(client).poke(ids(client).U)
+          dut.io.clients(client).BankAddr.valid.poke(active(client).B)
+          dut.io.clients(client).BankAddr.bits.foreach(_.poke((cycle % 8).U))
+        }
+        for (reg <- 0 until 4) {
+          val port = dut.io.registers(reg)
+          port.BankAddr.ready.poke((cycle % 5 != reg).B)
+          port.Data.valid.poke(accepted.exists(_._2 == reg).B)
+          port.Data.bits.foreach(_.poke((reg * 256 + cycle).U))
+          port.BankAddr.valid.expect((0 until 2).exists(c => active(c) && ids(c) == reg).B)
+        }
+        for (client <- 0 until 2) {
+          val previous = accepted.find(_._1 == client)
+          dut.io.clients(client).Data.valid.expect(previous.nonEmpty.B)
+          previous match {
+            case Some((_, reg)) =>
+              dut.io.clients(client).Data.bits.foreach(_.expect((reg * 256 + cycle).U))
+            case None => dut.io.clients(client).Data.bits.foreach(_.expect(0.U))
+          }
+          dut.io.clients(client).BankAddr.ready.expect((active(client) && cycle % 5 != ids(client)).B)
+        }
+        accepted = (0 until 2).filter(c => active(c) && cycle % 5 != ids(c)).map(c => (c, ids(c)))
+        dut.clock.step()
+      }
+    }
+  }
+
 }

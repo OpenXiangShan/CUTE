@@ -473,15 +473,16 @@ class TrStorerBackendHarness(channels: Option[Int])(implicit p: Parameters) exte
 class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "TR store SRAM reads and output backpressure"
 
-  for ((tensorRows, banks, entryBytes, channels) <- Seq(
-    (128, 8, 32, Some(4)), (128, 8, 32, Some(8)), (128, 4, 32, Some(2)),
-    (128, 4, 64, None), (128, 4, 64, Some(4)),
-    (8, 4, 32, None), (8, 4, 32, Some(2)))) {
+  for ((tensorRows, banks, entryBytes, channels, tensorBytes) <- Seq(
+    (128, 8, 32, Some(4), 128), (128, 8, 32, Some(8), 128), (128, 4, 32, Some(2), 128),
+    (128, 4, 64, None, 128), (128, 4, 64, Some(4), 128),
+    (8, 4, 32, None, 128), (8, 4, 32, Some(2), 128),
+    (128, 8, 32, None, 64), (128, 8, 32, Some(1), 64), (128, 8, 32, Some(2), 64))) {
     val mode = channels.map(_.toString).getOrElse("L")
-    it should s"preserve data, paired reads and ACK drain with $banks banks, $entryBytes bytes, TS0$mode, $tensorRows rows" in {
+    it should s"preserve data, paired reads and ACK drain with $banks banks, $entryBytes bytes, TS0$mode, $tensorRows rows, K$tensorBytes" in {
       implicit val p: Parameters = new Config((_, _, _) => {
         case CuteParamsKey => CuteParams.CUTE_8Tops_128SCP.copy(
-          Tensor_MN = tensorRows, Tensor_K = 128, Matrix_MN = banks,
+          Tensor_MN = tensorRows, Tensor_K = tensorBytes, Matrix_MN = banks,
           ReduceWidthByte = entryBytes, L2NBanks = banks,
           LoaderBridgeChannelConfig = s"TL0LTL1LAL0LTS0${mode}AS0L",
           Debug = CuteDebugParams.NoDebug, EnableDifftest = false)
@@ -526,7 +527,7 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
         def packed(bytes: Seq[Int]): BigInt = bytes.zipWithIndex.foldLeft(BigInt(0)) {
           case (value, (byte, index)) => value | (BigInt(byte) << (8 * index))
         }
-        val entriesPerRow = 128 / entryBytes
+        val entriesPerRow = tensorBytes / entryBytes
         dut.io.load.active.poke(true.B)
         for (rowGroup <- 0 until tensorRows / banks; entry <- 0 until entriesPerRow by 2) {
           for (bank <- 0 until banks; lane <- 0 until 2) {
@@ -552,27 +553,45 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
         val quota = channels.getOrElse(1)
         var totalWrites = 0
         var totalReads = 0
-        // A single 128-byte row catches byte-offset truncation when Tensor_MN is small.
-        val normalCases = Seq((false, 0, tensorRows, 128), (false, 0, 1, 128),
-          (false, 7, math.min(11, tensorRows), 256))
+        // Keep the small-MN, 128-byte row case and the default full-register bound.
+        val normalCases = Seq((false, 0, tensorRows, tensorBytes), (false, 0, 1, tensorBytes),
+          (false, 7, math.min(11, tensorRows), tensorBytes * 2))
         // Cross the paired-entry boundary and the next pair for every transpose width.
-        val transposeCases = Seq((true, 0, 128, 65), (true, 0, 128, 128),
+        val transposeCases = (Seq((true, 0, 128, 65), (true, 0, 128, 128),
           (true, 1, 64, 33), (true, 1, 32, 64),
-          (true, 2, 32, 17), (true, 2, 16, 32)).filter(_._3 <= tensorRows)
+          (true, 2, 32, 17), (true, 2, 16, 32),
+          (true, 0, 64, 1)) ++ (0 to 2).map { width =>
+            (true, width, tensorRows, tensorBytes >> width)
+          }).distinct.filter { case (_, width, rows, columns) =>
+            rows <= tensorRows && columns * (1 << width) <= tensorBytes &&
+              rows * (1 << width) % 64 == 0
+          }
         val cases = normalCases ++ transposeCases
-        for ((transpose, width, rows, columns) <- cases) {
+        val schedules = mutable.Map.empty[(Boolean, Int, Int, Int), Seq[(Int, Int, BigInt)]]
+        for ((transpose, width, rows, columns) <- cases; addressMode <- 0 until 3) {
           val elementBytes = if (width == 7) 1 else 1 << width
           val rowBytes = if (width == 7) columns / 2 else columns * elementBytes
           val outputRowBytes = if (transpose) rows * elementBytes else rowBytes
           val outputRows = if (transpose) columns else rows
-          val stride = outputRowBytes + 64
-          val base = 0x10000L
+          // Exercise long address carries and modulo wrapping at bit 64.
+          // One effective row still permits an arbitrary, unaligned stride.
+          val stride = if (outputRows == 1) BigInt(7) else addressMode match {
+            case 0 => BigInt(outputRowBytes + 64)
+            case 1 => BigInt("7fffffff00ffffc0", 16)
+            case 2 => (BigInt(1) << 48) + (BigInt(1) << 22) + 64
+          }
+          val base = addressMode match {
+            case 0 => if (width == 7) (BigInt(1) << 64) - 64 else BigInt(0x10000)
+            case 1 => (BigInt(1) << 64) - 64
+            case 2 => (BigInt(1) << 54) - 64
+          }
+          val addressMask = (BigInt(1) << 64) - 1
           val expected = (for (row <- 0 until outputRows; offset <- 0 until outputRowBytes by 64) yield {
             val data = packed((offset until offset + 64).map { byte =>
               if (transpose) sourceByte(byte / elementBytes, row * elementBytes + byte % elementBytes)
               else sourceByte(row, byte)
             })
-            (base + row * stride + offset) -> data
+            ((base + row * stride + offset) & addressMask) -> data
           }).toMap
           dut.io.command.ready.expect(true.B)
           dut.io.command.bits.base.poke(base.U)
@@ -584,14 +603,29 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
           dut.io.command.valid.poke(true.B)
           dut.clock.step()
           dut.io.command.valid.poke(false.B)
-          val seen = mutable.Set.empty[Long]
+          assert(expected.size == outputRows * (outputRowBytes / 64), "test addresses overlap after wrapping")
+          val schedule = mutable.ArrayBuffer.empty[(Int, Int, BigInt)]
+          val seen = mutable.Set.empty[BigInt]
           val replies = mutable.ArrayBuffer.empty[BigInt]
-          val stalled = Array.fill[Option[(BigInt, Long, BigInt)]](banks)(None)
+          val stalled = Array.fill[Option[(BigInt, BigInt, BigInt)]](banks)(None)
           var reads = 0
           var cycles = 0
           while (seen.size < expected.size && cycles < 10000) {
             dut.io.done.valid.expect(false.B)
+            // Rewriting the original entry stalls SRAM reads without changing
+            // the oracle. Precomputed addresses must survive these write cycles.
+            val injectWrite = cycles % 13 == 0
+            dut.io.load.active.poke(injectWrite.B)
+            val stallWrite = dut.io.load.WriteRequest(0)(0)
+            stallWrite.BankAddr.valid.poke(injectWrite.B)
+            stallWrite.BankAddr.bits.poke(0.U)
+            stallWrite.Data.valid.poke(injectWrite.B)
+            stallWrite.Data.bits.poke(packed((0 until entryBytes).map(sourceByte(0, _))).U)
+            stallWrite.ByteMask.valid.poke(injectWrite.B)
+            stallWrite.ByteMask.bits.poke(((BigInt(1) << entryBytes) - 1).U)
+            if (injectWrite) dut.io.readFire.expect(false.B)
             if (dut.io.readFire.peek().litToBoolean) {
+              schedule += ((cycles, -1, BigInt(0)))
               reads += 1
               if (readLanes == 2) {
                 dut.io.readAddresses.foreach { addresses =>
@@ -600,13 +634,25 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
                 }
               }
             }
+            // Return earlier requests while newer requests are being accepted,
+            // but retain ACKs for the final drain check. Numeric ACKs may use any lane.
+            dut.io.memory.Response.foreach(_.valid.poke(false.B))
+            if (cycles % 7 == 0 && replies.size > banks) {
+              val count = if (channels.isEmpty) 1 else banks
+              for (lane <- 0 until count) {
+                val response = dut.io.memory.Response(lane)
+                response.valid.poke(true.B)
+                response.bits.ReseponseSourceID.poke(replies.remove(replies.size - 1).U)
+                response.ready.expect(true.B)
+              }
+            }
             for (lane <- 0 until banks) {
               val request = dut.io.memory.Request(lane)
               val ready = cycles % 9 >= 4 && (cycles + lane) % 3 != 0
               request.ready.poke(ready.B)
               val valid = request.valid.peek().litToBoolean
               val current = (request.bits.RequestSourceID.peek().litValue,
-                request.bits.RequestAddr.peek().litValue.toLong, request.bits.RequestData.peek().litValue)
+                request.bits.RequestAddr.peek().litValue, request.bits.RequestData.peek().litValue)
               stalled(lane).foreach { previous =>
                 assert(valid && current == previous, "store request changed under backpressure")
               }
@@ -619,12 +665,18 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
                 assert(expected.get(current._2).contains(current._3),
                   s"bad data: transpose=$transpose width=$width address=${current._2}")
                 assert(seen.add(current._2), "duplicate store request")
+                schedule += ((cycles, lane, current._1))
                 replies += current._1
               }
             }
             dut.clock.step()
             cycles += 1
           }
+          dut.io.load.active.poke(false.B)
+          val stallWrite = dut.io.load.WriteRequest(0)(0)
+          stallWrite.BankAddr.valid.poke(false.B)
+          stallWrite.Data.valid.poke(false.B)
+          stallWrite.ByteMask.valid.poke(false.B)
           assert(seen.toSet == expected.keySet, "store did not emit the complete tile")
           val expectedReads = if (!transpose) {
             ((rows + banks - 1) / banks) * (rowBytes / 64)
@@ -639,18 +691,21 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
           totalReads += reads
           totalWrites += seen.size
           dut.io.memory.Request.foreach(_.ready.poke(false.B))
+          dut.io.memory.Response.foreach(_.valid.poke(false.B))
           // No task completion is allowed before the last ACK, including out-of-order returns.
           dut.clock.step(5)
           dut.io.done.valid.expect(false.B)
-          for ((id, index) <- replies.reverse.zipWithIndex) {
-            val lane = if (channels.isEmpty) 0 else (index + quota) % banks
-            val response = dut.io.memory.Response(lane)
-            response.valid.poke(true.B)
-            response.bits.ReseponseSourceID.poke(id.U)
-            response.ready.expect(true.B)
+          for (batch <- replies.reverse.grouped(if (channels.isEmpty) 1 else banks)) {
+            for ((id, index) <- batch.zipWithIndex) {
+              val lane = if (channels.isEmpty) 0 else (index + quota) % banks
+              val response = dut.io.memory.Response(lane)
+              response.valid.poke(true.B)
+              response.bits.ReseponseSourceID.poke(id.U)
+              response.ready.expect(true.B)
+            }
             dut.io.done.valid.expect(false.B)
             dut.clock.step()
-            response.valid.poke(false.B)
+            dut.io.memory.Response.foreach(_.valid.poke(false.B))
           }
           var drain = 0
           while (!dut.io.done.valid.peek().litToBoolean && drain < 8) {
@@ -658,6 +713,13 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
             drain += 1
           }
           dut.io.done.valid.expect(true.B)
+          schedule += ((cycles, -2, BigInt(drain)))
+          val shape = (transpose, width, rows, columns)
+          if (addressMode == 0) schedules(shape) = schedule.toSeq
+          else assert(schedule.toSeq == schedules(shape), "address operands changed read/request/completion cycles")
+          println(s"[TrStoreSchedule] B$banks E$entryBytes TS0$mode M$tensorRows K$tensorBytes " +
+            s"shape=$shape addressMode=$addressMode cycles=$cycles drain=$drain " +
+            s"trace=${scala.util.hashing.MurmurHash3.seqHash(schedule.toSeq)}")
           dut.io.command.ready.expect(false.B)
           dut.clock.step(3)
           dut.io.done.valid.expect(true.B)
@@ -665,6 +727,25 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
           dut.clock.step()
           dut.io.done.ready.poke(false.B)
           dut.io.command.ready.expect(true.B)
+        }
+        // Empty commands complete without a read/request, including unaligned metadata.
+        for ((rows, columns) <- Seq((0, 0), (0, 64), (1, 0))) {
+          dut.io.command.bits.base.poke(3.U)
+          dut.io.command.bits.stride.poke(7.U)
+          dut.io.command.bits.rows.poke(rows.U)
+          dut.io.command.bits.columns.poke(columns.U)
+          dut.io.command.bits.widths.poke(0.U)
+          dut.io.command.bits.transpose.poke(false.B)
+          dut.io.command.valid.poke(true.B)
+          dut.io.command.ready.expect(true.B)
+          dut.clock.step()
+          dut.io.command.valid.poke(false.B)
+          dut.io.readFire.expect(false.B)
+          dut.io.memory.Request.foreach(_.valid.expect(false.B))
+          dut.io.done.valid.expect(true.B)
+          dut.io.done.ready.poke(true.B)
+          dut.clock.step()
+          dut.io.done.ready.poke(false.B)
         }
         println(s"[TrStorerBackend] banks=$banks entry=$entryBytes TS0=$mode reads=$totalReads writes=$totalWrites")
       }

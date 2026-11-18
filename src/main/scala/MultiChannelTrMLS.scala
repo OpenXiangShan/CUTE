@@ -35,9 +35,20 @@ class MultiChannelTrStorer(
         Vec(TrMatrixRegNBanks, Vec(64, UInt(8.W)))))
     private val Store_Output_Context = RegInit(0.U(1.W))
     private val Store_Pending_Lanes = RegInit(0.U(TrMatrixRegNBanks.W))
-    private val Store_Batch_Id = RegInit(0.U(32.W))
-    private val TotalStoreRequestSize = RegInit(0.U(32.W))
-    private val TotalStoreResponseSize = RegInit(0.U(32.W))
+    // Full-line stores cannot transfer more than the architectural TR capacity.
+    private val StoreMaxRequests = (Tensor_MN * Tensor_K + 63) / 64
+    // Round up both dimensions: paired transpose reads may send an empty context.
+    private val StoreMaxBatches = ((Tensor_MN + TrMatrixRegNBanks - 1) / TrMatrixRegNBanks) *
+        ((Tensor_K + 63) / 64)
+    private val Store_Batch_Id = RegInit(0.U(log2Ceil(StoreMaxBatches + 1).W))
+    private val TotalStoreRequestSize = RegInit(0.U(log2Ceil(StoreMaxRequests + 1).W))
+    private val TotalStoreResponseSize = RegInit(0.U(log2Ceil(StoreMaxRequests + 1).W))
+    private val StoreLineAddrWidth = MMUAddrWidth - 6
+    private val Store_Row_Line_Addr = Reg(UInt(StoreLineAddrWidth.W))
+    private val Store_Output_Line_Addr = Reg(UInt(StoreLineAddrWidth.W))
+    private val Store_Entry_Line_Stride = Reg(UInt(StoreLineAddrWidth.W))
+    private val Store_Line_Stride = StoreCommand.stride(MMUAddrWidth - 1, 6)
+
     private val Store_Element_LgBytes = StoreCommand.widths(1, 0)
 
     override protected def storeIo: TrStoreIO = io
@@ -103,6 +114,7 @@ class MultiChannelTrStorer(
             }
         }
         StoreCommand := newCommand
+        Store_Row_Line_Addr := newCommand.base(MMUAddrWidth - 1, 6)
         CurrentStore_Row_Iter := 0.U
         CurrentStore_Byte_Offset := 0.U
         CurrentStore_Phase := 0.U
@@ -114,6 +126,14 @@ class MultiChannelTrStorer(
         memorystore_state := Mux(nonempty, s_store_read, s_store_end)
     }
 
+    // The command is already latched throughout this state. Prepare the second
+    // transpose context before capture/send without extending the dispatch cone.
+    when (memorystore_state === s_store_read) {
+        Store_Entry_Line_Stride := MuxLookup(Store_Element_LgBytes, 0.U)(
+            (0 to 2).map { lg => lg.U ->
+                (Store_Line_Stride << (log2Ceil(TrMatrixRegEntryByteSize) - lg)) })
+    }
+
     io.read.BankAddr.valid := memorystore_state === s_store_read
     for (bank <- 0 until TrMatrixRegNBanks) {
         val baseAddress =
@@ -123,7 +143,11 @@ class MultiChannelTrStorer(
             io.read.BankAddr.bits(bank)(lane) := baseAddress + lane.U
         }
     }
-    when(io.read.BankAddr.fire) { memorystore_state := s_store_capture }
+    when(io.read.BankAddr.fire) {
+        // Use the existing SRAM read cycle to prepare the output line base.
+        Store_Output_Line_Addr := Store_Row_Line_Addr + (CurrentStore_Byte_Offset >> 6)
+        memorystore_state := s_store_capture
+    }
     when(memorystore_state === s_store_capture) {
         assert(io.read.Data.valid, "TR store requires the accepted SRAM read to return one cycle later")
         when(io.read.Data.valid) {
@@ -147,11 +171,6 @@ class MultiChannelTrStorer(
         }
     }
 
-    private val Store_Transpose_Row_Offset =
-        Store_Output_Context * (TrMatrixRegEntryByteSize.U >> Store_Element_LgBytes)
-    private val Store_Output_Row_Iter = CurrentStore_Row_Iter +
-        Mux(StoreCommand.transpose, Store_Transpose_Row_Offset, 0.U)
-
     private def nextStoreRowIter: UInt = {
         val nextRow = CurrentStore_Row_Iter + TrMatrixRegNBanks.U
         if (StoreReadLaneCount == 2) {
@@ -171,6 +190,11 @@ class MultiChannelTrStorer(
         when(CurrentStore_Byte_Offset +& 64.U === Store_Memory_Row_Byte_Count) {
             CurrentStore_Byte_Offset := 0.U
             CurrentStore_Row_Iter := nextStoreRowIter
+            val skipEntry = StoreCommand.transpose &&
+                nextStoreRowIter =/= CurrentStore_Row_Iter + TrMatrixRegNBanks.U
+            Store_Row_Line_Addr := Store_Row_Line_Addr +
+                (Store_Line_Stride << log2Ceil(TrMatrixRegNBanks)) +
+                Mux(skipEntry, Store_Entry_Line_Stride, 0.U)
             memorystore_state := Mux(
                 nextStoreRowIter >= Store_Memory_Row_Count,
                 s_store_drain,
@@ -187,6 +211,7 @@ class MultiChannelTrStorer(
         if (StoreReadLaneCount == 2) {
             when(StoreCommand.transpose && Store_Output_Context === 0.U) {
                 Store_Output_Context := 1.U
+                Store_Output_Line_Addr := Store_Output_Line_Addr + Store_Entry_Line_Stride
                 Store_Pending_Lanes := Store_Active_Lanes(1)
             }.otherwise {
                 finishStoreRowGroup()
@@ -221,8 +246,10 @@ class MultiChannelTrStorer(
         val request = BankStoreRequest(lane)
         request.valid := memorystore_state === s_store_send && Store_Pending_Lanes(lane)
         request.bits := 0.U.asTypeOf(request.bits)
-        request.bits.RequestAddr := StoreCommand.base +
-            (Store_Output_Row_Iter + lane.U) * StoreCommand.stride + CurrentStore_Byte_Offset
+        // Multirow strides and every active line are aligned; a single row only
+        // uses lane zero, so its unconstrained stride never contributes.
+        val lineAddress = Store_Output_Line_Addr + lane.U * Store_Line_Stride
+        request.bits.RequestAddr := Cat(lineAddress(StoreLineAddrWidth - 1, 0), 0.U(6.W))
         val outputData = if (StoreReadLaneCount == 1) Store_Data_Buffer(0)(lane)
             else Store_Data_Buffer(Store_Output_Context)(lane)
         request.bits.RequestData := outputData.asUInt
@@ -242,6 +269,9 @@ class MultiChannelTrStorer(
         TotalStoreResponseSize := TotalStoreResponseSize + PopCount(StoreResponseFire)
     }
     when(memorystore_state =/= s_store_idle) {
+        assert(TotalStoreRequestSize +& PopCount(StoreRequestFire) <= StoreMaxRequests.U,
+            "TR store request count exceeds the register capacity")
+        assert(Store_Batch_Id <= StoreMaxBatches.U, "TR store batch counter overflow")
         assert(TotalStoreResponseSize +& PopCount(StoreResponseFire) <=
             TotalStoreRequestSize +& PopCount(StoreRequestFire),
             "TR store received more acknowledgements than accepted requests")

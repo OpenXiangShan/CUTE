@@ -562,7 +562,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         TaskCtrlOpKind.ZeroTr.asUInt -> (!fuTrLoader0.busy && io.trLoader0Config.MicroTaskReady),
         TaskCtrlOpKind.Store.asUInt -> Mux(decodeLsu(slot.entry.ctrl).isacc,
           !fuAccStorer0.busy && io.accMemoryConfig.StoreMicroTaskReady,
-          !fuTrStorer0.busy && io.trStorer0.command.ready),
+          !fuTrStorer0.busy),
         TaskCtrlOpKind.Compute.asUInt -> (!fuCompute.busy && io.ADC_MicroTask_Config.MicroTaskReady && io.BDC_MicroTask_Config.MicroTaskReady && io.CDC_MicroTask_Config.MicroTaskReady),
         TaskCtrlOpKind.Release.asUInt -> true.B,
         TaskCtrlOpKind.NopLike.asUInt -> true.B
@@ -1087,6 +1087,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         }.otherwise {
           val command = io.trStorer0.command
           command.valid := true.B
+          // Both store backends accept only while idle and return to idle on
+          // done.fire, exactly when this FU tracker releases its owner.
+          assert(command.ready, "TaskController: idle TR store tracker requires a ready backend")
           command.bits.regId := regIdx
           command.bits.base := issueLsu.baseAddr
           command.bits.stride := issueLsu.stride

@@ -280,26 +280,40 @@ trait HasTransposeStoreEngine extends CUTEImplParameters { this: TrStoreTranspos
             ((storeRowIter << storeElementLgBytes) / TrMatrixRegEntryByteSize.U) + lane.U
       }
     }
+    // Prepare small one-hot controls during the accepted SRAM read. The capture
+    // cycle only selects fixed byte positions; it never adds a dynamic byte index.
+    val capturePhases = (0 to 2).map { lg =>
+      (0 until 64 / (TrMatrixRegNBanks * (1 << lg))).map { step =>
+        RegEnable(storeCommand.transpose && storeElementLgBytes === lg.U && storePhase === step.U,
+          storeIo.read.BankAddr.fire)
+      }
+    }
+    val captureGroups = (0 to 2).map { lg =>
+      val groupCount = TrMatrixRegEntryByteSize / (TrMatrixRegNBanks * (1 << lg))
+      (0 until groupCount).map { group =>
+        val byteOffset = (storeRowIter << lg)(log2Ceil(TrMatrixRegEntryByteSize) - 1, 0)
+        RegEnable(byteOffset === (group * TrMatrixRegNBanks * (1 << lg)).U,
+          storeIo.read.BankAddr.fire)
+      }
+    }
     when (storeState === storeCaptureState && storeIo.read.Data.valid && storeCommand.transpose) {
-      for (lg <- 0 to 2) {
-        val elementBytes = 1 << lg
-        when (storeElementLgBytes === lg.U) {
-          val byteOffset = (storeRowIter << lg)(log2Ceil(TrMatrixRegEntryByteSize) - 1, 0)
-          for (readLaneContext <- 0 until storeReadLaneCount) {
-            for (step <- 0 until 64 / (TrMatrixRegNBanks * elementBytes)) {
-              when (storePhase === step.U) {
-                for (lane <- 0 until TrMatrixRegNBanks;
-                     bank <- 0 until TrMatrixRegNBanks;
-                     byte <- 0 until elementBytes) {
-                  val sourceBytes = storeIo.read.Data.bits(bank)(readLaneContext).asTypeOf(
-                    Vec(TrMatrixRegEntryByteSize, UInt(8.W)))
-                  storeTransposeDataBuffer(readLaneContext)(lane)(step * TrMatrixRegNBanks * elementBytes +
-                    bank * elementBytes + byte) :=
-                    sourceBytes(byteOffset + (lane * elementBytes + byte).U)
-                }
-              }
-            }
+      for (context <- 0 until storeReadLaneCount;
+           lane <- 0 until TrMatrixRegNBanks;
+           outputByte <- 0 until 64) {
+        val choices = (0 to 2).flatMap { lg =>
+          val elementBytes = 1 << lg
+          val step = outputByte / (TrMatrixRegNBanks * elementBytes)
+          val bank = (outputByte / elementBytes) % TrMatrixRegNBanks
+          val byte = outputByte % elementBytes
+          val sourceBytes = storeIo.read.Data.bits(bank)(context).asTypeOf(
+            Vec(TrMatrixRegEntryByteSize, UInt(8.W)))
+          captureGroups(lg).zipWithIndex.map { case (groupSelected, group) =>
+            val select = capturePhases(lg)(step) && groupSelected
+            select -> sourceBytes(group * TrMatrixRegNBanks * elementBytes + lane * elementBytes + byte)
           }
+        }
+        when (VecInit(choices.map(_._1)).asUInt.orR) {
+          storeTransposeDataBuffer(context)(lane)(outputByte) := Mux1H(choices)
         }
       }
     }
