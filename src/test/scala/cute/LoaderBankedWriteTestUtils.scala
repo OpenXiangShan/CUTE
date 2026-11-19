@@ -15,10 +15,10 @@ object LoaderBankedWriteTestUtils {
     )
   })
 
-  def clearABLoader(dut: ABMatrixReg)(implicit p: Parameters): Unit = {
+  def clearABLoader(dut: TrMatrixReg)(implicit p: Parameters): Unit = {
     dut.io.MatrixRegIO.FromMemoryLoader.active.poke(false.B)
     for {
-      bank <- 0 until dut.ABMatrixRegNBanks
+      bank <- 0 until dut.TrMatrixRegNBanks
       lane <- 0 until WriteLanes
     } {
       val write = dut.io.MatrixRegIO.FromMemoryLoader.WriteRequest(bank)(lane)
@@ -31,17 +31,19 @@ object LoaderBankedWriteTestUtils {
     }
   }
 
-  def clearABRead(dut: ABMatrixReg)(implicit p: Parameters): Unit = {
+  def clearABRead(dut: TrMatrixReg)(implicit p: Parameters): Unit = {
     dut.io.MatrixRegIO.FromDataController.BankAddr.valid.poke(false.B)
     dut.io.MatrixRegIO.FromDataController.BankAddr.bits.foreach(_.poke(0.U))
+    dut.io.MatrixRegIO.FromStore.BankAddr.valid.poke(false.B)
+    dut.io.MatrixRegIO.FromStore.BankAddr.bits.foreach(_.foreach(_.poke(0.U)))
   }
 
-  def clearCInputs(dut: CMatrixReg)(implicit p: Parameters): Unit = {
+  def clearCInputs(dut: AccMatrixReg)(implicit p: Parameters): Unit = {
     val io = dut.io.MatrixRegIO
     io.FromDataController.ReadWriteRequest.poke(0.U)
     io.FromMemoryLoader.LoadReadWriteRequest.poke(0.U)
     io.FromMemoryLoader.StoreReadWriteRequest.poke(0.U)
-    for (bank <- 0 until dut.CMatrixRegNBanks) {
+    for (bank <- 0 until dut.AccMatrixRegNBanks) {
       io.FromDataController.ReadBankAddr(bank).valid.poke(false.B)
       io.FromDataController.ReadBankAddr(bank).bits.poke(0.U)
       io.FromDataController.WriteBankAddr(bank).valid.poke(false.B)

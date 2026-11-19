@@ -10,7 +10,7 @@ import scala.collection.mutable
 
 /** Expected identities are derived from matrix coordinates, never DUT scheduling helpers. */
 class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
-  behavior of "shared AML/BML batch traversal"
+  behavior of "shared trLoader0/trLoader1 batch traversal"
 
   private def params(mode: String, enabled: Boolean, bridgeConfig: String, multiplier: Int): Parameters = new Config((_, _, _) => {
     case PerfCounterOptionsKey => PerfCounterOptions(
@@ -24,7 +24,7 @@ class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
   })
 
   for {
-    label <- Seq("AML", "BML")
+    label <- Seq("trLoader0", "trLoader1")
     (mode, enabled, bridgeConfig, multiplier) <- Seq(
       ("Natural", true, "A8B8CL8CS8", 17), ("Rotate", true, "A8B8CL8CS8", 17),
       ("Permute", true, "A8B8CL8CS8", 17), ("Rotate", false, "A8B8CL8CS8", 17),
@@ -33,7 +33,7 @@ class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
   } {
     it should s"preserve $label data identities for $mode enabled=$enabled $bridgeConfig multiplier=$multiplier K=$beats under stalls" in {
       implicit val p: Parameters = params(mode, enabled, bridgeConfig, multiplier)
-      test(new MultiChannelsABMemLoader(label)) { dut =>
+      test(new MultiChannelTrLoader(label)) { dut =>
         for (epoch <- 0 until 2) {
           // Multiplier 3 falls back with three groups, then resumes permutation
           // with two groups on the next task. Both tasks have a partial group.
@@ -79,12 +79,12 @@ class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
           cfg.MatrixRegTensor_M.poke(rows.U)
           // TaskController supplies the load beat count, not a byte count.
           cfg.MatrixRegTensor_K.poke(beats.U)
-          cfg.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr.poke(base.U)
-          cfg.ApplicationTensor_A.ApplicationTensor_A_Stride_M.poke(stride.U)
-          cfg.ApplicationTensor_A.K_Beat_Count.poke(beats.U)
-          cfg.ApplicationTensor_A.dataType.poke(1.U)
-          cfg.ApplicationTensor_A.HasTail.poke(true.B)
-          cfg.ApplicationTensor_A.TailByteMask.poke(37.U)
+          cfg.Tensor.baseVaddr.poke(base.U)
+          cfg.Tensor.stride.poke(stride.U)
+          cfg.Tensor.K_Beat_Count.poke(beats.U)
+          cfg.Tensor.dataType.poke(1.U)
+          cfg.Tensor.HasTail.poke(true.B)
+          cfg.Tensor.TailByteMask.poke(37.U)
           cfg.LoadTaskInfo.Is_FullLoad.poke(true.B)
           if (epoch == 0) {
             // Abort an accepted task while every request is backpressured.
@@ -104,8 +104,8 @@ class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
           cfg.MicroTaskValid.poke(false.B)
           var done = false
           var cycle = 0
-          val slots = dut.outsideDataWidthByte / dut.ABMatrixRegEntryByteSize
-          val sourceAddrWidth = chisel3.util.log2Ceil(dut.ABMatrixRegBankNEntries)
+          val slots = dut.outsideDataWidthByte / dut.TrMatrixRegEntryByteSize
+          val sourceAddrWidth = chisel3.util.log2Ceil(dut.TrMatrixRegBankNEntries)
           while (!done && cycle < 2000) {
             val responseBatchIds = mutable.ArrayBuffer.empty[(Int, Int)]
             for (lane <- 0 until 8) {
@@ -175,13 +175,13 @@ class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
                   val rowSlot = reg % dut.ReduceGroupSize
                   val beat = rowSlot / slots
                   val slot = rowSlot % slots
-                  val expected = (0 until dut.ABMatrixRegEntryByteSize).foldLeft(BigInt(0)) { (data, byte) =>
-                    data | (BigInt((row * 11 + beat * 3 + slot * dut.ABMatrixRegEntryByteSize + byte) & 255) << (byte * 8))
+                  val expected = (0 until dut.TrMatrixRegEntryByteSize).foldLeft(BigInt(0)) { (data, byte) =>
+                    data | (BigInt((row * 11 + beat * 3 + slot * dut.TrMatrixRegEntryByteSize + byte) & 255) << (byte * 8))
                   }
                   assert(write.Data.bits.peek().litValue == expected)
                   val validBytes = if (beat == beats - 1)
-                    math.max(0, math.min(dut.ABMatrixRegEntryByteSize, 37 - slot * dut.ABMatrixRegEntryByteSize))
-                  else dut.ABMatrixRegEntryByteSize
+                    math.max(0, math.min(dut.TrMatrixRegEntryByteSize, 37 - slot * dut.TrMatrixRegEntryByteSize))
+                  else dut.TrMatrixRegEntryByteSize
                   assert(write.ByteMask.bits.peek().litValue == (BigInt(1) << validBytes) - 1)
                 }
               }

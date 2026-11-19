@@ -212,12 +212,51 @@ object CutePerfEventCounts {
   val Mem = 12
 }
 
+class TrStoreCommand(implicit p: Parameters) extends CuteBundle {
+  val regId = UInt(TrMatrixRegIdWidth.W)
+  val base = UInt(MMUAddrWidth.W)
+  val stride = UInt(MMUAddrWidth.W)
+  val rows = Bundles.Mtilex()
+  val columns = Bundles.Mtilex()
+  val widths = UInt(3.W)
+  val transpose = Bool()
+  val pc = Option.when(EnableDifftest)(UInt(64.W))
+  val coreid = Option.when(EnableDifftest)(UInt(8.W))
+}
+
+class TrStoreIO(implicit p: Parameters) extends CuteBundle {
+  val command = Flipped(Decoupled(new TrStoreCommand))
+  val done = Decoupled(Bool())
+  val read = Flipped(new TrStoreMatrixRegReadIO)
+  val memory = Flipped(new LocalMMUIO)
+  val regId = Output(UInt(TrMatrixRegIdWidth.W))
+}
+
+class TrStoreControlIO(implicit p: Parameters) extends CuteBundle {
+  val command = Decoupled(new TrStoreCommand)
+  val done = Flipped(Decoupled(Bool()))
+}
+
+class TrStoreMatrixRegReadIO(implicit p: Parameters) extends CuteBundle {
+  val readLanes = outsideDataWidthByte / TrMatrixRegEntryByteSize
+  require(readLanes == 1 || readLanes == 2)
+
+  val BankAddr = Flipped(DecoupledIO(Vec(
+    TrMatrixRegNBanks,
+    Vec(readLanes, UInt(log2Ceil(TrMatrixRegBankNEntries).W))
+  )))
+  val Data = Valid(Vec(
+    TrMatrixRegNBanks,
+    Vec(readLanes, UInt(TrMatrixRegEntryBitSize.W))
+  ))
+}
+
 class TaskControllerPerfProbe(implicit p: Parameters) extends CuteBundle {
   val ownedWork = Bool()
   val retire = Bool()
-  val loadADone = Bool()
-  val loadBDone = Bool()
-  val loadCDone = Bool()
+  val trLoader0Done = Bool()
+  val trLoader1Done = Bool()
+  val accLoader0Done = Bool()
   val storeDone = Bool()
   val compDone = Bool()
   val releaseDone = Bool()
@@ -225,11 +264,11 @@ class TaskControllerPerfProbe(implicit p: Parameters) extends CuteBundle {
   val mmaFp16Done = Bool()
   val mmaBf16Done = Bool()
   val mmaTf32Done = Bool()
-  val amlActive = Bool()
-  val bmlActive = Bool()
-  val cmlLoadActive = Bool()
+  val trLoader0Active = Bool()
+  val trLoader1Active = Bool()
+  val accLoader0Active = Bool()
   val mteActive = Bool()
-  val cmlStoreActive = Bool()
+  val accStorer0Active = Bool()
 }
 
 class LocalMMUPerfProbe(implicit p: Parameters) extends CuteBundle {
@@ -238,32 +277,32 @@ class LocalMMUPerfProbe(implicit p: Parameters) extends CuteBundle {
   val rd32BReq = UInt(6.W)
   val wr32BReq = UInt(6.W)
   // Observational scheduler probes; these never feed request control.
-  val offered = Vec(6, UInt(log2Ceil(ABMatrixRegNBanks + 1).W))
-  val issued = Vec(6, UInt(log2Ceil(ABMatrixRegNBanks + 1).W))
-  val evaluated = Vec(6, UInt(ABMatrixRegNBanks.W))
-  val priorityBlocked = Vec(6, UInt(ABMatrixRegNBanks.W))
-  val selectedFire = Vec(6, UInt(ABMatrixRegNBanks.W))
-  val collisionMasked = Vec(4, UInt(ABMatrixRegNBanks.W))
-  val selectedOwner = Vec(ABMatrixRegNBanks, UInt(log2Ceil(7).W))
-  val held = UInt(ABMatrixRegNBanks.W)
-  val cLoadRefill = UInt(ABMatrixRegNBanks.W)
+  val offered = Vec(LocalMMUSourceClass.Count, UInt(log2Ceil(TrMatrixRegNBanks + 1).W))
+  val issued = Vec(LocalMMUSourceClass.Count, UInt(log2Ceil(TrMatrixRegNBanks + 1).W))
+  val evaluated = Vec(LocalMMUSourceClass.Count, UInt(TrMatrixRegNBanks.W))
+  val priorityBlocked = Vec(LocalMMUSourceClass.Count, UInt(TrMatrixRegNBanks.W))
+  val selectedFire = Vec(LocalMMUSourceClass.Count, UInt(TrMatrixRegNBanks.W))
+  val collisionMasked = Vec(4, UInt(TrMatrixRegNBanks.W))
+  val selectedOwner = Vec(TrMatrixRegNBanks, UInt(log2Ceil(LocalMMUSourceClass.Count + 1).W))
+  val held = UInt(TrMatrixRegNBanks.W)
+  val cLoadRefill = UInt(TrMatrixRegNBanks.W)
 }
 
-class CMLPerfProbe(implicit p: Parameters) extends CuteBundle {
+class AccLoadPerfProbe(implicit p: Parameters) extends CuteBundle {
   val loadTotalFired = UInt(log2Ceil(Tensor_MN * Tensor_MN * 2).max(1).W)
   val loadPerfectBatches = UInt(log2Ceil(Tensor_MN * Tensor_MN).max(1).W)
   val loadPerfectRequests = UInt(log2Ceil(Tensor_MN * Tensor_MN * 2).max(1).W)
   val loadPerfectBatch = Bool()
 }
 
-class ABMLPerfProbe(implicit p: Parameters) extends CuteBundle {
+class TrLoadPerfProbe(implicit p: Parameters) extends CuteBundle {
   val loadTotalFired = UInt(log2Ceil(Tensor_MN * Tensor_K * 2).max(1).W)
   val loadPerfectBatches = UInt(log2Ceil(Tensor_MN * Tensor_K).max(1).W)
   val loadPerfectRequests = UInt(log2Ceil(Tensor_MN * Tensor_K * 2).max(1).W)
   val loadPerfectBatch = Bool()
   val seedStatus = UInt(3.W)
-  val seedVector = Vec(ABMatrixRegNBanks,
-    UInt(log2Ceil(((Tensor_MN + ABMatrixRegNBanks - 1) / ABMatrixRegNBanks) * Tensor_K).max(2).W))
+  val seedVector = Vec(TrMatrixRegNBanks,
+    UInt(log2Ceil(((Tensor_MN + TrMatrixRegNBanks - 1) / TrMatrixRegNBanks) * Tensor_K).max(2).W))
   val seedAttempts = UInt(log2Ceil(Tensor_MN * Tensor_K * 2).max(1).W)
   val seedSuccesses = UInt(log2Ceil(Tensor_MN * Tensor_K * 2).max(1).W)
   val seedFallbacks = UInt(log2Ceil(Tensor_MN * Tensor_K * 2).max(1).W)
@@ -274,7 +313,7 @@ class CutePerfToCoreIO(implicit p: Parameters) extends CuteBundle {
   val backendEvents = Vec(CutePerfEventCounts.Backend, UInt(6.W))
   val memEvents = Vec(CutePerfEventCounts.Mem, UInt(6.W))
   val localMMU = new LocalMMUPerfProbe
-  val aml = new ABMLPerfProbe
-  val bml = new ABMLPerfProbe
-  val cml = new CMLPerfProbe
+  val trLoader0 = new TrLoadPerfProbe
+  val trLoader1 = new TrLoadPerfProbe
+  val accLoader0 = new AccLoadPerfProbe
 }

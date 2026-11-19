@@ -24,7 +24,7 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
-  private def expectABPair(io: ABMemoryLoaderMatrixRegIO, data: BigInt, rowBits: Int): Unit = {
+  private def expectABPair(io: TrLoadMatrixRegIO, data: BigInt, rowBits: Int): Unit = {
     val rowMask = (BigInt(1) << rowBits) - 1
     for (lane <- 0 until WriteLanes) {
       val write = io.WriteRequest(0)(lane)
@@ -36,7 +36,7 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
-  private def clearCMatrixPort(io: CMemoryLoaderMatrixRegIO, banks: Int): Unit = {
+  private def clearCMatrixPort(io: AccMemoryMatrixRegIO, banks: Int): Unit = {
     io.LoadReadWriteResponse.poke(4.U)
     io.StoreReadWriteResponse.poke(0.U)
     for (bank <- 0 until banks) {
@@ -45,7 +45,7 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
-  private def expectCPair(io: CMemoryLoaderMatrixRegIO, data: BigInt, rowBits: Int): Unit = {
+  private def expectCPair(io: AccMemoryMatrixRegIO, data: BigInt, rowBits: Int): Unit = {
     val rowMask = (BigInt(1) << rowBits) - 1
     for (lane <- 0 until WriteLanes) {
       val write = io.WriteRequestToMatrixReg.WriteRequest(0)(lane)
@@ -59,15 +59,15 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "drain one A response into two consecutive rows in one cycle" in {
     implicit val p: Parameters = parameters
-    test(new AMemoryLoader).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
-      clearLocalMmu(dut.io.LocalMMUIO, dut.ABMatrixRegNBanks)
+    test(new TrLoader0Legacy).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      clearLocalMmu(dut.io.LocalMMUIO, dut.TrMatrixRegNBanks)
       dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.dataType.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.HasTail.poke(false.B)
-      dut.io.ConfigInfo.ApplicationTensor_A.TailByteMask.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.K_Beat_Count.poke(0.U)
+      dut.io.ConfigInfo.Tensor.baseVaddr.poke(0.U)
+      dut.io.ConfigInfo.Tensor.stride.poke(0.U)
+      dut.io.ConfigInfo.Tensor.dataType.poke(0.U)
+      dut.io.ConfigInfo.Tensor.HasTail.poke(false.B)
+      dut.io.ConfigInfo.Tensor.TailByteMask.poke(0.U)
+      dut.io.ConfigInfo.Tensor.K_Beat_Count.poke(0.U)
       dut.io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad.poke(false.B)
       dut.io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad.poke(false.B)
       dut.io.ConfigInfo.LoadTaskInfo.Is_FullLoad.poke(false.B)
@@ -85,8 +85,8 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.ConfigInfo.LoadTaskInfo.Is_FullLoad.poke(true.B)
       dut.io.ConfigInfo.MatrixRegTensor_M.poke(1.U)
       dut.io.ConfigInfo.MatrixRegTensor_K.poke(1.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.K_Beat_Count.poke(1.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M.poke(64.U)
+      dut.io.ConfigInfo.Tensor.K_Beat_Count.poke(1.U)
+      dut.io.ConfigInfo.Tensor.stride.poke(64.U)
       dut.io.ConfigInfo.MicroTaskValid.poke(true.B)
       dut.clock.step()
       dut.io.ConfigInfo.MicroTaskValid.poke(false.B)
@@ -102,7 +102,7 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.clock.step()
       dut.io.LocalMMUIO.Response(0).valid.poke(false.B)
 
-      expectABPair(dut.io.ToMatrixRegIO, data, dut.ABMatrixRegEntryBitSize)
+      expectABPair(dut.io.ToMatrixRegIO, data, dut.TrMatrixRegEntryBitSize)
       dut.clock.step()
       dut.io.ToMatrixRegIO.WriteRequest(0).foreach(_.BankAddr.valid.expect(false.B))
     }
@@ -110,17 +110,17 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "drain one B response into two consecutive rows in one cycle" in {
     implicit val p: Parameters = parameters
-    test(new BMemoryLoader).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
-      clearLocalMmu(dut.io.LocalMMUIO, dut.ABMatrixRegNBanks)
+    test(new TrLoader1Legacy).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      clearLocalMmu(dut.io.LocalMMUIO, dut.TrMatrixRegNBanks)
       dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_B.BlockTensor_B_BaseVaddr.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_B.ApplicationTensor_B_Stride_N.poke(64.U)
-      dut.io.ConfigInfo.ApplicationTensor_B.dataType.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_B.HasTail.poke(false.B)
-      dut.io.ConfigInfo.ApplicationTensor_B.TailByteMask.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_B.K_Beat_Count.poke(1.U)
-      dut.io.ConfigInfo.MatrixRegTensor_N.poke(1.U)
+      dut.io.ConfigInfo.Tensor.baseVaddr.poke(0.U)
+      dut.io.ConfigInfo.Tensor.baseVaddr.poke(0.U)
+      dut.io.ConfigInfo.Tensor.stride.poke(64.U)
+      dut.io.ConfigInfo.Tensor.dataType.poke(0.U)
+      dut.io.ConfigInfo.Tensor.HasTail.poke(false.B)
+      dut.io.ConfigInfo.Tensor.TailByteMask.poke(0.U)
+      dut.io.ConfigInfo.Tensor.K_Beat_Count.poke(1.U)
+      dut.io.ConfigInfo.MatrixRegTensor_M.poke(1.U)
       dut.io.ConfigInfo.MatrixRegTensor_K.poke(1.U)
       dut.io.ConfigInfo.MatrixRegId.poke(0.U)
       dut.io.ConfigInfo.Conherent.poke(false.B)
@@ -146,7 +146,7 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.clock.step()
       dut.io.LocalMMUIO.Response(0).valid.poke(false.B)
 
-      expectABPair(dut.io.ToMatrixRegIO, data, dut.ABMatrixRegEntryBitSize)
+      expectABPair(dut.io.ToMatrixRegIO, data, dut.TrMatrixRegEntryBitSize)
       dut.clock.step()
       dut.io.ToMatrixRegIO.WriteRequest(0).foreach(_.BankAddr.valid.expect(false.B))
     }
@@ -154,10 +154,10 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "drain one C response into two consecutive rows in one granted cycle" in {
     implicit val p: Parameters = parameters
-    test(new CMemoryLoader).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
-      clearLocalMmu(dut.io.LoadLocalMMUIO, dut.ABMatrixRegNBanks)
-      clearLocalMmu(dut.io.StoreLocalMMUIO, dut.ABMatrixRegNBanks)
-      clearCMatrixPort(dut.io.ToMatrixRegIO, dut.CMatrixRegNBanks)
+    test(new AccMemoryLegacy).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+      clearLocalMmu(dut.io.LoadLocalMMUIO, dut.TrMatrixRegNBanks)
+      clearLocalMmu(dut.io.StoreLocalMMUIO, dut.TrMatrixRegNBanks)
+      clearCMatrixPort(dut.io.ToMatrixRegIO, dut.AccMatrixRegNBanks)
       dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
       dut.io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr.poke(0.U)
       dut.io.ConfigInfo.ApplicationTensor_C.BlockTensor_C_BaseVaddr.poke(0.U)
@@ -201,7 +201,7 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.clock.step()
       dut.io.LoadLocalMMUIO.Response(0).valid.poke(false.B)
 
-      expectCPair(dut.io.ToMatrixRegIO, data, dut.CMatrixRegEntryBitSize)
+      expectCPair(dut.io.ToMatrixRegIO, data, dut.AccMatrixRegEntryBitSize)
       dut.clock.step()
       dut.io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(0).foreach(
         _.BankAddr.valid.expect(false.B)

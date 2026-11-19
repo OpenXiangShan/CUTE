@@ -106,17 +106,17 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
     }
   }
 
-  it should "emit the complete AML 8-row by 2-column request set" in {
+  it should "emit the complete trLoader0 8-row by 2-column request set" in {
     implicit val p: Parameters = parameters
-    test(new MultiChannelsABMemLoader()).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    test(new MultiChannelTrLoader()).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       val base = BigInt(0x2000)
       val stride = BigInt(128)
-      dut.io.ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr.poke(base.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.ApplicationTensor_A_Stride_M.poke(stride.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.dataType.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.HasTail.poke(false.B)
-      dut.io.ConfigInfo.ApplicationTensor_A.TailByteMask.poke(0.U)
-      dut.io.ConfigInfo.ApplicationTensor_A.K_Beat_Count.poke(2.U)
+      dut.io.ConfigInfo.Tensor.baseVaddr.poke(base.U)
+      dut.io.ConfigInfo.Tensor.stride.poke(stride.U)
+      dut.io.ConfigInfo.Tensor.dataType.poke(0.U)
+      dut.io.ConfigInfo.Tensor.HasTail.poke(false.B)
+      dut.io.ConfigInfo.Tensor.TailByteMask.poke(0.U)
+      dut.io.ConfigInfo.Tensor.K_Beat_Count.poke(2.U)
       dut.io.ConfigInfo.LoadTaskInfo.Is_ZeroLoad.poke(false.B)
       dut.io.ConfigInfo.LoadTaskInfo.Is_RepeatRowLoad.poke(false.B)
       dut.io.ConfigInfo.LoadTaskInfo.Is_FullLoad.poke(true.B)
@@ -148,7 +148,7 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
       dut.io.ConfigInfo.MicroTaskValid.poke(false.B)
 
       val observed = mutable.ArrayBuffer.empty[(BigInt, BigInt)]
-      val regAddrWidth = chisel3.util.log2Ceil(dut.ABMatrixRegBankNEntries)
+      val regAddrWidth = chisel3.util.log2Ceil(dut.TrMatrixRegBankNEntries)
       var cycles = 0
       while (observed.size < 16 && cycles < 40) {
         for (channel <- 0 until 8) {
@@ -170,7 +170,7 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
         column <- 0 until 2
       } yield {
         val address = base + row * stride + column * dut.outsideDataWidthByte
-        val regAddr = column * (dut.outsideDataWidthByte / dut.ABMatrixRegEntryByteSize)
+        val regAddr = column * (dut.outsideDataWidthByte / dut.TrMatrixRegEntryByteSize)
         val source = (BigInt(row) << regAddrWidth) | regAddr
         address -> source
       }).toSet
@@ -179,9 +179,9 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
     }
   }
 
-  it should "emit the complete CML 8-row by 2-column load request set" in {
+  it should "emit the complete accMemory 8-row by 2-column load request set" in {
     implicit val p: Parameters = parameters
-    test(new MultiChannelsCMemLoader()).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
+    test(new MultiChannelAccMemory()).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       val base = BigInt(0x3000)
       val stride = BigInt(128)
       dut.io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr.poke(base.U)
@@ -238,7 +238,7 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
       dut.io.ConfigInfo.LoadMicroTaskValid.poke(false.B)
 
       val observed = mutable.ArrayBuffer.empty[(BigInt, BigInt)]
-      val regAddrWidth = chisel3.util.log2Ceil(dut.CMatrixRegBankNEntries)
+      val regAddrWidth = chisel3.util.log2Ceil(dut.AccMatrixRegBankNEntries)
       var cycles = 0
       while (observed.size < 16 && cycles < 40) {
         for (channel <- 0 until 8) {
@@ -260,7 +260,7 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
         column <- 0 until 2
       } yield {
         val address = base + row * stride + column * dut.outsideDataWidthByte
-        val regAddr = column * (dut.outsideDataWidthByte / dut.CMatrixRegEntryByteSize)
+        val regAddr = column * (dut.outsideDataWidthByte / dut.AccMatrixRegEntryByteSize)
         val source = (BigInt(row) << regAddrWidth) | regAddr
         address -> source
       }).toSet

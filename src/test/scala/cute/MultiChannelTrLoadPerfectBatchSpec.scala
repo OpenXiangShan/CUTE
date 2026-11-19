@@ -11,11 +11,11 @@ import scala.collection.mutable
 
 class ABLocalMmuPriorityHarness(implicit p: Parameters) extends CuteModule {
   val io = IO(new Bundle {
-    val aConfig = Flipped(new AMLMicroTaskConfigIO)
-    val bConfig = Flipped(new BMLMicroTaskConfigIO)
+    val aConfig = Flipped(new TrLoadTaskConfigIO)
+    val bConfig = Flipped(new TrLoadTaskConfigIO)
     val llc = Flipped(new MMU2TLIO)
-    val aPerf = Output(new ABMLPerfProbe)
-    val bPerf = Output(new ABMLPerfProbe)
+    val aPerf = Output(new TrLoadPerfProbe)
+    val bPerf = Output(new TrLoadPerfProbe)
     val localPerf = Output(new LocalMMUPerfProbe)
     val aRequestValid = Output(UInt(8.W))
     val bRequestValid = Output(UInt(8.W))
@@ -23,17 +23,17 @@ class ABLocalMmuPriorityHarness(implicit p: Parameters) extends CuteModule {
     val bRequestSourceId = Output(Vec(8, UInt(64.W)))
   })
 
-  private val aml = Module(new AMLWrapper("AB_local_mmu_A"))
-  private val bml = Module(new BMLWrapper("AB_local_mmu_B"))
+  private val trLoader0 = Module(new TrLoader0Wrapper("AB_local_mmu_A"))
+  private val trLoader1 = Module(new TrLoader1Wrapper("AB_local_mmu_B"))
   private val localMmu = Module(new LocalMMU)
 
-  aml.io.ConfigInfo <> io.aConfig
-  bml.io.ConfigInfo <> io.bConfig
-  aml.io.LocalMMUIO <> localMmu.io.ALocalMMUIO
-  bml.io.LocalMMUIO <> localMmu.io.BLocalMMUIO
+  trLoader0.io.ConfigInfo <> io.aConfig
+  trLoader1.io.ConfigInfo <> io.bConfig
+  trLoader0.io.LocalMMUIO <> localMmu.io.trLoader0Memory
+  trLoader1.io.LocalMMUIO <> localMmu.io.trLoader1Memory
   localMmu.io.LastLevelCacheTLIO <> io.llc
-  aml.io.DebugInfo := 0.U.asTypeOf(new DebugInfoIO)
-  bml.io.DebugInfo := 0.U.asTypeOf(new DebugInfoIO)
+  trLoader0.io.DebugInfo := 0.U.asTypeOf(new DebugInfoIO)
+  trLoader1.io.DebugInfo := 0.U.asTypeOf(new DebugInfoIO)
 
   private def tieOffSource(source: LocalMMUIO): Unit = {
     source.Request.foreach { request =>
@@ -43,19 +43,20 @@ class ABLocalMmuPriorityHarness(implicit p: Parameters) extends CuteModule {
     source.Response.foreach(_.ready := false.B)
   }
 
-  tieOffSource(localMmu.io.CLoadLocalMMUIO)
-  tieOffSource(localMmu.io.CStoreLocalMMUIO)
+  tieOffSource(localMmu.io.trStorer0Memory)
+  tieOffSource(localMmu.io.accLoader0Memory)
+  tieOffSource(localMmu.io.accStorer0Memory)
   tieOffSource(localMmu.io.ASLocalMMUIO)
   tieOffSource(localMmu.io.BSLocalMMUIO)
 
-  io.aPerf := aml.io.perfProbe
-  io.bPerf := bml.io.perfProbe
+  io.aPerf := trLoader0.io.perfProbe
+  io.bPerf := trLoader1.io.perfProbe
   io.localPerf := localMmu.io.perfProbe
-  io.aRequestValid := VecInit(aml.io.LocalMMUIO.Request.map(_.valid)).asUInt
-  io.bRequestValid := VecInit(bml.io.LocalMMUIO.Request.map(_.valid)).asUInt
+  io.aRequestValid := VecInit(trLoader0.io.LocalMMUIO.Request.map(_.valid)).asUInt
+  io.bRequestValid := VecInit(trLoader1.io.LocalMMUIO.Request.map(_.valid)).asUInt
   for (bank <- 0 until 8) {
-    io.bRequestAddress(bank) := bml.io.LocalMMUIO.Request(bank).bits.RequestAddr
-    io.bRequestSourceId(bank) := bml.io.LocalMMUIO.Request(bank).bits.RequestSourceID
+    io.bRequestAddress(bank) := trLoader1.io.LocalMMUIO.Request(bank).bits.RequestAddr
+    io.bRequestSourceId(bank) := trLoader1.io.LocalMMUIO.Request(bank).bits.RequestSourceID
   }
 }
 
@@ -63,8 +64,8 @@ class ABLocalMmuPriorityHarness(implicit p: Parameters) extends CuteModule {
  * path uses per-bank queues and static batch traversal. Current coverage and data
  * identity are checked by ABBatchScheduleSpec; this suite is not acceptance evidence.
  */
-class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTester {
-  behavior of "MultiChannelsABMemLoader perfect batches"
+class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTester {
+  behavior of "MultiChannelTrLoader perfect batches"
 
   private def testParams(seedEnabled: Boolean = true): Parameters = new Config((_, _, _) => {
     case PerfCounterOptionsKey => PerfCounterOptions(
@@ -110,20 +111,20 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
   }
 
   private def configureAConfig(
-    config: AMLMicroTaskConfigIO,
+    config: TrLoadTaskConfigIO,
     rows: Int = 8,
     kBeatCount: Int = ABPerfectBatchTestUtils.KBeatCount,
     baseAddress: BigInt = ABPerfectBatchTestUtils.BaseAddress,
     rowStride: BigInt = ABPerfectBatchTestUtils.RowStride
   ): Unit = {
-    config.ApplicationTensor_A.ApplicationTensor_A_BaseVaddr.poke(
+    config.Tensor.baseVaddr.poke(
       baseAddress.U)
-    config.ApplicationTensor_A.ApplicationTensor_A_Stride_M.poke(
+    config.Tensor.stride.poke(
       rowStride.U)
-    config.ApplicationTensor_A.dataType.poke(0.U)
-    config.ApplicationTensor_A.HasTail.poke(false.B)
-    config.ApplicationTensor_A.TailByteMask.poke(0.U)
-    config.ApplicationTensor_A.K_Beat_Count.poke(kBeatCount.U)
+    config.Tensor.dataType.poke(0.U)
+    config.Tensor.HasTail.poke(false.B)
+    config.Tensor.TailByteMask.poke(0.U)
+    config.Tensor.K_Beat_Count.poke(kBeatCount.U)
     config.LoadTaskInfo.Is_ZeroLoad.poke(false.B)
     config.LoadTaskInfo.Is_RepeatRowLoad.poke(false.B)
     config.LoadTaskInfo.Is_FullLoad.poke(true.B)
@@ -136,21 +137,21 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
     config.MicroTaskEndReady.poke(true.B)
   }
 
-  private def configureA(dut: MultiChannelsABMemLoader, rows: Int = 8): Unit = {
+  private def configureA(dut: MultiChannelTrLoader, rows: Int = 8): Unit = {
     configureAConfig(dut.io.ConfigInfo, rows)
     dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
-    clearMmu(dut.io.LocalMMUIO, dut.ABMatrixRegNBanks)
+    clearMmu(dut.io.LocalMMUIO, dut.TrMatrixRegNBanks)
   }
 
   private def collectRequests(
-    dut: MultiChannelsABMemLoader,
+    dut: MultiChannelTrLoader,
     expectedCount: Int,
     maxCycles: Int = 100
   ): Seq[(Int, BigInt, BigInt)] = {
     val observed = mutable.ArrayBuffer.empty[(Int, BigInt, BigInt)]
     var cycles = 0
     while (observed.size < expectedCount && cycles < maxCycles) {
-      for (channel <- 0 until dut.ABMatrixRegNBanks) {
+      for (channel <- 0 until dut.TrMatrixRegNBanks) {
         val request = dut.io.LocalMMUIO.Request(channel)
         if (request.valid.peek().litToBoolean && request.ready.peek().litToBoolean) {
           observed += ((channel, request.bits.RequestAddr.peek().litValue,
@@ -166,7 +167,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
   }
 
   private def startA(
-    dut: MultiChannelsABMemLoader,
+    dut: MultiChannelTrLoader,
     rows: Int,
     kBeatCount: Int,
     baseAddress: BigInt,
@@ -174,7 +175,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
   ): Unit = {
     configureAConfig(dut.io.ConfigInfo, rows, kBeatCount, baseAddress, rowStride)
     dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
-    clearMmu(dut.io.LocalMMUIO, dut.ABMatrixRegNBanks)
+    clearMmu(dut.io.LocalMMUIO, dut.TrMatrixRegNBanks)
     dut.reset.poke(true.B)
     dut.clock.step(2)
     dut.reset.poke(false.B)
@@ -183,8 +184,8 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
     dut.io.ConfigInfo.MicroTaskValid.poke(false.B)
   }
 
-  ignore should "sustain ideal perfect batches for AML M128 N128 K64 e8 with one beat per row" in {
-    test(new MultiChannelsABMemLoader("AML", "AML_m128_n128_k64_e8_test"))
+  ignore should "sustain ideal perfect batches for trLoader0 M128 N128 K64 e8 with one beat per row" in {
+    test(new MultiChannelTrLoader("trLoader0", "TrLoader0_m128_n128_k64_e8_test"))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         configureAConfig(
           dut.io.ConfigInfo,
@@ -197,7 +198,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           // compatible bank permutation while retaining a phase-zero base.
           rowStride = 144)
         dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
-        clearMmu(dut.io.LocalMMUIO, dut.ABMatrixRegNBanks)
+        clearMmu(dut.io.LocalMMUIO, dut.TrMatrixRegNBanks)
         dut.reset.poke(true.B)
         dut.clock.step(2)
         dut.reset.poke(false.B)
@@ -210,10 +211,10 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
         var perfectPulses = 0
         val idealIssueCycles = scala.collection.mutable.ArrayBuffer.empty[Int]
         val observed = scala.collection.mutable.ArrayBuffer.empty[(Int, BigInt, BigInt)]
-        val sourceAddrWidth = log2Ceil(dut.ABMatrixRegBankNEntries)
+        val sourceAddrWidth = log2Ceil(dut.TrMatrixRegBankNEntries)
         dut.clock.setTimeout(200)
         while (fired < 128 && cycles < 40) {
-          val cycleRequests = (0 until dut.ABMatrixRegNBanks).flatMap { channel =>
+          val cycleRequests = (0 until dut.TrMatrixRegNBanks).flatMap { channel =>
             val request = dut.io.LocalMMUIO.Request(channel)
             Option.when(request.valid.peek().litToBoolean && request.ready.peek().litToBoolean) {
               (channel, request.bits.RequestAddr.peek().litValue, request.bits.RequestSourceID.peek().litValue)
@@ -221,8 +222,8 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           }
           val cycleFires = cycleRequests.size
           if (cycleRequests.nonEmpty) {
-            val validByBank = Array.fill(dut.ABMatrixRegNBanks)(false)
-            val destinationByBank = Array.fill(dut.ABMatrixRegNBanks)(0)
+            val validByBank = Array.fill(dut.TrMatrixRegNBanks)(false)
+            val destinationByBank = Array.fill(dut.TrMatrixRegNBanks)(0)
             cycleRequests.foreach { case (channel, address, source) =>
               val physicalBank = ABPerfectBatchTestUtils.l2Bank(address)
               val destination = ((source >> sourceAddrWidth) & 7).toInt
@@ -251,12 +252,12 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           cycles += 1
         }
 
-        assert(fired == 128, s"expected 128 AML requests, observed $fired")
+        assert(fired == 128, s"expected 128 trLoader0 requests, observed $fired")
         assert(idealIssueCycles.size == 16, s"expected 16 issue cycles, got ${idealIssueCycles.size}")
         assert(perfectPulses == 16, s"expected 16 perfect-batch pulses, got $perfectPulses")
         val expected = (0 until 128).map { row =>
-          val channel = row % dut.ABMatrixRegNBanks
-          val group = row / dut.ABMatrixRegNBanks
+          val channel = row % dut.TrMatrixRegNBanks
+          val group = row / dut.TrMatrixRegNBanks
           // The test profile uses ReduceWidthByte=32, so each 64B memory
           // beat occupies two MatrixReg entries.
           (channel, BigInt("8004a000", 16) + row * 144, BigInt(group * 2))
@@ -276,15 +277,15 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
 
   ignore should "reconcile seed fire perfect and nonzero window-repair probes" in {
     implicit val p: Parameters = testParams(seedEnabled = true)
-    test(new MultiChannelsABMemLoader("AML", "AML_window_repair_probe")(p))
+    test(new MultiChannelTrLoader("trLoader0", "TrLoader0_window_repair_probe")(p))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         val rows = 128
         val base = BigInt("8004a000", 16)
         val stride = BigInt(32)
         startA(dut, rows, kBeatCount = 1, baseAddress = base, rowStride = stride)
 
-        val windowBase = Array.fill(dut.ABMatrixRegNBanks)(0)
-        val issued = Array.fill(dut.ABMatrixRegNBanks)(mutable.Set.empty[Int])
+        val windowBase = Array.fill(dut.TrMatrixRegNBanks)(0)
+        val issued = Array.fill(dut.TrMatrixRegNBanks)(mutable.Set.empty[Int])
         var observedFires = 0
         var observedPerfectBatches = 0
         var observedPerfectRequests = 0
@@ -292,15 +293,15 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
         var cycles = 0
         var firstFire = Seq.empty[(Int, Int)]
         while (observedFires < rows && cycles < 80) {
-          val cycleRequests = (0 until dut.ABMatrixRegNBanks).flatMap { channel =>
+          val cycleRequests = (0 until dut.TrMatrixRegNBanks).flatMap { channel =>
             val request = dut.io.LocalMMUIO.Request(channel)
             Option.when(request.valid.peek().litToBoolean && request.ready.peek().litToBoolean) {
               val address = request.bits.RequestAddr.peek().litValue
               val rowDelta = address - base - channel * stride
-              assert(rowDelta >= 0 && rowDelta % (dut.ABMatrixRegNBanks * stride) == 0,
+              assert(rowDelta >= 0 && rowDelta % (dut.TrMatrixRegNBanks * stride) == 0,
                 s"channel $channel emitted noncanonical address 0x${address.toString(16)}")
-              val ordinal = (rowDelta / (dut.ABMatrixRegNBanks * stride)).toInt
-              assert(ordinal < rows / dut.ABMatrixRegNBanks,
+              val ordinal = (rowDelta / (dut.TrMatrixRegNBanks * stride)).toInt
+              assert(ordinal < rows / dut.TrMatrixRegNBanks,
                 s"channel $channel emitted out-of-range ordinal $ordinal")
               assert(!issued(channel)(ordinal),
                 s"channel $channel emitted duplicate ordinal $ordinal")
@@ -316,8 +317,8 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
             }) {
               observedWindowRepairs += 1
             }
-            val validByBank = Array.fill(dut.ABMatrixRegNBanks)(false)
-            val destinationByBank = Array.fill(dut.ABMatrixRegNBanks)(0)
+            val validByBank = Array.fill(dut.TrMatrixRegNBanks)(false)
+            val destinationByBank = Array.fill(dut.TrMatrixRegNBanks)(0)
             cycleRequests.foreach { case (channel, ordinal, address) =>
               val physicalBank = ABPerfectBatchTestUtils.l2Bank(address)
               assert(!validByBank(physicalBank),
@@ -325,18 +326,18 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
               validByBank(physicalBank) = true
               destinationByBank(physicalBank) = channel
               issued(channel) += ordinal
-              windowBase(channel) = (ordinal + 1) % (rows / dut.ABMatrixRegNBanks)
+              windowBase(channel) = (ordinal + 1) % (rows / dut.TrMatrixRegNBanks)
             }
             val survivorMask = ABPerfectBatchTestUtils.exactSurvivors(
               validByBank.toSeq, destinationByBank.toSeq)
             val firedBankMask = validByBank.zipWithIndex.collect {
               case (true, bank) => BigInt(1) << bank
             }.foldLeft(BigInt(0))(_ | _)
-            val perfect = cycleRequests.size == dut.ABMatrixRegNBanks &&
+            val perfect = cycleRequests.size == dut.TrMatrixRegNBanks &&
               survivorMask == firedBankMask
             if (perfect) {
               observedPerfectBatches += 1
-              observedPerfectRequests += dut.ABMatrixRegNBanks
+              observedPerfectRequests += dut.TrMatrixRegNBanks
             }
             observedFires += cycleRequests.size
           }
@@ -348,7 +349,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           s"unexpected repair fixture first fire $firstFire")
         assert(observedFires == rows, s"observed $observedFires of $rows request fires")
         assert(observedWindowRepairs > 0, "fixture did not exercise a window repair")
-        assert(issued.forall(_.size == rows / dut.ABMatrixRegNBanks),
+        assert(issued.forall(_.size == rows / dut.TrMatrixRegNBanks),
           s"fixture did not cover every channel stream: ${issued.map(_.size).toSeq}")
         dut.io.perfProbe.seedStatus.expect(ABPerfectBatchSeed.NoEntry.U)
         dut.io.perfProbe.seedAttempts.expect(1.U)
@@ -364,7 +365,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
   Seq(true, false).foreach { seedEnabled =>
     ignore should s"preserve the canonical request set when task-start seeding is enabled=$seedEnabled" in {
       implicit val p: Parameters = testParams(seedEnabled)
-      test(new MultiChannelsABMemLoader("AML", s"AML_seed_enabled_$seedEnabled")(p))
+      test(new MultiChannelTrLoader("trLoader0", s"TrLoader0_seed_enabled_$seedEnabled")(p))
         .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
           startA(dut, rows = 128, kBeatCount = 1,
             baseAddress = BigInt("8004a000", 16), rowStride = 16)
@@ -383,7 +384,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
 
   ignore should "wrap a nonzero seed and issue every ordinal exactly once" in {
     implicit val p: Parameters = testParams(seedEnabled = true)
-    test(new MultiChannelsABMemLoader("AML", "AML_nonzero_seed_wrap")(p))
+    test(new MultiChannelTrLoader("trLoader0", "TrLoader0_nonzero_seed_wrap")(p))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         startA(dut, rows = 128, kBeatCount = 1,
           baseAddress = BigInt("8004a000", 16), rowStride = 16)
@@ -404,7 +405,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
 
   ignore should "wrap unequal final-partial streams and skip issued ordinals exactly once" in {
     implicit val p: Parameters = testParams(seedEnabled = true)
-    test(new MultiChannelsABMemLoader("AML", "AML_partial_seed_wrap")(p))
+    test(new MultiChannelTrLoader("trLoader0", "TrLoader0_partial_seed_wrap")(p))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         val rows = 125
         val base = BigInt("8004a000", 16)
@@ -429,7 +430,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
 
   ignore should "fall back for fixed-bank one-beat geometry without request loss" in {
     implicit val p: Parameters = testParams(seedEnabled = true)
-    test(new MultiChannelsABMemLoader("AML", "AML_fixed_bank_fallback")(p))
+    test(new MultiChannelTrLoader("trLoader0", "TrLoader0_fixed_bank_fallback")(p))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         startA(dut, rows = 128, kBeatCount = 1,
           baseAddress = BigInt("8004a000", 16), rowStride = 64)
@@ -444,7 +445,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
 
   ignore should "clear retained seed and counter state across reset and task reaccept" in {
     implicit val p: Parameters = testParams(seedEnabled = true)
-    test(new MultiChannelsABMemLoader("AML", "AML_reset_reaccept")(p))
+    test(new MultiChannelTrLoader("trLoader0", "TrLoader0_reset_reaccept")(p))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         startA(dut, rows = 128, kBeatCount = 1,
           baseAddress = BigInt("8004a000", 16), rowStride = 16)
@@ -478,34 +479,35 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
       }
   }
 
-  private def configureBConfig(config: BMLMicroTaskConfigIO, rows: Int = 8): Unit = {
-    config.ApplicationTensor_B.ApplicationTensor_B_BaseVaddr.poke(
+  private def configureBConfig(config: TrLoadTaskConfigIO, rows: Int = 8): Unit = {
+    config.Tensor.baseVaddr.poke(
       ABPerfectBatchTestUtils.BaseAddress.U)
-    config.ApplicationTensor_B.BlockTensor_B_BaseVaddr.poke(
-      ABPerfectBatchTestUtils.BaseAddress.U)
-    config.ApplicationTensor_B.ApplicationTensor_B_Stride_N.poke(
+    config.Tensor.stride.poke(
       ABPerfectBatchTestUtils.RowStride.U)
-    config.ApplicationTensor_B.dataType.poke(0.U)
-    config.ApplicationTensor_B.HasTail.poke(false.B)
-    config.ApplicationTensor_B.TailByteMask.poke(0.U)
-    config.ApplicationTensor_B.K_Beat_Count.poke(ABPerfectBatchTestUtils.KBeatCount.U)
-    config.MatrixRegTensor_N.poke(rows.U)
+    config.Tensor.dataType.poke(0.U)
+    config.Tensor.HasTail.poke(false.B)
+    config.Tensor.TailByteMask.poke(0.U)
+    config.Tensor.K_Beat_Count.poke(ABPerfectBatchTestUtils.KBeatCount.U)
+    config.MatrixRegTensor_M.poke(rows.U)
     config.MatrixRegTensor_K.poke(64.U)
     config.MatrixRegId.poke(0.U)
+    config.LoadTaskInfo.Is_FullLoad.poke(true.B)
+    config.LoadTaskInfo.Is_ZeroLoad.poke(false.B)
+    config.LoadTaskInfo.Is_RepeatRowLoad.poke(false.B)
     config.Conherent.poke(true.B)
     config.Is_Transpose.poke(false.B)
     config.MicroTaskValid.poke(false.B)
     config.MicroTaskEndReady.poke(true.B)
   }
 
-  private def configureB(dut: BMLWrapper, rows: Int = 8): Unit = {
+  private def configureB(dut: TrLoader1Wrapper, rows: Int = 8): Unit = {
     configureBConfig(dut.io.ConfigInfo, rows)
     dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
-    clearMmu(dut.io.LocalMMUIO, dut.ABMatrixRegNBanks)
+    clearMmu(dut.io.LocalMMUIO, dut.TrMatrixRegNBanks)
   }
 
   ignore should "complete an A-only eight-beat task with full route-compatible fires" in {
-    test(new MultiChannelsABMemLoader("AML", "AML_ab_perfect_test"))
+    test(new MultiChannelTrLoader("trLoader0", "TrLoader0_ab_perfect_test"))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         configureA(dut)
         dut.reset.poke(true.B)
@@ -515,7 +517,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
         dut.clock.step()
         dut.io.ConfigInfo.MicroTaskValid.poke(false.B)
 
-        val responseQueues = Array.fill(dut.ABMatrixRegNBanks)(mutable.Queue.empty[BigInt])
+        val responseQueues = Array.fill(dut.TrMatrixRegNBanks)(mutable.Queue.empty[BigInt])
         val observed = mutable.ArrayBuffer.empty[(Int, BigInt, BigInt)]
         val writebacks = mutable.ArrayBuffer.empty[(Int, BigInt)]
         var perfectBatches = 0
@@ -523,13 +525,13 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
         var rtlPerfectBatchPulses = 0
         var cycles = 0
         var completed = false
-        val sourceAddrWidth = log2Ceil(dut.ABMatrixRegBankNEntries)
-        val fullMask = (BigInt(1) << dut.ABMatrixRegEntryByteSize) - 1
+        val sourceAddrWidth = log2Ceil(dut.TrMatrixRegBankNEntries)
+        val fullMask = (BigInt(1) << dut.TrMatrixRegEntryByteSize) - 1
         dut.clock.setTimeout(1000)
 
         while (!completed && cycles < 200) {
           dut.io.DebugInfo.DebugTimeStampe.poke(cycles.U)
-          for (bank <- 0 until dut.ABMatrixRegNBanks) {
+          for (bank <- 0 until dut.TrMatrixRegNBanks) {
             val response = dut.io.LocalMMUIO.Response(bank)
             response.valid.poke(responseQueues(bank).nonEmpty.B)
             response.bits.ReseponseSourceID.poke(responseQueues(bank).headOption.getOrElse(BigInt(0)).U)
@@ -538,7 +540,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           }
 
           val fired = mutable.ArrayBuffer.empty[(Int, BigInt, BigInt)]
-          for (channel <- 0 until dut.ABMatrixRegNBanks) {
+          for (channel <- 0 until dut.TrMatrixRegNBanks) {
             val request = dut.io.LocalMMUIO.Request(channel)
             if (request.valid.peek().litToBoolean && request.ready.peek().litToBoolean) {
               val address = request.bits.RequestAddr.peek().litValue
@@ -552,8 +554,8 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           }
 
           if (fired.nonEmpty) {
-            val validByBank = Array.fill(dut.ABMatrixRegNBanks)(false)
-            val destinationByBank = Array.fill(dut.ABMatrixRegNBanks)(0)
+            val validByBank = Array.fill(dut.TrMatrixRegNBanks)(false)
+            val destinationByBank = Array.fill(dut.TrMatrixRegNBanks)(0)
             fired.foreach { case (_, address, source) =>
               val l2Bank = ABPerfectBatchTestUtils.l2Bank(address, 8)
               val regBank = ((source >> sourceAddrWidth) & 7).toInt
@@ -571,7 +573,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
             }.foldLeft(BigInt(0))(_ | _)
             assert((survivors & firedMask) == firedMask,
               s"Omega survivor mismatch at cycle $cycles")
-            if (fired.size == dut.ABMatrixRegNBanks) {
+            if (fired.size == dut.TrMatrixRegNBanks) {
               perfectBatches += 1
               perfectRequests += fired.size
             }
@@ -582,7 +584,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           }
 
           for {
-            bank <- 0 until dut.ABMatrixRegNBanks
+            bank <- 0 until dut.TrMatrixRegNBanks
             lane <- 0 until 2
           } {
             val write = dut.io.ToMatrixRegIO.WriteRequest(bank)(lane)
@@ -592,7 +594,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
               writebacks += ((bank, write.BankAddr.bits.peek().litValue))
             }
           }
-          for (bank <- 0 until dut.ABMatrixRegNBanks) {
+          for (bank <- 0 until dut.TrMatrixRegNBanks) {
             if (dut.io.LocalMMUIO.Response(bank).valid.peek().litToBoolean &&
                 dut.io.LocalMMUIO.Response(bank).ready.peek().litToBoolean) {
               responseQueues(bank).dequeue()
@@ -605,9 +607,9 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           cycles += 1
         }
 
-        assert(completed, s"AML task did not complete after $cycles cycles")
+        assert(completed, s"trLoader0 task did not complete after $cycles cycles")
         assert(observed.size == 64, s"expected 64 requests, observed ${observed.size}")
-        val expected = (0 until dut.ABMatrixRegNBanks).flatMap { bank =>
+        val expected = (0 until dut.TrMatrixRegNBanks).flatMap { bank =>
           (0 until ABPerfectBatchTestUtils.KBeatCount).map { beat =>
             (bank, ABPerfectBatchTestUtils.address(bank, beat), beat * 2)
           }
@@ -621,7 +623,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           Seq((bank, BigInt(regAddr)), (bank, BigInt(regAddr + 1)))
         }
         assert(writebacks.toSet == expectedWritebacks)
-        assert(perfectRequests == perfectBatches * dut.ABMatrixRegNBanks)
+        assert(perfectRequests == perfectBatches * dut.TrMatrixRegNBanks)
         assert(perfectBatches == 8, s"expected one perfect batch per beat cycle, got $perfectBatches")
         assert(rtlPerfectBatchPulses == perfectBatches)
         dut.io.perfProbe.loadTotalFired.expect(observed.size.U)
@@ -631,14 +633,14 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
   }
 
   ignore should "preserve tail masks and exactly-once writeback under reordered responses" in {
-    test(new MultiChannelsABMemLoader("AML", "AML_seeded_tail_reorder_test"))
+    test(new MultiChannelTrLoader("trLoader0", "TrLoader0_seeded_tail_reorder_test"))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         configureAConfig(dut.io.ConfigInfo, rows = 8, kBeatCount = 2,
           baseAddress = BigInt("8004a000", 16), rowStride = 144)
-        dut.io.ConfigInfo.ApplicationTensor_A.HasTail.poke(true.B)
-        dut.io.ConfigInfo.ApplicationTensor_A.TailByteMask.poke(40.U)
+        dut.io.ConfigInfo.Tensor.HasTail.poke(true.B)
+        dut.io.ConfigInfo.Tensor.TailByteMask.poke(40.U)
         dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
-        clearMmu(dut.io.LocalMMUIO, dut.ABMatrixRegNBanks)
+        clearMmu(dut.io.LocalMMUIO, dut.TrMatrixRegNBanks)
         dut.reset.poke(true.B)
         dut.clock.step(2)
         dut.reset.poke(false.B)
@@ -648,11 +650,11 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
         dut.clock.step()
         dut.io.perfProbe.seedStatus.expect(ABPerfectBatchSeed.Success.U)
 
-        val sourceAddrWidth = log2Ceil(dut.ABMatrixRegBankNEntries)
-        val tailBitOffset = sourceAddrWidth + log2Ceil(dut.ABMatrixRegNBanks)
+        val sourceAddrWidth = log2Ceil(dut.TrMatrixRegBankNEntries)
+        val tailBitOffset = sourceAddrWidth + log2Ceil(dut.TrMatrixRegNBanks)
         val requests = mutable.ArrayBuffer.empty[(Int, BigInt, BigInt)]
         while (requests.size < 16) {
-          for (channel <- 0 until dut.ABMatrixRegNBanks) {
+          for (channel <- 0 until dut.TrMatrixRegNBanks) {
             val request = dut.io.LocalMMUIO.Request(channel)
             if (request.valid.peek().litToBoolean && request.ready.peek().litToBoolean) {
               requests += ((channel, request.bits.RequestAddr.peek().litValue,
@@ -669,15 +671,15 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
         }.toSet
         assert(requests.map { case (channel, address, _) => channel -> address }.toSet == expectedRequests)
 
-        val pending = Array.tabulate(dut.ABMatrixRegNBanks) { bank =>
+        val pending = Array.tabulate(dut.TrMatrixRegNBanks) { bank =>
           mutable.Queue.from(requests.collect { case (`bank`, _, source) => source }.reverse)
         }
         val writebacks = mutable.ArrayBuffer.empty[(Int, BigInt, BigInt)]
         var cycles = 0
         var completed = false
         while (!completed && cycles < 120) {
-          val activeBank = (dut.ABMatrixRegNBanks - 1) - (cycles % dut.ABMatrixRegNBanks)
-          for (bank <- 0 until dut.ABMatrixRegNBanks) {
+          val activeBank = (dut.TrMatrixRegNBanks - 1) - (cycles % dut.TrMatrixRegNBanks)
+          for (bank <- 0 until dut.TrMatrixRegNBanks) {
             val response = dut.io.LocalMMUIO.Response(bank)
             val send = cycles % 3 != 1 && bank == activeBank && pending(bank).nonEmpty
             response.valid.poke(send.B)
@@ -686,7 +688,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
             response.bits.ReseponseConherent.poke(true.B)
           }
           for {
-            bank <- 0 until dut.ABMatrixRegNBanks
+            bank <- 0 until dut.TrMatrixRegNBanks
             lane <- 0 until 2
           } {
             val write = dut.io.ToMatrixRegIO.WriteRequest(bank)(lane)
@@ -696,7 +698,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
                 write.ByteMask.bits.peek().litValue))
             }
           }
-          val firedBanks = (0 until dut.ABMatrixRegNBanks).filter { bank =>
+          val firedBanks = (0 until dut.TrMatrixRegNBanks).filter { bank =>
             dut.io.LocalMMUIO.Response(bank).valid.peek().litToBoolean &&
               dut.io.LocalMMUIO.Response(bank).ready.peek().litToBoolean
           }
@@ -708,7 +710,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
         assert(completed, s"seeded tail task did not complete after $cycles cycles")
         assert(pending.forall(_.isEmpty), "not every reordered response was accepted")
 
-        val fullMask = (BigInt(1) << dut.ABMatrixRegEntryByteSize) - 1
+        val fullMask = (BigInt(1) << dut.TrMatrixRegEntryByteSize) - 1
         val tailSecondMask = (BigInt(1) << 8) - 1
         val expectedWritebacks = requests.flatMap { case (bank, _, source) =>
           val regAddr = source & ((BigInt(1) << sourceAddrWidth) - 1)
@@ -724,7 +726,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
   }
 
   ignore should "hold selected A requests stable while downstream ready is low" in {
-    test(new MultiChannelsABMemLoader("AML", "AML_ab_stall_test"))
+    test(new MultiChannelTrLoader("trLoader0", "TrLoader0_ab_stall_test"))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         configureA(dut)
         dut.reset.poke(true.B)
@@ -734,7 +736,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
         dut.clock.step()
         dut.io.ConfigInfo.MicroTaskValid.poke(false.B)
 
-        for (bank <- 0 until dut.ABMatrixRegNBanks) {
+        for (bank <- 0 until dut.TrMatrixRegNBanks) {
           dut.io.LocalMMUIO.Request(bank).ready.poke(false.B)
         }
         var waitCycles = 0
@@ -743,7 +745,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           waitCycles += 1
         }
         dut.clock.step()
-        val held = (0 until dut.ABMatrixRegNBanks).map { bank =>
+        val held = (0 until dut.TrMatrixRegNBanks).map { bank =>
           val request = dut.io.LocalMMUIO.Request(bank)
           request.valid.expect(true.B)
           Seq(
@@ -758,7 +760,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
             request.bits.RequestMask.peek().litValue)
         }
         dut.clock.step()
-        for (bank <- 0 until dut.ABMatrixRegNBanks) {
+        for (bank <- 0 until dut.TrMatrixRegNBanks) {
           val request = dut.io.LocalMMUIO.Request(bank)
           request.valid.expect(true.B)
           Seq(
@@ -783,21 +785,21 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
   }
 
   ignore should "retain stalled lanes while other selected lanes fire" in {
-    test(new MultiChannelsABMemLoader("AML", "AML_ab_asymmetric_stall_test"))
+    test(new MultiChannelTrLoader("trLoader0", "TrLoader0_ab_asymmetric_stall_test"))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         startA(dut, rows = 16, kBeatCount = 1,
           baseAddress = BigInt("8004a000", 16), rowStride = 144)
-        for (bank <- 0 until dut.ABMatrixRegNBanks) {
+        for (bank <- 0 until dut.TrMatrixRegNBanks) {
           dut.io.LocalMMUIO.Request(bank).ready.poke(false.B)
         }
         var waitCycles = 0
-        while (!(0 until dut.ABMatrixRegNBanks).forall(
+        while (!(0 until dut.TrMatrixRegNBanks).forall(
             bank => dut.io.LocalMMUIO.Request(bank).valid.peek().litToBoolean) && waitCycles < 20) {
           dut.clock.step()
           waitCycles += 1
         }
         assert(waitCycles < 20, "compatible fixture did not select all request lanes")
-        val stalled = (0 until dut.ABMatrixRegNBanks by 2).map { bank =>
+        val stalled = (0 until dut.TrMatrixRegNBanks by 2).map { bank =>
           val request = dut.io.LocalMMUIO.Request(bank)
           bank -> Seq(
             request.bits.RequestAddr.peek().litValue,
@@ -810,7 +812,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
             request.bits.MatrixIsAcc.peek().litValue,
             request.bits.RequestMask.peek().litValue)
         }.toMap
-        for (bank <- 1 until dut.ABMatrixRegNBanks by 2) {
+        for (bank <- 1 until dut.TrMatrixRegNBanks by 2) {
           dut.io.LocalMMUIO.Request(bank).ready.poke(true.B)
         }
         dut.clock.step()
@@ -838,7 +840,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
       }
   }
 
-  it should "keep AML and BML independent while LocalMMU enforces A priority" in {
+  it should "keep trLoader0 and trLoader1 independent while LocalMMU enforces A priority" in {
     test(new ABLocalMmuPriorityHarness)
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         configureAConfig(dut.io.aConfig)
@@ -870,13 +872,13 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
             dut.io.bRequestSourceId(bank).peek().litValue)
         }
 
-        dut.io.localPerf.offered(LocalMMUSourceClass.A).expect(8.U)
-        dut.io.localPerf.offered(LocalMMUSourceClass.B).expect(8.U)
-        dut.io.localPerf.issued(LocalMMUSourceClass.A).expect(0.U)
-        dut.io.localPerf.issued(LocalMMUSourceClass.B).expect(0.U)
-        dut.io.localPerf.priorityBlocked(LocalMMUSourceClass.B).expect("hff".U)
+        dut.io.localPerf.offered(LocalMMUSourceClass.TrLoader0).expect(8.U)
+        dut.io.localPerf.offered(LocalMMUSourceClass.TrLoader1).expect(8.U)
+        dut.io.localPerf.issued(LocalMMUSourceClass.TrLoader0).expect(0.U)
+        dut.io.localPerf.issued(LocalMMUSourceClass.TrLoader1).expect(0.U)
+        dut.io.localPerf.priorityBlocked(LocalMMUSourceClass.TrLoader1).expect("hff".U)
         for (lane <- 0 until 8) {
-          dut.io.localPerf.selectedOwner(lane).expect(LocalMMUSourceClass.A.U)
+          dut.io.localPerf.selectedOwner(lane).expect(LocalMMUSourceClass.TrLoader0.U)
           dut.io.llc.Request(lane).valid.expect(true.B)
           dut.io.llc.Request(lane).bits.isA.expect(true.B)
           assert((dut.io.llc.Request(lane).bits.RequestSourceID.peek().litValue & 7) == 0,
@@ -886,8 +888,8 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
         for (bank <- 0 until 8) {
           dut.io.llc.Request(bank).ready.poke(true.B)
         }
-        dut.io.localPerf.issued(LocalMMUSourceClass.A).expect(8.U)
-        dut.io.localPerf.issued(LocalMMUSourceClass.B).expect(0.U)
+        dut.io.localPerf.issued(LocalMMUSourceClass.TrLoader0).expect(8.U)
+        dut.io.localPerf.issued(LocalMMUSourceClass.TrLoader1).expect(0.U)
         dut.clock.step()
 
         dut.io.aPerf.loadTotalFired.expect(8.U)
@@ -900,8 +902,8 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
       }
   }
 
-  ignore should "use the same perfect-batch request path through the BML wrapper" in {
-    test(new BMLWrapper("BML_ab_perfect_test"))
+  ignore should "use the same perfect-batch request path through the trLoader1 wrapper" in {
+    test(new TrLoader1Wrapper("TrLoader1_ab_perfect_test"))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         configureB(dut)
         dut.reset.poke(true.B)
@@ -911,7 +913,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
         dut.clock.step()
         dut.io.ConfigInfo.MicroTaskValid.poke(false.B)
 
-        for (bank <- 0 until dut.ABMatrixRegNBanks) {
+        for (bank <- 0 until dut.TrMatrixRegNBanks) {
           dut.io.LocalMMUIO.Request(bank).ready.poke(false.B)
         }
         var waitCycles = 0
@@ -919,7 +921,7 @@ class MultiChannelsABPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTe
           dut.clock.step()
           waitCycles += 1
         }
-        for (bank <- 0 until dut.ABMatrixRegNBanks) {
+        for (bank <- 0 until dut.TrMatrixRegNBanks) {
           dut.io.LocalMMUIO.Request(bank).valid.expect(true.B)
           dut.io.LocalMMUIO.Request(bank).ready.poke(true.B)
         }

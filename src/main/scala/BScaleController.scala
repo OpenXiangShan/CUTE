@@ -8,13 +8,13 @@ import org.chipsalliance.cde.config._
 class BScaleController(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
 
-        //先整一个MatrixReg的接口的总体设计
+        // Matrix-register interface.
         val FromMatrixRegIO = Flipped(new ABScaleControlMatrixRegIO)
         val ConfigInfo = Flipped(new BSCMicroTaskConfigIO)
         val ScaleB = DecoupledIO(UInt((ScaleWidth*Matrix_MN).W))
-        val ComputeGo = Input(Bool())//由TE发出的计算同步锁步信号，指可以接收新的数据了
+        val ComputeGo = Input(Bool())// TE lockstep signal: the next operand can be accepted.
         val DebugInfo = Input(new DebugInfoIO)
-        val SpadId = Output(UInt(1.W))//双缓冲选择信号，0或1
+        val SpadId = Output(UInt(1.W))// Select one of the two scratchpad buffers.
     })
 
     //TODO:init
@@ -25,11 +25,11 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
 
     val ConfigInfo = io.ConfigInfo
 
-    //任务状态机
+    // Task state machine.
     val s_idle :: s_mm_task :: Nil = Enum(2)
     val state = RegInit(s_idle)
 
-    //计算状态机，用来配合流水线刷新
+    // Compute state machine, including pipeline drain.
     val s_cal_idle :: s_cal_init :: s_cal_working :: s_cal_end :: Nil = Enum(4)
     val calculate_state = RegInit(s_cal_idle)
     val MatrixRegWorkingTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
@@ -44,8 +44,8 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
 
     assert(io.ComputeGo === io.ScaleB.ready)
 
-    //输出state，用于debug
-    when(ConfigInfo.MicroTaskValid && ConfigInfo.MicroTaskReady)//当前配置的指令有效
+    // Print state for debugging.
+    when(ConfigInfo.MicroTaskValid && ConfigInfo.MicroTaskReady)// The current task configuration is valid.
     {
         if(YJPBDCDebugEnable)
         {
@@ -54,68 +54,68 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
         }
     }
 
-    //状态机
+    // State machine.
     when(state === s_idle){
-        //idel状态才可以接受新的配置信息
+        // Accept a new configuration only while idle.
         ConfigInfo.MicroTaskReady := true.B
         when(ConfigInfo.MicroTaskReady && ConfigInfo.MicroTaskValid){
-            //当前配置的指令有效
+            // The current task configuration is valid.
             if (YJPBDCDebugEnable)
             {
-                //debug信息
+                // Debug information.
                 printf("[BDataController<%d>]BDataController: ConfigInfo is valid! MatrixRegWorkingTensor_M = %d,MatrixRegWorkingTensor_N = %d,MatrixRegWorkingTensor_K = %d\n",io.DebugInfo.DebugTimeStampe, ConfigInfo.MatrixRegTensor_M, ConfigInfo.MatrixRegTensor_N, ConfigInfo.MatrixRegTensor_K)
             }
-            state := s_mm_task  //切换到矩阵乘状态
-            MatrixRegWorkingTensor_M := ConfigInfo.MatrixRegTensor_M    //当前执行的矩阵乘任务的M
-            MatrixRegWorkingTensor_N := ConfigInfo.MatrixRegTensor_N    //当前执行的矩阵乘任务的N
-            MatrixRegWorkingTensor_K := ConfigInfo.MatrixRegTensor_K    //当前执行的矩阵乘任务的K的ReduceVector的数量
+            state := s_mm_task  // Enter the matrix multiplication task.
+            MatrixRegWorkingTensor_M := ConfigInfo.MatrixRegTensor_M    // M extent of the current task.
+            MatrixRegWorkingTensor_N := ConfigInfo.MatrixRegTensor_N    // N extent of the current task.
+            MatrixRegWorkingTensor_K := ConfigInfo.MatrixRegTensor_K    // Number of K reduce vectors in the current task.
 
             computeType := ConfigInfo.computeType
             
-            //阶段0，让计算状态机开始初始化，开始计算状态机开始工作
+            // Stage 0: initialize the compute state machine.
             calculate_state := s_cal_init
         }
     }
 
 
-    //矩阵乘的状态机，遍历所有数据就完事了
-    //首先MatrixReg的数据有Tensor_M*Tensor_K个，每个数据是ReduceWidth位
-    //然后我们要把这些数据送入TE，每次送入的数据是Matrix_M个，每个数据是Matrix_N*ReduceWidth位
-    //我们的MatrixReg是先排K再排M，所以我们的数据送入也是先送K再送M，每次送完一批K，重复Tensor_N/Matrix_N次，再切换M
+    // Traverse the matrix data for the multiplication task.
+    // The register contains Tensor_M * Tensor_K vectors of ReduceWidth bits.
+    // Supply Matrix_M vectors to TE, each containing Matrix_N * ReduceWidth bits.
+    // Supply K before M; repeat each K group for Tensor_N / Matrix_N column groups, then advance M.
     val M_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val N_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val K_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
-    //我们这里scala写做除法，但其实硬件里面是移位，所以不会有除法的延迟
-    //Matrix_M一定是2的幂次，所有这个除法一定会被优化成移位，一定是一拍完成的，一定会优化成移位电路
-    val M_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_MN.U) + ((MatrixRegWorkingTensor_M % Matrix_MN.U) =/= 0.U) //每次送入的数据是Matrix_M个，所以M的迭代器是Tensor_M/Matrix_MN, 如果不能整除，那么就要多迭代一次
-    val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_MN.U)//每次送入的数据是Matrix_N个，所以N的迭代器是Tensor_N/Matrix_MN
-    val K_IteratorMax = (MatrixRegWorkingTensor_K)//K已经是ReduceVector的数量了不需要再除了
+    // Division by a power of two becomes a hardware shift.
+    // Matrix_M is a power of two, so division becomes a shift without a divider.
+    val M_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_MN.U) + ((MatrixRegWorkingTensor_M % Matrix_MN.U) =/= 0.U) // Supply Matrix_M rows per step; round up Tensor_M / Matrix_MN for a partial group.
+    val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_MN.U)// Supply Matrix_N columns per step; use Tensor_N / Matrix_MN column groups.
+    val K_IteratorMax = (MatrixRegWorkingTensor_K)// K already counts reduce vectors; no further division is needed.
 
-    val Max_Caculate_Iter = M_IteratorMax * N_IteratorMax * K_IteratorMax   //总共的迭代次数
+    val Max_Caculate_Iter = M_IteratorMax * N_IteratorMax * K_IteratorMax   // Total iteration count.
 
-    //统计读数请求次数
-    val BVectorCount = RegInit(0.U(32.W))//当前计算任务实际上的迭代次数
-    val BRequestVectorCount = RegInit(0.U(32.W))//当前计算任务实际上的迭代次数
+    // Count matrix-register read requests.
+    val BVectorCount = RegInit(0.U(32.W))// Number of iterations completed by the current compute task.
+    val BRequestVectorCount = RegInit(0.U(32.W))// Number of iterations completed by the current compute task.
 
-    val MatrixRegRequestBankAddr = io.FromMatrixRegIO.BankAddr  //往MatrixReg请求数据的地址
-    MatrixRegRequestBankAddr.bits := 0.U.asTypeOf(MatrixRegRequestBankAddr.bits)        //全部初始化为0
-    MatrixRegRequestBankAddr.valid := false.B                                           //默认无效
-    val MatrixRegData = io.FromMatrixRegIO.Data //从MatrixReg读数，会有1周期的延迟
+    val MatrixRegRequestBankAddr = io.FromMatrixRegIO.BankAddr  // Addresses requested from the matrix register.
+    MatrixRegRequestBankAddr.bits := 0.U.asTypeOf(MatrixRegRequestBankAddr.bits)        // Initialize every address to zero.
+    MatrixRegRequestBankAddr.valid := false.B                                           // Invalid by default.
+    val MatrixRegData = io.FromMatrixRegIO.Data // Matrix-register read data arrives one cycle after the request.
 
-    val MatrixRegDataHoldReg = RegInit(VecInit(Seq.fill(ABScaleNSlices)(0.U((ScaleWidth * ReduceGroupSize).W)))) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
-    // val MatrixRegDataHoldReg = RegInit(0.U.asTypeOf(MatrixRegData.bits)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
-    val MatrixRegDataHoldValid = RegInit(false.B) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
+    val MatrixRegDataHoldReg = RegInit(VecInit(Seq.fill(ABScaleNSlices)(0.U((ScaleWidth * ReduceGroupSize).W)))) // Hold matrix-register data across MTE stalls to avoid rereading it.
+    // val MatrixRegDataHoldReg = RegInit(0.U.asTypeOf(MatrixRegData.bits)) // Hold data across MTE stalls.
+    val MatrixRegDataHoldValid = RegInit(false.B) // Hold matrix-register data across MTE stalls to avoid rereading it.
 
     val bit_index = RegInit(VecInit(Seq.fill(Matrix_MN)(0.U(log2Ceil(MatrixRegMaxTensorDimBitSize * ScaleWidth).W))))
     for (i <- 0 until Matrix_MN){
         bit_index(i) := ((i * ReduceGroupSize).U + K_Iterator) * (ScaleVecWidth(computeType) * 8.U)
     }
 
-    //如果是mm_task,且计算状态机是init，那么就开始初始化
+    // Initialize when the task is active and the compute state machine is in init.
     when(state === s_mm_task){
         when(calculate_state === s_cal_init){
-            //初始化阶段，要将所有的迭代器初始化
+            // Initialize all iterators.
             M_Iterator := 0.U
             N_Iterator := 0.U
             K_Iterator := 0.U
@@ -124,27 +124,27 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
             MatrixRegDataHoldReg := 0.U.asTypeOf(MatrixRegDataHoldReg)
             MatrixRegDataHoldValid := false.B
             sliceid := 0.U
-            //阶段1，初始化完成，开始供数任务
+            // Stage 1: initialization is complete; start supplying operands.
             calculate_state := s_cal_working
         }.elsewhen(calculate_state === s_cal_working){
-            //阶段2，计算开始，计算对Scarchpad的取数地址
+            // Stage 2: generate scratchpad read addresses.
 
             // if (YJPBDCDebugEnable)
             // {
             //     printf("[BDataController<%d>]BDataController: M_Iterator is %d, N_Iterator is %d, K_Iterator is %d\n",io.DebugInfo.DebugTimeStampe, M_Iterator, N_Iterator, K_Iterator)
             //     printf("[BDataController<%d>]BDataController: M_IteratorMax is %d, N_IteratorMax is %d, K_IteratorMax is %d\n",io.DebugInfo.DebugTimeStampe, M_IteratorMax, N_IteratorMax, K_IteratorMax)
             // }
-            //MTE循环的最外层是M，然后是N，最后是K,所以这里在同步信号的ComputeGo的协同下，执行Max_Caculate_Iter次取数
-            val next_addr = Wire(UInt(ABMatrixRegBankNEntries.W))
+            // MTE iterates M, then N, then K; ComputeGo advances the Max_Caculate_Iter operand requests.
+            val next_addr = Wire(UInt(TrMatrixRegBankNEntries.W))
             next_addr := (N_Iterator * Matrix_MN.U * K_IteratorMax) * ScaleVecWidth(computeType) * 8.U / outsideDataWidth.U 
             sliceid := ((N_Iterator * Matrix_MN.U * K_IteratorMax) * ScaleVecWidth(computeType) * 8.U / (ScaleWidth * ReduceGroupSize).U) % ABScaleNSlices.U
             MatrixRegRequestBankAddr.bits := next_addr
             
-            //只要ComputeGo有效，就表示一定会有一个数据被消耗，我们可以继续取数
-            //但我们有一个周期的读数延迟，所以如果当前拍不能再继续计算，则我们取得数会在NACK，我们将NACK的数据保存在holdreg中
-            //只要等Computgo有效，就可以继续取数，我们会将NACK的数据输出给TE
+            // ComputeGo consumes one operand and permits the next read.
+            // The SRAM read takes one cycle; hold its response if computation stalls before it arrives.
+            // When ComputeGo resumes, forward the held operand to TE.
             when(io.ComputeGo && BRequestVectorCount < Max_Caculate_Iter){
-                //计算取数地址
+                // Calculate the operand read address.
                 MatrixRegRequestBankAddr.valid := true.B
                 BRequestVectorCount := BRequestVectorCount + 1.U
                 N_Iterator := N_Iterator + 1.U
@@ -160,10 +160,10 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
                 MatrixRegRequestBankAddr.valid := false.B
             }
 
-            //只要MatrixRegData是valid或者holdreg是valid，就可以输出数据
+            // Output an operand when either the SRAM response or the hold register is valid.
             when(MatrixRegData.valid || MatrixRegDataHoldValid){
                 io.ScaleB.valid := true.B
-                val ResponseData = Mux(MatrixRegDataHoldValid,MatrixRegDataHoldReg, MatrixRegData.bits)//优先输出holdreg的数据
+                val ResponseData = Mux(MatrixRegDataHoldValid,MatrixRegDataHoldReg, MatrixRegData.bits)// Prefer the held operand.
                 val scaleb_vec = Wire(Vec(Matrix_MN, UInt((ScaleWidth).W)))
                 io.ScaleB.bits := scaleb_vec.asUInt
                 for (i <- 0 until Matrix_MN){
@@ -183,40 +183,40 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
 
             when(io.ScaleB.fire && io.ComputeGo)
             {
-                //只有当数据被消耗的时候，才会增加AVectorCount
+                // Increment AVectorCount only when an operand is consumed.
                 BVectorCount := BVectorCount + 1.U
-                MatrixRegDataHoldValid := false.B   //只要数据被消耗，肯定优先消耗holdreg的数据
-                when(BVectorCount === Max_Caculate_Iter - 1.U){//如果数据全部被消耗，那么我们就结束计算
+                MatrixRegDataHoldValid := false.B   // Consume the held operand first whenever data is accepted.
+                when(BVectorCount === Max_Caculate_Iter - 1.U){// Finish computation after all operands have been consumed.
                     calculate_state := s_cal_end
                     if (YJPBDCDebugEnable)
                     {
                         printf("[BDataController<%d>]BDataController: AVectorCount is %d, we can end this task\n",io.DebugInfo.DebugTimeStampe, BVectorCount)
                     }
                 }
-                //输出AVectorCount，VectorA的信息
+                // Print the operand count and vector for debugging.
                 if (YJPBDCDebugEnable)
                 {
                     printf("[BDataController<%d>]BDataController: BVectorCount is %d,BVector is %d\n",io.DebugInfo.DebugTimeStampe, BVectorCount,io.ScaleB.bits)
                 }
             }.elsewhen(io.ScaleB.valid && !io.ScaleB.ready && !io.ComputeGo && MatrixRegData.valid){
-                //如果数据没有被消耗，那么我们就要保存MatrixReg的数据
-                //但我们得看看MatrixReg的数据是不是有效的
+                // Hold matrix-register data when it cannot be consumed.
+                // Capture data only when the SRAM response is valid.
                 MatrixRegDataHoldReg := MatrixRegData.bits
                 MatrixRegDataHoldValid := true.B
             }.elsewhen(io.ScaleB.valid && !io.ScaleB.ready && !io.ComputeGo && MatrixRegDataHoldValid)
             {
-                //如果数据没有被消耗，且我们HlodReg中有数据，我们就继续Hlod这份数据
+                // Keep the held operand while computation remains stalled.
                 MatrixRegDataHoldReg := MatrixRegDataHoldReg
                 MatrixRegDataHoldValid := true.B
             }
         }.elsewhen(calculate_state === s_cal_end){
-            //当前计算任务结束，等待TaskCtrl的确认
+            // The compute task has finished; wait for TaskController acknowledgement.
             io.ConfigInfo.MicroTaskEndValid := true.B
             when(io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady){
-                //TaskCtrl确认后，我们就可以进入下一个任务了
+                // Start another task after TaskController acknowledges completion.
                 state := s_idle
                 calculate_state := s_cal_idle
-                CurrentSpadId := ~CurrentSpadId  // 切换双缓冲
+                CurrentSpadId := ~CurrentSpadId  // Switch scratchpad buffers.
                 if (YJPBDCDebugEnable)
                 {
                     printf("[BDataController<%d>]BDataController: TaskCtrl confirm, we can go to next task\n",io.DebugInfo.DebugTimeStampe)
@@ -224,11 +224,11 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
             }
 
         }.elsewhen(calculate_state === s_cal_idle){
-            //计算状态机空闲
-            //加速器闲闲没事做
+            // The compute state machine is idle.
+            // No accelerator work is active.
         }.otherwise{
-            //未定义状态
-            //加速器闲闲没事做
+            // Undefined state.
+            // No accelerator work is active.
         }
     }    
 }

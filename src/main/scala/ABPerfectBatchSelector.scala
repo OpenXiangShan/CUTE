@@ -4,9 +4,9 @@ import chisel3._
 import chisel3.util._
 
 /**
-  * Source-neutral entry point for AML/BML normal-load candidate selection.
+  * Source-neutral entry point for trLoader0/trLoader1 normal-load candidate selection.
   *
-  * CMLPerfectBatchSelector contains the reviewed bounded greedy algorithm and
+  * AccLoadPerfectBatchSelector contains the reviewed bounded greedy algorithm and
   * exact Omega survivor predicate. Keeping this forwarding API separate lets
   * AB loaders depend on the contract without duplicating the route model.
   */
@@ -24,6 +24,6 @@ object ABPerfectBatchSelector {
     require(destination.size == valid.size)
     require(retained.size == valid.size)
     require(isPow2(l2BankCount))
-    CMLPerfectBatchSelector.select(valid, address, destination, retained, seedPointer, l2BankCount)
+    AccLoadPerfectBatchSelector.select(valid, address, destination, retained, seedPointer, l2BankCount)
   }
 }

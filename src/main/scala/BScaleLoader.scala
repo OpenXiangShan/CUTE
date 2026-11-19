@@ -8,24 +8,24 @@ import org.chipsalliance.cde.config._
 
 class BScaleSourceIdSearch(implicit p: Parameters) extends CuteBundle{
     // val MatrixRegBankId = UInt(log2Ceil(ABScaleNSlices).W)
-    val MatrixRegAddr = UInt(log2Ceil(ABMatrixRegBankNEntries).W)
+    val MatrixRegAddr = UInt(log2Ceil(TrMatrixRegBankNEntries).W)
 }
 
-//对于卷积，数据摆放是[khkwoc][ic],对于矩阵乘，数据摆放是[N][K]
+// Convolution data uses [khkwoc][ic]; matrix multiplication data uses [N][K].
 
 class BScaleLoader(implicit p: Parameters) extends CuteModule{
     val io = IO(new Bundle{
-        //先整一个MatrixReg的接口的总体设计
+        // Register-storage interface.
         val ToMatrixRegIO = Flipped(new ABScaleLoaderMatrixRegIO)
         val ConfigInfo = Flipped(new BSLMicroTaskConfigIO)
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
-        val SpadId = Output(UInt(1.W))//双缓冲选择信号，0或1
+        val SpadId = Output(UInt(1.W))// Double-buffer selector, either 0 or 1.
     })
 
     io.ToMatrixRegIO.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.BankAddr)
     io.ToMatrixRegIO.Data := 0.U.asTypeOf(io.ToMatrixRegIO.Data)
-    for (i <- 0 until ABMatrixRegNBanks) {
+    for (i <- 0 until TrMatrixRegNBanks) {
         io.LocalMMUIO.Request(i).valid := false.B
         io.LocalMMUIO.Request(i).bits := 0.U.asTypeOf(io.LocalMMUIO.Request(i).bits)
         io.LocalMMUIO.Request(i).bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
@@ -51,39 +51,39 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
     val MemoryRequestSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)+1).W))
 
     
-    //任务状态机
+    // Task state machine.
     val s_idle :: s_mm_task :: Nil = Enum(2)
     val state = RegInit(s_idle)
 
 
-    //访存状态机，用来配合流水线刷新
+    // Memory state machine, including pipeline draining.
     val s_load_idle :: s_load_init :: s_load_working :: s_load_end :: Nil = Enum(4)
     val memoryload_state = RegInit(s_load_idle)
-    val Scale_Block_BaseAddr = Reg(UInt(MMUAddrWidth.W)) //分块矩阵的基地址
+    val Scale_Block_BaseAddr = Reg(UInt(MMUAddrWidth.W)) // Base address of the current tensor block.
 
-    val Conherent = RegInit(true.B) //是否一致性访存的标志位，由TaskController提供
+    val Conherent = RegInit(true.B) // Coherent-access flag supplied by TaskController.
 
     val CurrentSpadId = RegInit(0.U(1.W))
     io.SpadId := CurrentSpadId
 
-    //如果configinfo有效
+    // Accept a valid configuration.
 
     when(state === s_idle){
-        //idel状态才可以接受新的配置信息
+        // Accept new configuration only while idle.
         ConfigInfo.MicroTaskReady := true.B
         when(ConfigInfo.MicroTaskReady && ConfigInfo.MicroTaskValid){
-            //当前配置的指令有效
+            // The configuration describes a valid instruction.
             state := s_mm_task
             memoryload_state := s_load_init
             // ApplicationTensor_M := io.ConfigInfo.bits.ApplicationTensor_M
             computeType := io.ConfigInfo.ApplicationScale_B.computeType
             MatrixRegTensor_N := io.ConfigInfo.MatrixRegTensor_N
             MatrixRegTensor_K := io.ConfigInfo.MatrixRegTensor_K
-            Scale_B_BaseVaddr := io.ConfigInfo.ApplicationScale_B.ApplicationScale_B_BaseVaddr //这个不重要
-            Scale_Block_BaseAddr := io.ConfigInfo.ApplicationScale_B.BlockScale_B_BaseVaddr //这个是关键
+            Scale_B_BaseVaddr := io.ConfigInfo.ApplicationScale_B.ApplicationScale_B_BaseVaddr // Full tensor base address.
+            Scale_Block_BaseAddr := io.ConfigInfo.ApplicationScale_B.BlockScale_B_BaseVaddr // Base address used for this block's requests.
             Conherent := io.ConfigInfo.Conherent
 
-            if(YJPBMLDebugEnable)
+            if(YJPTrLoader1DebugEnable)
             {
                 printf("[BSL<%d>]BScaleLoader Task Start\n",io.DebugInfo.DebugTimeStampe)
                 printf("[BSL<%d>]MatrixRegTensor_N:%d,MatrixRegTensor_K:%d\n",io.DebugInfo.DebugTimeStampe,io.ConfigInfo.MatrixRegTensor_N,io.ConfigInfo.MatrixRegTensor_K)
@@ -92,19 +92,19 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
         }
     }
 
-    //处理取数逻辑，BScartchpad的数据大概率是LLC内的数据，所以我们可以直接从LLC中取数
-    //如果是memoryload_state === s_load_init，那么我们就要初始化各个寄存器
-    //如果是memoryload_state === s_load_working，那么我们就要开始取数
-    //如果是memoryload_state === s_load_end，那么我们就要结束取数
-    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)+1).W)) //总共要加载的数据量
+    // Read the scale data through LLC, where it is expected to be cached.
+    // Initialize registers in s_load_init.
+    // Issue and receive data in s_load_working.
+    // Complete the transfer in s_load_end.
+    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)+1).W)) // Total amount of data loaded.
     val CurrentLoaded_BlockTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val CurrentLoaded_BlockTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     
     val MaxBlockTensor_N_Index = MatrixRegTensor_N
     val MaxBlockTensor_K_Index = MatrixRegTensor_K
 
-    //一个cam来存储访存请求的source_id对应的Scarchpad的地址和bank号
-    //用sourceid做索引，存储Scarchpad的地址和bank号，是一组寄存器
+    // Map each in-flight source ID to its scratchpad bank and address.
+    // This is a register table indexed by source ID.
     
     // val SoureceIdSearchTable = VecInit(Seq.fill(SoureceMaxNum){RegInit(new BScaleSourceIdSearch)})
     val SoureceIdSearchTable = RegInit(VecInit(Seq.fill(SoureceMaxNum)(0.U((new BScaleSourceIdSearch).getWidth.W))))
@@ -119,13 +119,13 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
         TotalLoadSize := 0.U
         CurrentLoaded_BlockTensor_N := 0.U
         CurrentLoaded_BlockTensor_K := 0.U
-        MaxRequestIter := MatrixRegTensor_K * MatrixRegTensor_N * ScaleVecWidth(computeType) / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
+        MaxRequestIter := MatrixRegTensor_K * MatrixRegTensor_N * ScaleVecWidth(computeType) / (outsideDataWidthByte.U) // Total number of memory requests to issue.
         printf("[bSL] MaxRequestIter:%d. MatrixRegTensor_K:%d,MatrixRegTensor_N:%d,ScaleVecWidth:%d,outsideDataWidthByte:%d\n",MaxRequestIter,MatrixRegTensor_K,MatrixRegTensor_N,ScaleVecWidth(computeType), outsideDataWidthByte.U)
     }.elsewhen(memoryload_state === s_load_working){
-        //根据不同的MemoryOrder，执行不同的访存模式
+        // Select the access traversal from MemoryOrder.
 
-        //只要Request是ready，我们发出的访存请求就会被MMU送往总线，我们可以发出下一个访存请求
-        //不用担心乘法电路延迟，再不济，可以提前几个周期将乘法结果算好，做成fifo送进来
+        // A ready request is accepted by LocalMMU, allowing the next request to proceed.
+        // Address products can be computed earlier and queued if multiplication timing becomes critical.
         Request.bits.RequestAddr := Scale_Block_BaseAddr + outsideDataWidthByte.U * MemoryRequestSize
         
         val sourceId = Mux(Conherent,io.LocalMMUIO.ConherentRequsetSourceID,io.LocalMMUIO.nonConherentRequsetSourceID)
@@ -135,40 +135,40 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
         Request.bits.UseAllocatedSourceID := true.B
         Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
         Request.valid := true.B
-        when(MemoryRequestSize === MaxRequestIter)//Is_invalid_IH_IW时，不发出访存请求，尝试直接0填充
+        when(MemoryRequestSize === MaxRequestIter)// For invalid IH/IW coordinates, use zero fill instead of issuing a memory request.
         {
             Request.valid := false.B
         }
 
         
-        // 内存排布是每个子张量的因子都连续放，具体看文档
+        // Scale factors for each subtensor are contiguous; see the layout documentation.
         
-        when(Request.fire && sourceId.valid){//符合条件的话，这条访存请求一定会被发出
-            //Request.ready表明了LocalMMU会处理这条访存请求，sourceID valid，表明这条访存请求的sourceID是被LocalMMU认可有效才发送到这个模块的
+        when(Request.fire && sourceId.valid){// Both the memory request and its source ID are accepted.
+            // Request.ready indicates LocalMMU acceptance; sourceId.valid indicates an allocated source ID.
             val TableItem = Wire(new BScaleSourceIdSearch)
             TableItem.MatrixRegAddr := MemoryRequestSize 
             SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
-            if (YJPBMLDebugEnable)
+            if (YJPTrLoader1DebugEnable)
             {
-                //输出id和request的信息
-                printf("[BML<%d>]sourceId:%d,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,sourceId.bits,TableItem.MatrixRegAddr)
-                //输出这次request的信息
-                printf("[BML<%d>]RequestAddr:%x,RequestConherent:%d,RequestSourceID:%d,RequestType_isWrite:%d\n",io.DebugInfo.DebugTimeStampe,Request.bits.RequestAddr,Request.bits.RequestConherent,Request.bits.RequestSourceID,Request.bits.RequestType_isWrite)
+                // Log the source ID and request metadata.
+                printf("[TrLoader1<%d>]sourceId:%d,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,sourceId.bits,TableItem.MatrixRegAddr)
+                // Log this memory request.
+                printf("[TrLoader1<%d>]RequestAddr:%x,RequestConherent:%d,RequestSourceID:%d,RequestType_isWrite:%d\n",io.DebugInfo.DebugTimeStampe,Request.bits.RequestAddr,Request.bits.RequestConherent,Request.bits.RequestSourceID,Request.bits.RequestType_isWrite)
             }
             when(MemoryRequestSize < MaxRequestIter){
                 MemoryRequestSize := MemoryRequestSize + 1.U
             }
         }
         
-        //接受访存的返回值
-        //一个cam来存储访存请求的source_id对应的Scarchpad的地址和bank号
-        //根据response的sourceid，找到对应的Scarchpad的Fill_Table的队伍头的索引，填充到Fill_Table中
+        // Receive a memory response.
+        // Map each in-flight source ID to its scratchpad bank and address.
+        // Use the response source ID to find the target scratchpad fill-table entry.
         val Response = io.LocalMMUIO.Response(0)
         Response.ready := true.B
         
         when(Response.fire){
-            //Trick注意这个设计，是doublebuffer的，AB只能是doublebuffer，回数一定是不会堵的，而且我们有时间对数据进行压缩解压缩～
-            //如果要做release设计，要么数据位宽翻倍，腾出周期来使得有空泡能给写任务进行，要么就是数据位宽不变，将读写端口变成独立的读和独立的写端口
+            // The double-buffered A/B design assumes responses can always be accepted, leaving time for data conversion.
+            // A release-based design could double the data width to leave write slots, or use separate read and write ports.
             val sourceId = Response.bits.ReseponseSourceID
             val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new BScaleSourceIdSearch).MatrixRegAddr
             val ResponseData = Wire(Vec(ABScaleNSlices,UInt((ScaleWidth * ReduceGroupSize).W)))
@@ -184,17 +184,17 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
             }
 
             
-            if (YJPBMLDebugEnable)
+            if (YJPTrLoader1DebugEnable)
             {
-                //输出这次response的信息
+                // Log this memory response.
                 printf("[BSL<%d>]ResponseData:%x,MatrixRegAddr:%d\n",io.DebugInfo.DebugTimeStampe,Response.bits.ReseponseData,MatrixRegAddr)
             }
         }
 
-        //状态机切换
+        // Advance the state machine.
         when(TotalLoadSize === (MaxRequestIter)){
             memoryload_state := s_load_end
-            if (YJPCMLDebugEnable)
+            if (YJPAccMemoryDebugEnable)
             {
                 printf("[BScaleLoader_Load<%d>]LoadEnd\n",io.DebugInfo.DebugTimeStampe)
             }
@@ -205,8 +205,8 @@ class BScaleLoader(implicit p: Parameters) extends CuteModule{
         when(io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady){
             memoryload_state := s_load_idle
             state := s_idle
-            CurrentSpadId := ~CurrentSpadId  // 切换双缓冲
-            if(YJPBMLDebugEnable)
+            CurrentSpadId := ~CurrentSpadId  // Switch the double buffer.
+            if(YJPTrLoader1DebugEnable)
             {
                 printf("[BSL<%d>]BScaleLoader Task End\n",io.DebugInfo.DebugTimeStampe)
             }
