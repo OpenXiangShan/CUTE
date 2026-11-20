@@ -60,7 +60,7 @@ class CuteDifftestConcurrentSpec extends AnyFlatSpec {
       ChiselStage.emitCHIRRTL(new CuteDifftestMaskHarness(rawLoad, async))
       val events = DifftestModule.get_current_interfaces().drop(previous).map(_._1)
       val writeback = events.collect { case event: DiffAmuWritebackEvent => event }
-      assert(writeback.size == 1)
+      assert(writeback.size == (if (rawLoad == 0 && !async) 8 else 1))
       val event = writeback.head
       assert(event.bankValid.getWidth == event.nBanks)
       assert(!event.toCppDeclaration(packed = true, aligned = false).contains("bankValid["))
