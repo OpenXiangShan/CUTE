@@ -3,6 +3,7 @@ package cute
 import chisel3._
 import difftest.{DiffAmuWritebackEvent, DiffAmuHashEvent, DifftestBundle, DifftestModule}
 import difftest.common.DifftestWiring
+import difftest.matrix.MatrixWritebackBatch
 import difftest.util.MatrixHash
 import freechips.rocketchip.util.{AsyncQueueParams, AsyncQueueSink, AsyncQueueSource}
 import org.chipsalliance.cde.config.{Field, Parameters}
@@ -149,10 +150,15 @@ object MatrixRegWriteProbes {
             val writes = Wire(new DiffAmuWritebackEvent(banks, writebackWordsPerBank))
             writes := DontCare
             writes.valid := false.B
-            val event = CuteDifftest(
-              new DiffAmuWritebackEvent(banks, writebackWordsPerBank, hasMask = false), dontCare = true
-            )
+            val event = Wire(new DiffAmuWritebackEvent(banks, writebackWordsPerBank, hasMask = false))
             event.elements.foreach { case (name, field) => field := writes.elements(name) }
+            if (ports == 1 && params.DifftestAsyncClockName.isEmpty) {
+              val (block, finish) = MatrixWritebackBatch(event)
+              CuteDifftest(chiselTypeOf(block)) := block
+              CuteDifftest(chiselTypeOf(finish)) := finish
+            } else {
+              CuteDifftest(chiselTypeOf(event)) := event
+            }
             val fullMask = ((BigInt(1) << description.bankBytes(params)) - 1).U
             for (bank <- 0 until banks) {
               when(writes.valid && writes.bankValid(bank)) {

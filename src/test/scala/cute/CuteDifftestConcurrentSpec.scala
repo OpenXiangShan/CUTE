@@ -2,7 +2,7 @@ package cute
 
 import chisel3._
 import circt.stage.ChiselStage
-import difftest.{DiffAmuWritebackEvent, DifftestModule}
+import difftest.{DiffAmuWritebackBlock, DiffAmuWritebackEvent, DifftestModule}
 import difftest.util.BundleProfile
 import org.chipsalliance.cde.config.{Config, Parameters}
 import org.scalatest.flatspec.AnyFlatSpec
@@ -61,6 +61,8 @@ class CuteDifftestConcurrentSpec extends AnyFlatSpec {
       val events = DifftestModule.get_current_interfaces().drop(previous).map(_._1)
       val writeback = events.collect { case event: DiffAmuWritebackEvent => event }
       assert(writeback.size == 1)
+      val blocks = events.collect { case event: DiffAmuWritebackBlock => event }
+      assert(blocks.size == (if (rawLoad == 0 && !async) 1 else 0))
       val event = writeback.head
       assert(event.bankValid.getWidth == event.nBanks)
       assert(!event.toCppDeclaration(packed = true, aligned = false).contains("bankValid["))
