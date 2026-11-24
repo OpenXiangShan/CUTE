@@ -85,6 +85,51 @@ class AccMatrixRegLoaderWriteSpec extends AnyFlatSpec with ChiselScalatestTester
       clearCInputs(dut)
       assert(readRow(dut, 0) == original)
       assert(readRow(dut, 1) == original)
+
+      // Nonadjacent addresses, reversed parity, and consecutive full-width reads.
+      val reg = dut.io.MatrixRegIO.FromMemoryLoader
+      val pairs = Seq(Seq(0, 17), Seq(19, 2))
+      def pattern(addr: Int, bank: Int): BigInt =
+        (0 until dut.AccMatrixRegEntryByteSize).foldLeft(BigInt(0)) { (word, i) =>
+          word | (BigInt((addr * 53 + bank * 17 + i) & 255) << (i * 8))
+        }
+      for (pair <- pairs) {
+        clearCInputs(dut)
+        reg.LoadReadWriteRequest.poke(4.U)
+        for (bank <- 0 until dut.AccMatrixRegNBanks; (addr, slot) <- pair.zipWithIndex) {
+          val w = reg.WriteRequestToMatrixReg.WriteRequest(bank)(slot)
+          w.BankAddr.valid.poke(true.B)
+          w.BankAddr.bits.poke(addr.U)
+          w.Data.valid.poke(true.B)
+          w.Data.bits.poke(pattern(addr, bank).U)
+          w.ByteMask.valid.poke(true.B)
+          w.ByteMask.bits.poke(((BigInt(1) << dut.AccMatrixRegEntryByteSize) - 1).U)
+        }
+        dut.clock.step()
+      }
+      clearCInputs(dut)
+      reg.StoreReadWriteRequest.poke(8.U)
+      for (pair <- pairs) {
+        for (bank <- 0 until dut.AccMatrixRegNBanks; (addr, slot) <- pair.zipWithIndex) {
+          val port = reg.ReadRequestToMatrixReg.BankAddr(bank)(slot)
+          port.valid.poke(true.B)
+          port.bits.poke(addr.U)
+        }
+        dut.clock.step()
+        for (bank <- 0 until dut.AccMatrixRegNBanks; (addr, slot) <- pair.zipWithIndex) {
+          val response = reg.ReadRequestToMatrixReg.ReadResponseData(bank)(slot)
+          response.valid.expect(true.B)
+          response.bits.expect(pattern(addr, bank).U)
+        }
+      }
+      clearCInputs(dut)
+      reg.StoreReadWriteRequest.poke(8.U)
+      reg.ReadRequestToMatrixReg.BankAddr(0)(1).valid.poke(true.B)
+      reg.ReadRequestToMatrixReg.BankAddr(0)(1).bits.poke(17.U)
+      dut.clock.step()
+      reg.ReadRequestToMatrixReg.ReadResponseData(0)(0).valid.expect(false.B)
+      reg.ReadRequestToMatrixReg.ReadResponseData(0)(1).valid.expect(true.B)
+      reg.ReadRequestToMatrixReg.ReadResponseData(0)(1).bits.expect(pattern(17, 0).U)
     }
   }
 }

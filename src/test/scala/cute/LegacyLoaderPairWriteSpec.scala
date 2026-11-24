@@ -40,8 +40,8 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
     io.LoadReadWriteResponse.poke(4.U)
     io.StoreReadWriteResponse.poke(0.U)
     for (bank <- 0 until banks) {
-      io.ReadRequestToMatrixReg.ReadResponseData(bank).valid.poke(false.B)
-      io.ReadRequestToMatrixReg.ReadResponseData(bank).bits.poke(0.U)
+      io.ReadRequestToMatrixReg.ReadResponseData(bank).foreach(_.valid.poke(false.B))
+      io.ReadRequestToMatrixReg.ReadResponseData(bank).foreach(_.bits.poke(0.U))
     }
   }
 

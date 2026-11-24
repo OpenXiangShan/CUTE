@@ -148,8 +148,9 @@ class BDataController(implicit p: Parameters) extends CuteModule{
                 //     printf("[BDataController<%d>]BDataController: M_IteratorMax is %d, N_IteratorMax is %d, K_IteratorMax is %d\n",io.DebugInfo.DebugTimeStampe, M_IteratorMax, N_IteratorMax, K_IteratorMax)
                 // }
                 // MTE iterates M, then N, then K; ComputeGo advances the Max_Caculate_Iter operand requests.
+                val logicalColumn = AccBlockLayout.swapColumn(M_Iterator, N_Iterator)
                 val next_addr = Wire(UInt(TrMatrixRegBankNEntries.W))
-                next_addr := N_Iterator * K_IteratorMax + K_Iterator
+                next_addr := logicalColumn * K_IteratorMax + K_Iterator
                 MatrixRegRequestBankAddr.bits.foreach(_ := next_addr)
                 
                 // ComputeGo consumes one operand and permits the next read.

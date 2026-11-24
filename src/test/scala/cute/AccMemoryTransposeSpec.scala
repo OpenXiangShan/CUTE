@@ -28,9 +28,9 @@ class AccMemoryTransposeHarness(implicit p: Parameters) extends CuteModule {
     val taskEnd = Output(Bool())
     val request = Decoupled(new MMURequestIO)
     val response = Flipped(Decoupled(new MMUResponseIO))
-    val bankAddr = Output(Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W))))
-    val data = Output(Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryBitSize.W))))
-    val byteMask = Output(Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryByteSize.W))))
+    val bankAddr = Output(Vec(AccMatrixRegNBanks, Vec(2, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W)))))
+    val data = Output(Vec(AccMatrixRegNBanks, Vec(2, Valid(UInt(AccMatrixRegEntryBitSize.W)))))
+    val byteMask = Output(Vec(AccMatrixRegNBanks, Vec(2, Valid(UInt(AccMatrixRegEntryByteSize.W)))))
   })
 
   val loader = Module(new AccMemoryLegacy)
@@ -61,12 +61,15 @@ class AccMemoryTransposeHarness(implicit p: Parameters) extends CuteModule {
   loader.io.ToMatrixRegIO.LoadReadWriteResponse := loader.io.ToMatrixRegIO.LoadReadWriteRequest
   loader.io.ToMatrixRegIO.StoreReadWriteResponse := loader.io.ToMatrixRegIO.StoreReadWriteRequest
   for (bank <- 0 until AccMatrixRegNBanks) {
-    loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid := false.B
-    loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits := 0.U
+    loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).foreach(_.valid := false.B)
+    loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).foreach(_.bits := 0.U)
   }
-  io.bankAddr := loader.io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr
-  io.data := loader.io.ToMatrixRegIO.WriteRequestToMatrixReg.Data
-  io.byteMask := loader.io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask
+  for (bank <- 0 until AccMatrixRegNBanks; slot <- 0 until 2) {
+    val write = loader.io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(bank)(slot)
+    io.bankAddr(bank)(slot) := write.BankAddr
+    io.data(bank)(slot) := write.Data
+    io.byteMask(bank)(slot) := write.ByteMask
+  }
 
   val config = loader.io.ConfigInfo
   config.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := io.base
@@ -133,7 +136,7 @@ class AccMemoryTransposeSpec extends AnyFlatSpec with ChiselScalatestTester {
       byte <- 0 until resultBytes
     } yield {
       val bank = column % bankCount
-      val entry = (column / bankCount) * entriesPerRowGroup + row / bankCount
+      val entry = (column / bankCount) * entriesPerRowGroup + ((row / bankCount) ^ ((column / bankCount) & 1))
       val byteOffset = (row % bankCount) * resultBytes + byte
       val value = (elementValue(row, column) >> (byte * 8)) & 0xff
       (bank, entry, byteOffset) -> value
@@ -190,16 +193,16 @@ class AccMemoryTransposeSpec extends AnyFlatSpec with ChiselScalatestTester {
           dut.io.sourceId.poke(nextSourceId.U)
           pokeResponse(dut, activeResponse)
 
-          for (bank <- 0 until bankCount) {
-            val addrValid = dut.io.bankAddr(bank).valid.peek().litToBoolean
-            val dataValid = dut.io.data(bank).valid.peek().litToBoolean
-            val maskValid = dut.io.byteMask(bank).valid.peek().litToBoolean
+          for (bank <- 0 until bankCount; slot <- 0 until 2) {
+            val addrValid = dut.io.bankAddr(bank)(slot).valid.peek().litToBoolean
+            val dataValid = dut.io.data(bank)(slot).valid.peek().litToBoolean
+            val maskValid = dut.io.byteMask(bank)(slot).valid.peek().litToBoolean
             assert(addrValid == dataValid && dataValid == maskValid,
               s"bank $bank emitted mismatched write-valid signals")
             if (addrValid) {
-              val entry = dut.io.bankAddr(bank).bits.peek().litValue.toInt
-              val data = dut.io.data(bank).bits.peek().litValue
-              val mask = dut.io.byteMask(bank).bits.peek().litValue
+              val entry = dut.io.bankAddr(bank)(slot).bits.peek().litValue.toInt
+              val data = dut.io.data(bank)(slot).bits.peek().litValue
+              val mask = dut.io.byteMask(bank)(slot).bits.peek().litValue
               assert(entry >= 0 && entry < 256, s"bank $bank wrote out-of-range entry $entry")
               assert(mask.bitCount == resultBytes,
                 s"bank $bank entry $entry expected a $resultBytes-byte write, got mask 0x${mask.toString(16)}")

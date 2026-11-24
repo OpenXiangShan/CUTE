@@ -462,7 +462,7 @@ class MultiChannelTrLoader(
     io.perfProbe.loadPerfectBatches := 0.U
     io.perfProbe.loadPerfectRequests := 0.U
     io.perfProbe.loadPerfectBatch := normalPerfectBatch
-    io.perfProbe.seedStatus := ABPerfectBatchSeed.Disabled.U
+    io.perfProbe.seedStatus := 0.U // Task-start seeding is disabled.
     io.perfProbe.seedVector := 0.U.asTypeOf(io.perfProbe.seedVector)
     io.perfProbe.seedAttempts := 0.U
     io.perfProbe.seedSuccesses := 0.U

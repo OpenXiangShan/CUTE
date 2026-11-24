@@ -61,8 +61,8 @@ class MultiChannelAccLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalate
     dut.io.ToMatrixRegIO.LoadReadWriteResponse.poke((1 << MatrixRegTaskType.WriteFromMemoryLoaderIndex).U)
     dut.io.ToMatrixRegIO.StoreReadWriteResponse.poke(0.U)
     for (bank <- 0 until dut.AccMatrixRegNBanks) {
-      dut.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid.poke(false.B)
-      dut.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits.poke(0.U)
+      dut.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).foreach(_.valid.poke(false.B))
+      dut.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).foreach(_.bits.poke(0.U))
     }
     clearMmu(dut.io.LoadLocalMMUIO, dut.AccMatrixRegNBanks)
     clearMmu(dut.io.StoreLocalMMUIO, dut.AccMatrixRegNBanks)

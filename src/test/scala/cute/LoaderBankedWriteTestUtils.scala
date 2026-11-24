@@ -50,8 +50,8 @@ object LoaderBankedWriteTestUtils {
       io.FromDataController.WriteBankAddr(bank).bits.poke(0.U)
       io.FromDataController.WriteRequestData(bank).valid.poke(false.B)
       io.FromDataController.WriteRequestData(bank).bits.poke(0.U)
-      io.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr(bank).valid.poke(false.B)
-      io.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr(bank).bits.poke(0.U)
+      io.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr(bank).foreach(_.valid.poke(false.B))
+      io.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr(bank).foreach(_.bits.poke(0.U))
       for (lane <- 0 until WriteLanes) {
         val write = io.FromMemoryLoader.WriteRequestToMatrixReg.WriteRequest(bank)(lane)
         write.BankAddr.valid.poke(false.B)

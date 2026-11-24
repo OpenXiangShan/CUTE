@@ -1227,44 +1227,10 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
-class TrLoadTensorInfo()(implicit p: Parameters) extends CuteBundle{
-    val baseVaddr   = (UInt(MMUAddrWidth.W))
-    // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))//may be gone already
-    val stride    = (UInt(MMUAddrWidth.W))//address offset increment for the next M
-    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
-    val HasTail                         = Bool()
-    val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
-    val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
-}
-
 class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationScale_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockScale_A_BaseVaddr         = (UInt(MMUAddrWidth.W))  // main active field
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
-}
-
-class TrLoadTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-
-    val Tensor = new TrLoadTensorInfo
-    
-    val LoadTaskInfo = (new LoadTask_Info)
-
-    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegId                       = UInt(TrMatrixRegIdWidth.W)
-    val PrefetchTaskId                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.taskIdWidth.W))
-    val PrefetchStream                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.streamWidth.W))
-
-    val Conherent                           = (Bool())      //whether coherence is needed
-    val Is_Transpose                        = (Bool())      //whether transpose is needed
-
-    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
-    val MicroTaskValid                      = (Bool())       //current task configuration is valid
-    val MicroTaskEndValid                        = Flipped(Bool())//current task completed
-    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
-
-    val pc                                = Option.when(EnableDifftest) (UInt(64.W))
-    val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
 class ASLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -1303,6 +1269,122 @@ class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
 }
 
+class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
+    val computeType                         = Output(UInt(MteComputeType.ComputeTypeBitWidth.W))
+}
+
+//when reading from MatrixReg, it must be clear which bank and which row are accessed, then the data is concatenated and returned
+//which bank and which row to read are computed by the data-control module
+//how data is arranged within banks is filled by the MemoryLoader module
+//MemoryLoader and data-control modules both have a window period, which can perform extra data arrangement such as quantization, sparsification reversal, dequantization, and quantization reorder
+//MemoryLoader and data-control are separated to exploit the window period so the single-read/single-write MatrixReg can run independently
+//is there an SRAM that can read and write simultaneously? I can guarantee no writes hit the same location, but let us use double buffering first....
+//we account for response latency, so there is also a FIFO between DataControl and MatrixReg. Since the future SRAM is expected to be a simple module, keep the FIFO in DataControl so MatrixReg stays as simple as possible.
+class TrDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(TrMatrixRegBankNLines), and it is input data that requires handshaking
+    val BankAddr = Flipped(DecoupledIO(Vec(TrMatrixRegNBanks, (UInt(log2Ceil(TrMatrixRegBankNEntries).W)))))
+    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
+    val Data = Valid(Vec(TrMatrixRegNBanks, UInt(TrMatrixRegEntryBitSize.W)))
+    //chosen selects the MatrixReg; it is a Bool. We use double buffering, selecting one for output and one for loading
+    // val Chosen = Input(Bool())
+}
+
+class ABScaleControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(TrMatrixRegBankNLines), and it is input data that requires handshaking
+    val BankAddr = Flipped(DecoupledIO(UInt(log2Ceil(ABScaleBankNEntries).W)))
+    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
+    val Data = Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W)))
+    //chosen selects the MatrixReg; it is a Bool. We use double buffering, selecting one for output and one for loading
+    // val Chosen = Input(Bool())
+}
+
+class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(AScratchpadBankNLines), and it is input data that requires handshaking
+    val BankAddr = Flipped(Valid(UInt(log2Ceil(ABScaleBankNEntries).W)))
+    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
+    val Data = Flipped(Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W))))
+    //chosen selects the ScratchPad; it is a Bool. We use double buffering, selecting one for output and one for loading
+    // val Chosen = Input(Bool())
+}
+
+class AccDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
+    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(AccMatrixRegBankNLines), and it is input data that requires handshaking
+    val ReadBankAddr = Flipped((Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W)))))
+    val WriteBankAddr = Flipped((Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W)))))
+    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt
+    val ReadResponseData = (Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryBitSize.W))))
+    val WriteRequestData = Flipped((Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryBitSize.W)))))
+    //chosen selects the MatrixReg; it is a Bool. We use double buffering, selecting one for output and one for loading
+    val ReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    val ReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
+    // val Chosen = Input(Bool())
+}
+
+// Matrix memory task interfaces.
+
+// Fixed tile field width shared by the instruction bundles and TR store commands.
+private[cute] object MatrixTileDim {
+    val width: Int = 9
+}
+
+class LoadTask_Info()(implicit p: Parameters) extends CuteBundle{
+    val Is_ZeroLoad = (Bool())
+    val Is_RepeatRowLoad = (Bool())
+    val Is_FullLoad = (Bool())
+}
+
+class TrLoadTensorInfo()(implicit p: Parameters) extends CuteBundle{
+    val baseVaddr   = (UInt(MMUAddrWidth.W))
+    // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))//may be gone already
+    val stride    = (UInt(MMUAddrWidth.W))//address offset increment for the next M
+    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    val HasTail                         = Bool()
+    val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+    val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
+}
+
+class TrLoadTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
+
+    val Tensor = new TrLoadTensorInfo
+
+    val LoadTaskInfo = (new LoadTask_Info)
+
+    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegId                       = UInt(TrMatrixRegIdWidth.W)
+    val PrefetchTaskId                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.taskIdWidth.W))
+    val PrefetchStream                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.streamWidth.W))
+
+    val Conherent                           = (Bool())      //whether coherence is needed
+    val Is_Transpose                        = (Bool())      //whether transpose is needed
+
+    val MicroTaskReady                      = Flipped(Bool())//can configure the next task
+    val MicroTaskValid                      = (Bool())       //current task configuration is valid
+    val MicroTaskEndValid                        = Flipped(Bool())//current task completed
+    val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
+
+    val pc                                = Option.when(EnableDifftest) (UInt(64.W))
+    val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
+}
+
+class TrStoreCommand(implicit p: Parameters) extends CuteBundle {
+  val regId = UInt(TrMatrixRegIdWidth.W)
+  val base = UInt(MMUAddrWidth.W)
+  val stride = UInt(MMUAddrWidth.W)
+  val rows = UInt(MatrixTileDim.width.W)
+  val columns = UInt(MatrixTileDim.width.W)
+  val widths = UInt(3.W)
+  val transpose = Bool()
+  val pc = Option.when(EnableDifftest)(UInt(64.W))
+  val coreid = Option.when(EnableDifftest)(UInt(8.W))
+}
+
+class TrStoreControlIO(implicit p: Parameters) extends CuteBundle {
+  val command = Decoupled(new TrStoreCommand)
+  val done = Flipped(Decoupled(Bool()))
+}
+
 class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationTensor_C_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockTensor_C_BaseVaddr         = (UInt(MMUAddrWidth.W))
@@ -1320,11 +1402,6 @@ class ApplicationTensor_D_Info()(implicit p: Parameters) extends CuteBundle{
     val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
 }
 
-class LoadTask_Info()(implicit p: Parameters) extends CuteBundle{
-    val Is_ZeroLoad = (Bool())
-    val Is_RepeatRowLoad = (Bool())
-    val Is_FullLoad = (Bool())
-}
 class AccMemoryTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     //this is Tensor C, the invariant part from the accumulator-register perspective
 
@@ -1359,35 +1436,7 @@ class AccMemoryTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
 }
 
-class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
-    val MicroTaskValid                      = (Bool())       //current task configuration is valid
-    val computeType                         = Output(UInt(MteComputeType.ComputeTypeBitWidth.W))
-}
-
-//when reading from MatrixReg, it must be clear which bank and which row are accessed, then the data is concatenated and returned
-//which bank and which row to read are computed by the data-control module
-//how data is arranged within banks is filled by the MemoryLoader module
-//MemoryLoader and data-control modules both have a window period, which can perform extra data arrangement such as quantization, sparsification reversal, dequantization, and quantization reorder
-//MemoryLoader and data-control are separated to exploit the window period so the single-read/single-write MatrixReg can run independently
-//is there an SRAM that can read and write simultaneously? I can guarantee no writes hit the same location, but let us use double buffering first....
-//we account for response latency, so there is also a FIFO between DataControl and MatrixReg. Since the future SRAM is expected to be a simple module, keep the FIFO in DataControl so MatrixReg stays as simple as possible.
-class TrDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(TrMatrixRegBankNLines), and it is input data that requires handshaking
-    val BankAddr = Flipped(DecoupledIO(Vec(TrMatrixRegNBanks, (UInt(log2Ceil(TrMatrixRegBankNEntries).W)))))
-    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
-    val Data = Valid(Vec(TrMatrixRegNBanks, UInt(TrMatrixRegEntryBitSize.W)))
-    //chosen selects the MatrixReg; it is a Bool. We use double buffering, selecting one for output and one for loading
-    // val Chosen = Input(Bool())
-}
-
-class ABScaleControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(TrMatrixRegBankNLines), and it is input data that requires handshaking
-    val BankAddr = Flipped(DecoupledIO(UInt(log2Ceil(ABScaleBankNEntries).W)))
-    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
-    val Data = Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W)))
-    //chosen selects the MatrixReg; it is a Bool. We use double buffering, selecting one for output and one for loading
-    // val Chosen = Input(Bool())
-}
+// Register and FU ports for matrix memory operations.
 
 class MatrixRegLoaderWriteLane(addrWidth: Int, dataWidth: Int, maskWidth: Int)(implicit p: Parameters)
   extends CuteBundle {
@@ -1396,7 +1445,6 @@ class MatrixRegLoaderWriteLane(addrWidth: Int, dataWidth: Int, maskWidth: Int)(i
     val ByteMask = Valid(UInt(maskWidth.W))
 }
 
-// unified AB MemoryLoader interface, with ZeroFill support
 class TrLoadMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // When MemLoader is working, active will be true.
     // Otherwise, active will be false.
@@ -1411,26 +1459,26 @@ class TrLoadMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     def ByteMask: Seq[Valid[UInt]] = WriteRequest.map(_(0).ByteMask)
 }
 
-class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(AScratchpadBankNLines), and it is input data that requires handshaking
-    val BankAddr = Flipped(Valid(UInt(log2Ceil(ABScaleBankNEntries).W)))
-    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
-    val Data = Flipped(Valid(Vec(ABScaleNSlices, UInt((ScaleWidth * ReduceGroupSize).W))))
-    //chosen selects the ScratchPad; it is a Bool. We use double buffering, selecting one for output and one for loading
-    // val Chosen = Input(Bool())
+class TrStoreMatrixRegReadIO(implicit p: Parameters) extends CuteBundle {
+  val readLanes = outsideDataWidthByte / TrMatrixRegEntryByteSize
+  require(readLanes == 1 || readLanes == 2)
+
+  val BankAddr = Flipped(DecoupledIO(Vec(
+    TrMatrixRegNBanks,
+    Vec(readLanes, UInt(log2Ceil(TrMatrixRegBankNEntries).W))
+  )))
+  val Data = Valid(Vec(
+    TrMatrixRegNBanks,
+    Vec(readLanes, UInt(TrMatrixRegEntryBitSize.W))
+  ))
 }
 
-class AccDataControlMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    //bankaddr is the row-select signal for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is log2Ceil(AccMatrixRegBankNLines), and it is input data that requires handshaking
-    val ReadBankAddr = Flipped((Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W)))))
-    val WriteBankAddr = Flipped((Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W)))))
-    //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt
-    val ReadResponseData = (Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryBitSize.W))))
-    val WriteRequestData = Flipped((Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryBitSize.W)))))
-    //chosen selects the MatrixReg; it is a Bool. We use double buffering, selecting one for output and one for loading
-    val ReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
-    val ReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
-    // val Chosen = Input(Bool())
+class TrStoreIO(implicit p: Parameters) extends CuteBundle {
+  val command = Flipped(Decoupled(new TrStoreCommand))
+  val done = Decoupled(Bool())
+  val read = Flipped(new TrStoreMatrixRegReadIO)
+  val memory = Flipped(new LocalMMUIO)
+  val regId = Output(UInt(TrMatrixRegIdWidth.W))
 }
 
 class AccLoadMatrixRegIO(implicit p: Parameters) extends CuteBundle {
@@ -1444,11 +1492,11 @@ class AccLoadMatrixRegIO(implicit p: Parameters) extends CuteBundle {
     def ByteMask: Seq[Valid[UInt]] = WriteRequest.map(_(0).ByteMask)
 }
 
-class AccMemoryMatrixRegIO(implicit p: Parameters) extends CuteBundle{
-    val ReadRequestToMatrixReg = (new Bundle{
-        val BankAddr = Flipped(Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W))))
-        val ReadResponseData = ((Vec(AccMatrixRegNBanks, Valid(UInt(AccMatrixRegEntryBitSize.W)))))
-    })
+class AccMemoryMatrixRegIO(implicit p: Parameters) extends CuteBundle {
+    val ReadRequestToMatrixReg = new Bundle {
+        val BankAddr = Flipped(Vec(AccMatrixRegNBanks, Vec(2, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W)))))
+        val ReadResponseData = Vec(AccMatrixRegNBanks, Vec(2, Valid(UInt(AccMatrixRegEntryBitSize.W))))
+    }
     val WriteRequestToMatrixReg = new AccLoadMatrixRegIO
     val LoadReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     val StoreReadWriteRequest = Input(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
@@ -1456,6 +1504,8 @@ class AccMemoryMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     val StoreReadWriteResponse = Output(UInt((MatrixRegTaskType.TaskTypeBitWidth).W))
     // val Chosen = Input(Bool())
 }
+
+// LocalMMU request and response interfaces.
 
 class MMURequestIO(implicit p: Parameters) extends CuteBundle{
     val RequestAddr = UInt(MMUAddrWidth.W)
@@ -1481,7 +1531,6 @@ class MMUResponseIO(implicit p: Parameters) extends CuteBundle{
     val ReseponseSourceID = UInt(64.W)
 }
 
-//LocalMMU interface
 class LocalMMUIO(implicit p: Parameters) extends CuteBundle{
 
     //issued memory request
