@@ -72,7 +72,7 @@ object AccLoadPerfectBatchSelector {
     }
 }
 
-class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
+class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule with AccStorePath {
     class AccLoadSourceId(implicit p: Parameters) extends CuteBundle{
         val MatrixRegBankId =UInt(log2Ceil(AccMatrixRegNBanks).W)
         val MatrixRegAddr = UInt(log2Ceil(AccMatrixRegBankNEntries).W)
@@ -114,7 +114,6 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
     io.ConfigInfo.LoadMicroTaskReady := false.B
     io.ConfigInfo.StoreMicroTaskReady := false.B
     io.perfProbe := 0.U.asTypeOf(new AccLoadPerfProbe)
-    io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr)
     io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest :=
         0.U.asTypeOf(io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest)
     io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest.foreach(_.foreach { write =>
@@ -168,7 +167,7 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
         require(cMRegWordsPerBank <= eventWordsPerBank, s"DiffAmuWritebackEvent only supports up to $eventWordsPerBank words per C bank, got $cMRegWordsPerBank")
         difftestLoadFinish.bankValid := VecInit(io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr.map(_.valid)).asUInt
         for (i <- 0 until AccMatrixRegNBanks) {
-          difftestLoadFinish.bankAddr(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).bits
+          difftestLoadFinish.bankAddr(i) := AccBlockLayout.remap(io.ToMatrixRegIO.WriteRequestToMatrixReg.BankAddr(i).bits, Tensor_MN / Matrix_MN)
           difftestLoadFinish.bankMask.get(i) := io.ToMatrixRegIO.WriteRequestToMatrixReg.ByteMask(i).bits
           for (w <- 0 until eventWordsPerBank) {
             if (w < cMRegWordsPerBank) {
@@ -192,7 +191,7 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
         ).asUInt
         for (i <- 0 until AccMatrixRegNBanks) {
           val write = io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(i)(1)
-          difftestLoadFinishLane1.bankAddr(i) := write.BankAddr.bits
+          difftestLoadFinishLane1.bankAddr(i) := AccBlockLayout.remap(write.BankAddr.bits, Tensor_MN / Matrix_MN)
           difftestLoadFinishLane1.bankMask.get(i) := write.ByteMask.bits
           for (w <- 0 until eventWordsPerBank) {
             if (w < cMRegWordsPerBank) {
@@ -230,6 +229,7 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
 
     val IsLoadConherent = RegInit(true.B)
     val IsStoreConherent = RegInit(true.B)
+    val IsLoadTranspose = RegInit(false.B)
     val IsStoreTranspose = RegInit(false.B)
 
     val HasScarhpadRead = WireInit(false.B)
@@ -251,7 +251,6 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
     val StoreTraceTag = Option.when(EnableMatrixPrefetch)(RegInit(0.U(MatrixPrefetchTagCodec.width.W)))
 
     val C_DataWidth = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
-    val D_DataType = RegInit(0.U(ElementDataType.DataTypeBitWidth.W))
     val CLoadTaskStartCycle = RegInit(0.U(64.W))
 
     io.ConfigInfo.LoadMicroTaskReady := memoryload_state === s_load_idle
@@ -260,8 +259,17 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
     when(io.ConfigInfo.LoadMicroTaskValid && io.ConfigInfo.LoadMicroTaskReady) {
         CLoadTaskStartCycle := io.DebugInfo.DebugTimeStampe
         CurrentLoadMatrixRegId := io.ConfigInfo.MatrixRegId
+        when(io.ConfigInfo.LoadTaskInfo.Is_FullLoad &&
+            io.ConfigInfo.MatrixRegTensor_M =/= 0.U && io.ConfigInfo.MatrixRegTensor_N =/= 0.U) {
+            // TODO: Unaligned accesses need split memory transactions.
+            assert(io.ConfigInfo.ApplicationTensor_C.BlockTensor_C_BaseVaddr % outsideDataWidthByte.U === 0.U)
+            when(io.ConfigInfo.MatrixRegTensor_M > 1.U) {
+                assert(io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_Stride_M % outsideDataWidthByte.U === 0.U)
+            }
+        }
         LoadTensorBlockBaseAddr := io.ConfigInfo.ApplicationTensor_C.BlockTensor_C_BaseVaddr
         ApplicationTensor_C_Stride_M := io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_Stride_M
+        IsLoadTranspose := io.ConfigInfo.Is_Transpose
         IsLoadConherent := io.ConfigInfo.Conherent
         LoadMatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_M
         LoadMatrixRegTensor_N := io.ConfigInfo.MatrixRegTensor_N
@@ -292,7 +300,6 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
         IsStoreTranspose := io.ConfigInfo.Is_Transpose
         StoreMatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_M
         StoreMatrixRegTensor_N := io.ConfigInfo.MatrixRegTensor_N
-        D_DataType := io.ConfigInfo.ApplicationTensor_D.dataType
         StoreTraceTag.zip(io.ConfigInfo.StoreTraceTag).foreach { case (to, from) => to := from }
         memorystore_state := s_store_init
 
@@ -320,7 +327,7 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
     // Initialize registers in s_load_init.
     // Issue and receive data in s_load_working.
     // Complete the transfer in s_load_end.
-    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W)) // Total number of register writes performed.
+    val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W)) // Completed memory beats for full load, register writes for zero load.
     val TotalRequestSize = Seq.fill(AccMatrixRegNBanks){RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))} // Total number of memory requests issued.
     val CurrentLoaded_BlockTensor_M_Iter = Seq.fill(AccMatrixRegNBanks){RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))}
     val CurrentLoaded_BlockTensor_N_Iter = Seq.fill(AccMatrixRegNBanks){RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))}
@@ -410,7 +417,7 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
         CLoadRetainedIndex.foreach(_ := 0.U)
         CLoadWindowBase.foreach(_ := 0.U)
         CLoadSeedPointer := 0.U
-        MaxRequestIter := LoadMatrixRegTensor_M * N_Beat_Count // Total number of memory requests to issue.
+        MaxRequestIter := Mux(LoadMatrixRegTensor_N === 0.U, 0.U, LoadMatrixRegTensor_M * N_Beat_Count) // Total number of memory requests to issue.
         Repeat_Fill_Times := 0.U
         Repeat_Fill_Group_Times := 0.U
         Repeat_Fill_Request_Infight := 0.U
@@ -461,7 +468,7 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
             val candidateIndex = Wire(Vec(AccMatrixRegNBanks, UInt(CScoreboardIndexWidth.W)))
             val candidateBeat = Wire(Vec(AccMatrixRegNBanks, UInt(MatrixRegMaxTensorDimBitSize.W)))
             val candidateGroup = Wire(Vec(AccMatrixRegNBanks, UInt(MatrixRegMaxTensorDimBitSize.W)))
-            val usePerfectBatchOrder = N_Beat_Count === 8.U
+            val usePerfectBatchOrder = (AccMatrixRegNBanks == 8).B && N_Beat_Count === 8.U && LoadMatrixRegTensor_M % AccMatrixRegNBanks.U === 0.U
             // Eight legal Omega templates form an 8-cycle.  For the zames
             // stride, each lane visits every beat exactly once while every
             // cycle is a legal permutation.  The bitmap still guards replay
@@ -477,7 +484,7 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
               Seq(7, 4, 1, 6, 2, 7, 4, 1))
             for (bank <- 0 until AccMatrixRegNBanks) {
                 val cycle = CLoadWindowBase(bank)(2, 0)
-                val beat = VecInit(beatLut.map(row => row(bank).U(3.W)))(cycle)
+                val beat = VecInit(beatLut.map(row => row(bank % 8).U(3.W)))(cycle)
                 val group = CLoadWindowBase(bank) >> 3
                 val generatedIndex = (group << 3) + beat
                 candidateIndex(bank) := Mux(CLoadRetainedValid(bank), CLoadRetainedIndex(bank), generatedIndex)
@@ -491,7 +498,7 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
                 val row = candidateGroup(bank) * AccMatrixRegNBanks.U + bank.U
                 val perfectValid = (idx < (LoadMatrixRegTensor_M * N_Beat_Count / AccMatrixRegNBanks.U)) &&
                   !CLoadIssued(bank)(idx)
-                val fallbackValid = row < LoadMatrixRegTensor_M && fallbackBeat < N_Beat_Count
+                val fallbackValid = LoadMatrixRegTensor_N =/= 0.U && row < LoadMatrixRegTensor_M && fallbackBeat < N_Beat_Count
                 candidateValid(bank) := Mux(usePerfectBatchOrder, perfectValid, fallbackValid)
                 candidateAddress(bank) := LoadTensorBlockBaseAddr +
                   row * ApplicationTensor_C_Stride_M +
@@ -515,8 +522,10 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
 
                 val csourceId = Wire(new AccLoadSourceId)
                 csourceId.MatrixRegBankId := bank.U
-                csourceId.MatrixRegAddr := candidateGroup(bank) * (Tensor_MN.U / Matrix_MN.U) +
-                  (candidateBeat(bank) << log2Ceil(MAX_Fill_Times))
+                val chunk = candidateBeat(bank) << log2Ceil(MAX_Fill_Times)
+                csourceId.MatrixRegAddr := Mux(IsLoadTranspose,
+                    chunk * (Tensor_MN / Matrix_MN).U + candidateGroup(bank),
+                    candidateGroup(bank) * (Tensor_MN / Matrix_MN).U + chunk)
                 csourceId.MatrixRegisTail := HasTail && (candidateBeat(bank) === (N_Beat_Count - 1.U))
 
                 ReadRequest.valid := candidateValid(bank) && selectedMask(bank)
@@ -641,76 +650,69 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
                 }
             }
 
-            // Check each bank for pending fill data.
+            // The fill queues hold responses in both layouts.
             HasScarhpadWrite := fillDataQueues.map(_.io.deq.valid).reduce(_ || _)
 
-            val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(AccMatrixRegNBanks)(0.U(2.W))))
-            for (i <- 0 until AccMatrixRegNBanks){
-                val fillTimes = RegInit(MAX_Fill_Times.U)
-                val fillDataQ = fillDataQueues(i).io
-                val fillMetaQ = fillMetaQueues(i).io
-                val allowWrite = io.ToMatrixRegIO.LoadReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex) === true.B
-                when(allowWrite)
-                {
-                    when(fillDataQ.deq.valid){
-                        val rowsThisCycle = Mux(fillTimes > 1.U, 2.U, 1.U)
-                        Current_Fill_MReg_Time(i) := rowsThisCycle
-                        val MatrixRegWriteRequest = io.ToMatrixRegIO.WriteRequestToMatrixReg
-                        val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*AccMatrixRegEntryByteSize).W)))))
-                        val fillSlot = MAX_Fill_Times.U - fillTimes
-                        val currentIsTail = fillMetaQ.deq.bits(fillQueueMetaWidth - 1)
-                        val fullByteMask = Fill(AccMatrixRegEntryByteSize, true.B)
-                        val tailByteMaskVec = Wire(Vec(MAX_Fill_Times, UInt(AccMatrixRegEntryByteSize.W)))
-                        for (j <- 0 until MAX_Fill_Times) {
-                            val high = (j + 1) * AccMatrixRegEntryByteSize - 1
-                            val low = j * AccMatrixRegEntryByteSize
-                            tailByteMaskVec(j) := tailTaskMask(high, low)
-                        }
-                        FIFOData := fillDataQ.deq.bits.asTypeOf(FIFOData)
-                        for (lane <- 0 until 2) {
-                            val laneValid = fillTimes > lane.U
-                            val laneSlot = if (MAX_Fill_Times == 1) 0.U else
-                                Mux(laneValid, fillSlot + lane.U, 0.U)(log2Ceil(MAX_Fill_Times) - 1, 0)
-                            val write = MatrixRegWriteRequest.WriteRequest(i)(lane)
-                            write.BankAddr.bits := fillMetaQ.deq.bits(AccLoadSourceIdAddrWidth - 1, 0) + laneSlot
-                            write.BankAddr.valid := laneValid
-                            write.Data.bits := FIFOData(laneSlot)
-                            write.Data.valid := laneValid
-                            write.ByteMask.bits := Mux(currentIsTail, tailByteMaskVec(laneSlot), fullByteMask)
-                            write.ByteMask.valid := laneValid
+            val banks = AccMatrixRegNBanks
+            val fragments = MAX_Fill_Times
+            val lanes = 2 min fragments
+            val phase = Seq.fill(banks)(RegInit(0.U((log2Ceil(fragments) max 1).W)))
+            val valid = VecInit(fillDataQueues.map(_.io.deq.valid))
+            val first = VecInit(fillMetaQueues.map(_.io.deq.bits(AccLoadSourceIdAddrWidth - 1, 0)))
+            val tails = fillMetaQueues.map(_.io.deq.bits(fillQueueMetaWidth - 1))
+            // Transpose may combine queue heads for the same vertical block pair.
+            val heads = VecInit((0 until banks).map(i => first(i) + phase(i) * (Tensor_MN / Matrix_MN).U))
+            val cursor = RegInit(0.U((log2Ceil(banks) max 1).W))
+            val rotated = VecInit((0 until banks).map(i => valid((cursor + i.U) % banks.U)))
+            val seed = (cursor + PriorityEncoder(rotated)) % banks.U
+            val allow = io.ToMatrixRegIO.LoadReadWriteResponse(MatrixRegTaskType.WriteFromMemoryLoaderIndex)
+            val consumed = Wire(Vec(banks, Bool()))
+            val writeLane = (0 until banks).map(i => allow && valid(i) && (!IsLoadTranspose || heads(i) === heads(seed)))
+            when(allow && valid.asUInt.orR && IsLoadTranspose) { cursor := seed + 1.U }
 
-                        }
-
-                        fillTimes := fillTimes - rowsThisCycle
-                        when(fillTimes <= 2.U){
-                            fillTimes := MAX_Fill_Times.U
-                            fillDataQ.deq.ready := true.B
-                            fillMetaQ.deq.ready := true.B
-                        }
-
-
-                    }
+            def chunkWord(i: Int, slot: Int): UInt = {
+                val chunks = fillDataQueues(i).io.deq.bits.asTypeOf(Vec(fragments, UInt(AccMatrixRegEntryBitSize.W)))
+                if (fragments == 1) chunks(0) else chunks((phase(i) + slot.U)(log2Ceil(fragments) - 1, 0))
+            }
+            def chunkMask(i: Int, slot: Int): UInt = {
+                val masks = tailTaskMask(outsideDataWidthByte - 1, 0).asTypeOf(Vec(fragments, UInt(AccMatrixRegEntryByteSize.W)))
+                val mask = if (fragments == 1) masks(0) else masks((phase(i) + slot.U)(log2Ceil(fragments) - 1, 0))
+                Mux(tails(i), mask, Fill(AccMatrixRegEntryByteSize, true.B))
+            }
+            for (i <- 0 until banks) {
+                val last = phase(i) +& lanes.U >= fragments.U ||
+                    (tails(i) && (phase(i) +& lanes.U) * AccMatrixRegEntryByteSize.U >= TailByteMask)
+                consumed(i) := writeLane(i) && last
+                fillDataQueues(i).io.deq.ready := consumed(i)
+                fillMetaQueues(i).io.deq.ready := consumed(i)
+                when(writeLane(i)) { phase(i) := Mux(last, 0.U, phase(i) + lanes.U) }
+            }
+            for (slot <- 0 until lanes) {
+                val chunks = (0 until banks).map(i => chunkWord(i, slot))
+                val masks = (0 until banks).map(i => chunkMask(i, slot))
+                for (bank <- 0 until banks) {
+                    val columnValid = VecInit((0 until banks).map(i => writeLane(i) && masks(i)(bank * ResultWidthByte)))
+                    val columnData = VecInit(chunks.map(w => w((bank + 1) * ResultWidth - 1, bank * ResultWidth))).asUInt
+                    val logical = Mux(IsLoadTranspose, heads(seed) + (slot * (Tensor_MN / Matrix_MN)).U,
+                        first(bank) + phase(bank) + slot.U)
+                    val write = io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(bank)(slot)
+                    val active = Mux(IsLoadTranspose, columnValid.asUInt.orR, writeLane(bank) && masks(bank).orR)
+                    write.BankAddr.valid := active
+                    write.Data.valid := active
+                    write.ByteMask.valid := active
+                    write.BankAddr.bits := AccBlockLayout.remap(logical, Tensor_MN / Matrix_MN)
+                    write.Data.bits := Mux(IsLoadTranspose, columnData, chunks(bank))
+                    write.ByteMask.bits := Mux(IsLoadTranspose, FillInterleaved(ResultWidthByte, columnValid.asUInt), masks(bank))
                 }
             }
+            TotalLoadSize := TotalLoadSize + PopCount(consumed)
 
-            val Current_Load_Fill_Size = WireInit(0.U(log2Ceil(2 * AccMatrixRegNBanks + 1).W))
-            Current_Load_Fill_Size := Current_Fill_MReg_Time.reduce(_ +& _)
-
-            TotalLoadSize := TotalLoadSize + Current_Load_Fill_Size
-
-            if (YJPAccMemoryDebugEnable)
-            {
-                when(Current_Load_Fill_Size =/= 0.U)
-                {
-
-                }
-            }
             // Advance the state machine.
             val perfectRequestPermille = Mux(
               CLoadTotalFired === 0.U,
               0.U,
               (CLoadPerfectRequests * 1000.U) / CLoadTotalFired)
-            when(TotalLoadSize === (MaxRequestIter * MAX_Fill_Times.U)){
+            when(TotalLoadSize === MaxRequestIter){
                 memoryload_state := s_load_end
                 printf(
                   p"[accMemory][${io.DebugInfo.DebugTimeStampe}][accMemory-LOAD-END] matrixRegId=${CurrentLoadMatrixRegId} " +
@@ -765,339 +767,15 @@ class MultiChannelAccMemory(implicit p: Parameters) extends CuteModule{
     }
 
 
-    // Store reads register data in Reduce_Dim-major order.
-
-    /**
-     * Round Max_BlockTensor_Major_DIM down to a multiple of Matrix_M for the regular address range.
-     */
-    val MaxIncStoreRequestSize = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
-
-    /**
-     * Round Max_BlockTensor_Major_DIM down to a multiple of Matrix_M for the regular address range.
-     */
-    val MaxIncStoreScpRequestSize = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
-
-    /**
-     * Number of accumulator-register accesses per bank.
-     */
-    val Max_Load_MReg_Time = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
-
-    /**
-     * Total number of LLC write requests across all channels.
-     */
-    val Max_Store_Memory_Time = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
-    val Max_BlockTensor_Request_Reduce_DIM = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val Max_BlockTensor_Reduce_DIM = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val Max_BlockTensor_Major_DIM = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val Per_LLC_Store_ReduceDim_Iter = RegInit(0.U((log2Ceil(Tensor_MN)).W))
-    val Per_MReg_Load_ReduceDim_Iter = RegInit(0.U((log2Ceil(Tensor_MN)).W))
-    val Max_SubReduce_DIM = RegInit(0.U((log2Ceil(Tensor_MN)).W))
-
-    /**
-     * Memory-write requests per tile group.
-     */
-    val Per_MReg_Load_Write_Memory_Time = AccMatrixReg_Total_Bandwidth_Bit/outsideDataWidth
-
-    /**
-     * Each tile spans Matrix_MN rows; there are M_Get_IteratorMax row tiles.
-     */
-    val M_Get_IteratorMax = Mux(
-        IsStoreTranspose,
-        (StoreMatrixRegTensor_M / (Matrix_MN.U * 2.U) + (StoreMatrixRegTensor_M % (Matrix_MN.U * 2.U) =/= 0.U)) * 2.U,
-        (StoreMatrixRegTensor_M / Matrix_MN.U) + ((StoreMatrixRegTensor_M % Matrix_MN.U) =/= 0.U))
-
-    /**
-     * Each tile spans Matrix_MN columns; there are N_Get_IteratorMax column tiles.
-     */
-    val N_Get_IteratorMax = WireInit(0.U(log2Ceil(AccMatrixRegBankNEntries).W))
-    N_Get_IteratorMax := (StoreMatrixRegTensor_N / Matrix_MN.U)
-
-    val transpose_scp_addr = WireInit(0.U(log2Ceil(AccMatrixRegBankNEntries).W))
-    val DirectAckResponseCount = RegInit(0.U((log2Ceil(Tensor_MN*Tensor_MN)).W))
-
-    class BankStore(bank: Int) {
-        /**
-         * Number of store requests already issued to LocalMMU.
-         */
-        val TotalStoreSize = Reg(UInt(log2Ceil(Tensor_MN*Tensor_MN).W))
-
-        /**
-         * Number of read requests already issued to the scratchpad.
-         */
-        val TotalScpReadCount = Reg(UInt(log2Ceil(Tensor_MN*Tensor_MN).W))
-
-        val StoreQueueDepth = 4
-        val StoreQueue = Module(new Queue(UInt(outsideDataWidth.W), StoreQueueDepth, pipe = false, flow = false))
-        StoreQueue.io.enq.valid := false.B
-        StoreQueue.io.enq.bits := 0.U
-        StoreQueue.io.deq.ready := false.B
-
-        val CollectTimes = outsideDataWidthByte / (AccMatrixRegEntryBitSize / 8)
-        println(s"[accMemory][BankStore] CollecTimes $CollectTimes")
-        val BusDataCollector = Reg(Vec(CollectTimes, UInt(AccMatrixRegEntryBitSize.W)))
-        val collectIter = Reg(UInt(log2Ceil(CollectTimes + 1).W))
-        val BusDataValid = Reg(Bool())
-
-        val needStallRegRead = Reg(Bool())
-        val stallRegRead = Reg(Bool())
-
-        // Dimension Iters
-        val CurrentStore_BlockTensor_SubMajor_DIM_Iter = Reg(UInt(MatrixRegMaxTensorDimBitSize.W))
-        val CurrentStore_BlockTensor_Major_DIM_Iter = Reg(UInt(MatrixRegMaxTensorDimBitSize.W))
-        val CurrentStore_BlockTensor_Reduce_DIM_Iter = Reg(UInt(MatrixRegMaxTensorDimBitSize.W))
-
-        val WriteResponseCounter = Reg(UInt((log2Ceil(Tensor_MN*Tensor_MN)).W))
-
-        val end = RegInit(true.B)
-
-        def init(): Unit = {
-            end := false.B
-            TotalStoreSize := 0.U
-            TotalScpReadCount := 0.U
-            assert(StoreQueue.io.count === 0.U)
-            BusDataCollector.foreach(_ := 0.U)
-            collectIter := 0.U
-            needStallRegRead := false.B
-            stallRegRead := false.B
-            BusDataValid := false.B
-            CurrentStore_BlockTensor_SubMajor_DIM_Iter := 0.U
-            CurrentStore_BlockTensor_Major_DIM_Iter := 0.U
-            CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
-            WriteResponseCounter := 0.U
-        }
-
-        def logger(msg: Printable): Unit = {
-            if (YJPAccMemoryDebugEnable) {
-                printf(
-                  cf"[AccMemory_Store<${io.DebugInfo.DebugTimeStampe}>][bank $bank][BankStore] " + msg + "\n"
-                )
-            }
-        }
-
-        def mainLogic(): Unit = {
-            // The register arbiter permits this read.
-            val AllowRead = WireInit(io.ToMatrixRegIO.StoreReadWriteResponse(MatrixRegTaskType.ReadFromMemoryLoaderIndex))
-            val BankReadValid = (TotalScpReadCount < MaxIncStoreScpRequestSize) && AllowRead && (!stallRegRead || StoreQueue.io.deq.fire)
-            io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).valid := BankReadValid
-            io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).bits := Mux(IsStoreTranspose, transpose_scp_addr, TotalScpReadCount)
-
-            when(BankReadValid){
-                val TotalScpReadCount_Next = TotalScpReadCount + 1.U
-                TotalScpReadCount := TotalScpReadCount_Next
-                logger(cf"MReg Load Request times: ${TotalScpReadCount_Next}")
-                when(stallRegRead && StoreQueue.io.deq.fire) {
-                    logger(cf"StoreQueue deq discard stallRegRead")
-                }
-            }
-
-            val RegReadResp_Valid = io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid
-            val RegReadResp_Data = io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits
-
-            val NextQueueCount = StoreQueue.io.count + StoreQueue.io.enq.fire.asUInt - StoreQueue.io.deq.fire.asUInt
-
-            when (RegReadResp_Valid) {
-                val collectIndex = if (CollectTimes == 1) 0.U else
-                    collectIter(log2Ceil(CollectTimes) - 1, 0)
-                BusDataCollector(collectIndex) := RegReadResp_Data
-                logger(cf"BusDataCollector($collectIter) := 0x$RegReadResp_Data%x")
-                // Let C be the cycle where collectIter === (CollectTimes - 2).U.
-                // The current read request targets BusDataCollector(CollectTimes - 1), which receives its data in C+1.
-                // Decide in cycle C whether the next read request, returning in C+2, may start a new collector batch.
-                // 1. If the queue will be full, retain this collector batch and suppress the next read request in C+1.
-                // A dequeue in C+1 guarantees space in C+2, so it can override that suppression.
-                when (collectIter === (CollectTimes - 2).U && NextQueueCount === StoreQueueDepth.U) {
-                    assert(!stallRegRead)
-                    stallRegRead := true.B
-                    logger(cf"raise stallRegRead next cycle.")
-                }
-                when (collectIter === (CollectTimes - 1).U) {
-                    collectIter := 0.U
-                    BusDataValid := true.B
-                }.otherwise{
-                    collectIter := collectIter + 1.U
-                }
-            }
-
-            StoreQueue.io.enq.valid := BusDataValid
-            StoreQueue.io.enq.bits := BusDataCollector.asUInt
-
-            when (StoreQueue.io.enq.fire) {
-                BusDataValid := false.B
-                // The enqueue should fire in the cycle that writes collector slot 0.
-                assert(collectIter === 0.U)
-            }
-
-            val WriteRequest = io.StoreLocalMMUIO.Request(bank)
-            StoreQueue.io.deq.ready := WriteRequest.ready
-            WriteRequest.valid := StoreQueue.io.deq.valid
-            WriteRequest.bits.RequestAddr := StoreTensorBlockBaseAddr + (CurrentStore_BlockTensor_Major_DIM_Iter + bank.U) * ApplicationTensor_D_Stride_M + CurrentStore_BlockTensor_Reduce_DIM_Iter * D_DataType
-            WriteRequest.bits.RequestConherent := IsStoreConherent
-            WriteRequest.bits.RequestSourceID := encodeAccLoadSourceId(bank.U, TotalStoreSize, false.B)
-            WriteRequest.bits.RequestType_isWrite := true.B
-            WriteRequest.bits.UseAllocatedSourceID := false.B
-            WriteRequest.bits.MatrixPrefetchTag.foreach(_ := 0.U)
-            WriteRequest.bits.MatrixTraceTag.zip(StoreTraceTag).foreach { case (to, from) => to := from }
-            WriteRequest.bits.RequestData := StoreQueue.io.deq.bits
-            WriteRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
-            WriteRequest.bits.IsTranspose := false.B
-
-            when(WriteRequest.fire){
-                logger(
-                    cf"WriteRequest.fire: {addr: 0x${WriteRequest.bits.RequestAddr}%x," +
-                    cf"source: ${WriteRequest.bits.RequestSourceID}, " +
-                    cf"TotalStoreSize: ${TotalStoreSize}, " +
-                    cf"CurrentStore_BlockTensor_Major_DIM_Iter: ${CurrentStore_BlockTensor_Major_DIM_Iter}, " +
-                    cf"CurrentStore_BlockTensor_SubMajor_DIM_Iter: ${bank.U}, " +
-                    cf"CurrentStore_BlockTensor_Reduce_DIM_Iter: ${CurrentStore_BlockTensor_Reduce_DIM_Iter}, " +
-                    cf"RequestData: 0x${WriteRequest.bits.RequestData}%x}"
-                )
-
-                TotalStoreSize := TotalStoreSize + 1.U
-
-                // Advance past the columns covered by one memory transfer.
-                CurrentStore_BlockTensor_Reduce_DIM_Iter := CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter
-                when(CurrentStore_BlockTensor_Reduce_DIM_Iter === Max_BlockTensor_Request_Reduce_DIM - Per_LLC_Store_ReduceDim_Iter){
-                    CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
-                    CurrentStore_BlockTensor_Major_DIM_Iter := CurrentStore_BlockTensor_Major_DIM_Iter + Matrix_MN.U
-                }
-
-                // Dequeue StoreQueue while simultaneously filling collector slot 0.
-                when(stallRegRead) {
-                    stallRegRead := false.B
-                }
-
-                when(TotalStoreSize === (Max_Store_Memory_Time / Matrix_MN.U - 1.U)){
-                    end := true.B
-                    logger(cf"go StoreEnd.")
-                }
-            }
-        }
-
-        def onResponse() = {
-            val resp = io.StoreLocalMMUIO.Response(bank)
-            resp.ready := true.B
-            when(resp.fire) {
-                WriteResponseCounter := WriteResponseCounter + 1.U
-                logger(cf"WriteResponse: sourceId: ${resp.bits.ReseponseSourceID}, CurrentCount(Include): ${WriteResponseCounter + 1.U}")
-            }
-        }
-    }
-
-    val BankStores = Seq.tabulate(Matrix_MN){ i => new BankStore(i) }
-
-    when(memorystore_state === s_store_init){
-        memorystore_state := s_store_working
-
-        BankStores.foreach(_.init())
-        DirectAckResponseCount := 0.U
-
-        Max_Load_MReg_Time := StoreMatrixRegTensor_M * StoreMatrixRegTensor_N * D_DataType / AccMatrixReg_Total_Bandwidth.U
-
-        Max_Store_Memory_Time := Mux(IsStoreTranspose, M_Get_IteratorMax * Matrix_MN.U, StoreMatrixRegTensor_M) * StoreMatrixRegTensor_N * D_DataType / outsideDataWidthByte.U
-
-        MaxIncStoreScpRequestSize := M_Get_IteratorMax * Matrix_MN.U * StoreMatrixRegTensor_N * D_DataType / AccMatrixReg_Total_Bandwidth.U
-
-        Per_LLC_Store_ReduceDim_Iter := Mux(D_DataType === 1.U, outsideDataWidthByte.U,
-                                Mux(D_DataType === 2.U, outsideDataWidthByte.U/2.U,
-                                Mux(D_DataType === 4.U, outsideDataWidthByte.U/4.U, outsideDataWidthByte.U)))
-
-        Per_MReg_Load_ReduceDim_Iter := Mux(D_DataType === 1.U, AccMatrixReg_Total_Bandwidth.U,
-                                    Mux(D_DataType === 2.U, AccMatrixReg_Total_Bandwidth.U/2.U,
-                                    Mux(D_DataType === 4.U, AccMatrixReg_Total_Bandwidth.U/4.U, AccMatrixReg_Total_Bandwidth.U)))
-
-        Max_SubReduce_DIM := Mux(D_DataType === 1.U, AccMatrixReg_Total_Bandwidth.U,
-                                Mux(D_DataType === 2.U, AccMatrixReg_Total_Bandwidth.U/2.U,
-                                Mux(D_DataType === 4.U, AccMatrixReg_Total_Bandwidth.U/4.U, AccMatrixReg_Total_Bandwidth.U)))
-
-        Max_BlockTensor_Reduce_DIM := Mux(IsStoreTranspose, StoreMatrixRegTensor_M, StoreMatrixRegTensor_N)
-
-        // C-matrix column dimension.
-        Max_BlockTensor_Request_Reduce_DIM := Mux(IsStoreTranspose, M_Get_IteratorMax * Matrix_MN.U, StoreMatrixRegTensor_N)
-
-        // C-matrix row dimension.
-        Max_BlockTensor_Major_DIM := Mux(IsStoreTranspose, StoreMatrixRegTensor_N, StoreMatrixRegTensor_M)
-    }.elsewhen(memorystore_state === s_store_working){
-        HasScarhpadRead := BankStores.map(_.TotalScpReadCount).map(_ < MaxIncStoreScpRequestSize).reduce(_||_)
-        for (bank <- 0 until Matrix_MN) {
-            BankStores(bank).mainLogic()
-        }
-
-        val allWillEnd = BankStores.map(_.end).reduce(_ && _)
-        when (allWillEnd) {
-            memorystore_state := s_store_end
-        }
-    }.elsewhen(memorystore_state === s_store_end){
-        val WriteResponseCountSum = BankStores.map(_.WriteResponseCounter).reduce(_ + _)
-        val StoreAckDone = Mux(
-            AccStorer0DirectAckCountMode.B,
-            DirectAckResponseCount === Max_Store_Memory_Time,
-            WriteResponseCountSum === Max_Store_Memory_Time
-        )
-        when(StoreAckDone) {
-            io.ConfigInfo.StoreMicroTaskEndValid := true.B
-        }
-        when(io.ConfigInfo.StoreMicroTaskEndReady && io.ConfigInfo.StoreMicroTaskEndValid){
-            memorystore_state := s_store_idle
-            if (YJPAccMemoryDebugEnable)
-            {
-                printf("[AccMemory_Store<%d>]Store Finish\n",io.DebugInfo.DebugTimeStampe)
-            }
-        }
-    }.otherwise{
-        // Idle.
-    }
-
-    when(memorystore_state === s_store_working || memorystore_state === s_store_end){
-        if (AccStorer0DirectAckCountMode) {
-            val ackValids = io.StoreLocalMMUIO.Response.map(_.valid)
-            val ackReadies = Wire(Vec(Matrix_MN, Bool()))
-            val directAckFireVec = Wire(Vec(Matrix_MN, Bool()))
-            val anyAckValid = ackValids.reduce(_ || _)
-            val ackCanAccept = DirectAckResponseCount =/= Max_Store_Memory_Time
-            for (bank <- 0 until Matrix_MN) {
-                ackReadies(bank) := ackCanAccept
-                io.StoreLocalMMUIO.Response(bank).ready := ackReadies(bank)
-                directAckFireVec(bank) := io.StoreLocalMMUIO.Response(bank).fire
-            }
-            val firedAckCount = PopCount(directAckFireVec)
-            when(firedAckCount =/= 0.U) {
-                DirectAckResponseCount := DirectAckResponseCount + firedAckCount
-                if (YJPAccMemoryDebugEnable) {
-                    printf(
-                        cf"[AccMemory_Store<${io.DebugInfo.DebugTimeStampe}>][DirectAck] " +
-                        cf"ackFireVec=${directAckFireVec.asUInt} ackInc=${firedAckCount} " +
-                        cf"totalAck=${DirectAckResponseCount + firedAckCount}/${Max_Store_Memory_Time}\n"
-                    )
-                }
-            }.elsewhen(anyAckValid) {
-                if (YJPAccMemoryDebugEnable) {
-                    printf(
-                        cf"[AccMemory_Store<${io.DebugInfo.DebugTimeStampe}>][DirectAck] " +
-                        cf"ackValidNoFire validVec=${ackValids.asUInt} ready=${ackCanAccept}\n"
-                    )
-                }
-            }
-        } else {
-            for (bank <- 0 until Matrix_MN) {
-                BankStores(bank).onResponse()
-            }
-        }
-    }
-
-    if (YJPAccMemoryDebugEnable) {
-        when(RegNext(memorystore_state === s_store_init)) {
-            printf(
-                cf"[AccMemory_Store<${io.DebugInfo.DebugTimeStampe}>] Store D Tensor Start\n" +
-                cf"  Max_Load_MReg_Time: ${Max_Load_MReg_Time}\n" +
-                cf"  Max_Store_Memory_Time: ${Max_Store_Memory_Time}\n" +
-                cf"  MaxIncStoreScpRequestSize: ${MaxIncStoreScpRequestSize}\n" +
-                cf"  Per_LLC_Store_ReduceDim_Iter: ${Per_LLC_Store_ReduceDim_Iter}\n" +
-                cf"  Per_MReg_Load_ReduceDim_Iter: ${Per_MReg_Load_ReduceDim_Iter}\n" +
-                cf"  Max_SubReduce_DIM: ${Max_SubReduce_DIM}\n" +
-                cf"  Max_BlockTensor_Reduce_DIM: ${Max_BlockTensor_Reduce_DIM}\n" +
-                cf"  Max_BlockTensor_Request_Reduce_DIM: ${Max_BlockTensor_Request_Reduce_DIM}\n" +
-                cf"  Max_BlockTensor_Major_DIM: ${Max_BlockTensor_Major_DIM}\n"
-            )
-        }
+    val storeDone = driveAccStore(
+        false, memorystore_state === s_store_init, memorystore_state === s_store_working,
+        IsStoreTranspose, StoreMatrixRegTensor_M, StoreMatrixRegTensor_N, StoreTensorBlockBaseAddr,
+        ApplicationTensor_D_Stride_M, IsStoreConherent, StoreTraceTag, io.ToMatrixRegIO, io.StoreLocalMMUIO, HasScarhpadRead
+    )
+    when(memorystore_state === s_store_init) { memorystore_state := s_store_working }
+    when(storeDone) { memorystore_state := s_store_end }
+    when(memorystore_state === s_store_end) {
+        io.ConfigInfo.StoreMicroTaskEndValid := true.B
+        when(io.ConfigInfo.StoreMicroTaskEndReady) { memorystore_state := s_store_idle }
     }
 }

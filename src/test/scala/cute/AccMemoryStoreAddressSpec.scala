@@ -17,7 +17,7 @@ class AccMemoryStoreAddressHarness(implicit p: Parameters) extends CuteModule {
     val start = Input(Bool())
     val transpose = Input(Bool())
     val taskReady = Output(Bool())
-    val bankAddr = Output(Vec(AccMatrixRegNBanks, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W))))
+    val bankAddr = Output(Vec(AccMatrixRegNBanks, Vec(2, Valid(UInt(log2Ceil(AccMatrixRegBankNEntries).W)))))
   })
 
   val loader = Module(new AccMemoryLegacy)
@@ -42,11 +42,12 @@ class AccMemoryStoreAddressHarness(implicit p: Parameters) extends CuteModule {
 
   loader.io.ToMatrixRegIO.LoadReadWriteResponse := loader.io.ToMatrixRegIO.LoadReadWriteRequest
   loader.io.ToMatrixRegIO.StoreReadWriteResponse := loader.io.ToMatrixRegIO.StoreReadWriteRequest
-  for (bank <- 0 until AccMatrixRegNBanks) {
-    loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid := false.B
-    loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits := 0.U
+  val read = loader.io.ToMatrixRegIO.ReadRequestToMatrixReg
+  for (bank <- 0 until AccMatrixRegNBanks; slot <- 0 until 2) {
+    read.ReadResponseData(bank)(slot).valid := RegNext(read.BankAddr(bank)(slot).valid, false.B)
+    read.ReadResponseData(bank)(slot).bits := 0.U
   }
-  io.bankAddr := loader.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr
+  io.bankAddr := read.BankAddr
 
   val config = loader.io.ConfigInfo
   config.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr := 0.U
@@ -81,9 +82,9 @@ class AccMemoryStoreAddressHarness(implicit p: Parameters) extends CuteModule {
 }
 
 class AccMemoryStoreAddressSpec extends AnyFlatSpec with ChiselScalatestTester {
-  behavior of "the legacy C memory loader store address generator"
+  behavior of "the legacy ACC store address generator"
 
-  private def checkAddresses(transpose: Boolean, expected: Seq[Int]): Unit = {
+  private def checkAddresses(transpose: Boolean, expected: Seq[(Int, Int)]): Unit = {
     test(new AccMemoryStoreAddressHarness()(AccMemoryStoreAddressTestConfig.params)) { dut =>
       dut.reset.poke(true.B)
       dut.clock.step(2)
@@ -96,21 +97,22 @@ class AccMemoryStoreAddressSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.clock.step()
       dut.io.start.poke(false.B)
 
-      val observed = collection.mutable.ArrayBuffer.empty[Int]
+      val observed = collection.mutable.ArrayBuffer.empty[(Int, Int)]
       var cycles = 0
-      while (observed.size < expected.size && cycles < 64) {
-        val valid = dut.io.bankAddr.head.valid.peek().litToBoolean
-        for (bank <- dut.io.bankAddr.indices) {
-          assert(dut.io.bankAddr(bank).valid.peek().litToBoolean == valid,
-            s"bank $bank read-valid diverged")
+      while (observed.size < expected.size && cycles < 128) {
+        val valid = dut.io.bankAddr(0)(0).valid.peek().litToBoolean
+        for (bank <- dut.io.bankAddr.indices; slot <- 0 until 2) {
+          assert(dut.io.bankAddr(bank)(slot).valid.peek().litToBoolean == valid,
+            s"bank $bank slot $slot read-valid diverged")
         }
         if (valid) {
-          val address = dut.io.bankAddr.head.bits.peek().litValue.toInt
+          val first = dut.io.bankAddr(0)(0).bits.peek().litValue.toInt
+          val second = dut.io.bankAddr(0)(1).bits.peek().litValue.toInt
           for (bank <- dut.io.bankAddr.indices) {
-            assert(dut.io.bankAddr(bank).bits.peek().litValue.toInt == address,
-              s"bank $bank read address diverged")
+            dut.io.bankAddr(bank)(0).bits.expect(first.U)
+            dut.io.bankAddr(bank)(1).bits.expect(second.U)
           }
-          observed += address
+          observed += (first -> second)
         }
         dut.clock.step()
         cycles += 1
@@ -122,10 +124,10 @@ class AccMemoryStoreAddressSpec extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "skip unused physical columns between logical row groups" in {
-    checkAddresses(transpose = false, Seq(0, 1, 2, 3, 4, 5, 6, 7, 64))
+    checkAddresses(transpose = false, Seq(0 -> 1, 2 -> 3, 4 -> 5, 6 -> 7, 65 -> 64))
   }
 
   it should "use the physical row-group stride while traversing transposed blocks" in {
-    checkAddresses(transpose = true, Seq(0, 64, 128, 192, 256, 320, 384, 448, 1))
+    checkAddresses(transpose = true, Seq(0 -> 65, 128 -> 193, 256 -> 321, 384 -> 449, 1 -> 64))
   }
 }

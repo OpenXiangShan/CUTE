@@ -882,9 +882,10 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
         }
 
         for (bank <- 0 until AccMatrixRegNBanks) {
-            dest.ReadRequestToMatrixReg.BankAddr(bank).valid := storeSel && accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).valid
-            dest.ReadRequestToMatrixReg.BankAddr(bank).bits := accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank).bits
             for (lane <- 0 until 2) {
+                val src = accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.BankAddr(bank)(lane)
+                dest.ReadRequestToMatrixReg.BankAddr(bank)(lane).valid := storeSel && src.valid
+                dest.ReadRequestToMatrixReg.BankAddr(bank)(lane).bits := src.bits
                 val destWrite = dest.WriteRequestToMatrixReg.WriteRequest(bank)(lane)
                 val srcWrite = accMemory.io.ToMatrixRegIO.WriteRequestToMatrixReg.WriteRequest(bank)(lane)
                 destWrite.BankAddr.valid := loadSel && srcWrite.BankAddr.valid
@@ -904,15 +905,11 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
 
     val accLoader0SelVec = VecInit((0 until AccMatrixRegCount).map(i => accMemory.io.LoadMatrixRegId === i.U))
     val accStorer0SelVec = VecInit((0 until AccMatrixRegCount).map(i => accMemory.io.StoreMatrixRegId === i.U))
-    for (bank <- 0 until AccMatrixRegNBanks) {
-        val readRespValidChoices = (0 until AccMatrixRegCount).map(i =>
-            accStorer0SelVec(i) -> AccMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank).valid
-        )
-        val readRespBitsChoices = (0 until AccMatrixRegCount).map(i =>
-            accStorer0SelVec(i) -> AccMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank).bits
-        )
-        accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid := Mux1H(readRespValidChoices)
-        accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits := Mux1H(readRespBitsChoices)
+    // Select the register that received the read address in the previous cycle.
+    val storeResponseSelect = RegNext(accStorer0SelVec)
+    for (bank <- 0 until AccMatrixRegNBanks; lane <- 0 until 2) {
+        val responses = AccMatrixRegs.map(_.io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bank)(lane))
+        accMemory.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank)(lane) := Mux1H(storeResponseSelect, responses)
     }
 
     val accLoader0RwRespChoices = (0 until AccMatrixRegCount).map(i => accLoader0SelVec(i) -> AccMatrixRegs(i).io.MatrixRegIO.FromMemoryLoader.LoadReadWriteResponse)

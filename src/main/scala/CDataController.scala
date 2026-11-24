@@ -327,7 +327,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         difftestAmuFinish.pc := pcReg
         difftestAmuFinish.bankValid := VecInit(io.FromMatrixRegIO.WriteBankAddr.map(_.valid)).asUInt
         for (i <- 0 until AccMatrixRegNBanks) {
-          difftestAmuFinish.bankAddr(i) := io.FromMatrixRegIO.WriteBankAddr(i).bits
+          difftestAmuFinish.bankAddr(i) := AccBlockLayout.remap(io.FromMatrixRegIO.WriteBankAddr(i).bits, Tensor_MN / Matrix_MN)
           difftestAmuFinish.bankMask.get(i) := Fill(AccMatrixRegEntryByteSize, true.B)
         }
         val bankBits = difftestAmuFinish.wordsPerBank * MatrixRegWriteProbes.writebackWordBits
