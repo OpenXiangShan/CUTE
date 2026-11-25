@@ -46,7 +46,7 @@ class ADataController(implicit p: Parameters) extends CuteModule{
     val calculate_state = RegInit(s_cal_idle)
     val MatrixRegWorkingTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegWorkingTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegWorkingTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegWorkingTensor_K = RegInit(0.U(cuteParams.mmaKGroupCountWidth.W))
 
     assert(io.ComputeGo === io.VectorA.ready)
 
@@ -113,11 +113,12 @@ class ADataController(implicit p: Parameters) extends CuteModule{
     val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_MN.U)// Supply Matrix_N columns per step; use Tensor_N / Matrix_MN column groups.
     val K_IteratorMax = (MatrixRegWorkingTensor_K)// K already counts reduce vectors; no further division is needed.
 
-    val Max_Caculate_Iter = M_IteratorMax * N_IteratorMax * K_IteratorMax   // Total iteration count.
+    val Max_Caculate_Iter = Wire(UInt(cuteParams.mmaIterationCountWidth.W))
+    Max_Caculate_Iter := M_IteratorMax * N_IteratorMax * K_IteratorMax
 
     // Count matrix-register read requests.
-    val AVectorCount = RegInit(0.U(32.W))// Number of iterations completed by the current compute task.
-    val ARequestVectorCount = RegInit(0.U(32.W))// Number of iterations completed by the current compute task.
+    val AVectorCount = RegInit(0.U(cuteParams.mmaIterationCountWidth.W))
+    val ARequestVectorCount = RegInit(0.U(cuteParams.mmaIterationCountWidth.W))
 
     val MatrixRegRequestBankAddr = io.FromMatrixRegIO.BankAddr  // Addresses requested from the matrix register.
     MatrixRegRequestBankAddr.bits := DontCare

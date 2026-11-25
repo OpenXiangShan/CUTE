@@ -41,7 +41,7 @@ class BDataController(implicit p: Parameters) extends CuteModule{
     val calculate_state = RegInit(s_cal_idle)
     val MatrixRegWorkingTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegWorkingTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegWorkingTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegWorkingTensor_K = RegInit(0.U(cuteParams.mmaKGroupCountWidth.W))
 
     assert(io.ComputeGo === io.VectorB.ready)
 
@@ -104,15 +104,18 @@ class BDataController(implicit p: Parameters) extends CuteModule{
 
     // Division by a power of two becomes a hardware shift.
     // Matrix_M is a power of two, so division becomes a shift without a divider.
-    val M_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_MN.U) + ((MatrixRegWorkingTensor_M % Matrix_MN.U) =/= 0.U) // Supply Matrix_M rows per step; round up Tensor_M / Matrix_MN for a partial group.
-    val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_MN.U)// Supply Matrix_N columns per step; use Tensor_N / Matrix_MN column groups.
+    val M_IteratorMax = Wire(UInt(cuteParams.mmaMNGroupCountWidth.W))
+    val N_IteratorMax = Wire(UInt(cuteParams.mmaMNGroupCountWidth.W))
+    M_IteratorMax := (MatrixRegWorkingTensor_M / Matrix_MN.U) + ((MatrixRegWorkingTensor_M % Matrix_MN.U) =/= 0.U) // Supply Matrix_M rows per step; round up Tensor_M / Matrix_MN for a partial group.
+    N_IteratorMax := MatrixRegWorkingTensor_N / Matrix_MN.U // Supply Matrix_N columns per step; use Tensor_N / Matrix_MN column groups.
     val K_IteratorMax = (MatrixRegWorkingTensor_K)// K already counts reduce vectors; no further division is needed.
 
-    val Max_Caculate_Iter = M_IteratorMax * N_IteratorMax * K_IteratorMax   // Total iteration count.
+    val Max_Caculate_Iter = Wire(UInt(cuteParams.mmaIterationCountWidth.W))
+    Max_Caculate_Iter := M_IteratorMax * N_IteratorMax * K_IteratorMax
 
     // Count matrix-register read requests.
-    val BVectorCount = RegInit(0.U(32.W))// Number of iterations completed by the current compute task.
-    val BRequestVectorCount = RegInit(0.U(32.W))// Number of iterations completed by the current compute task.
+    val BVectorCount = RegInit(0.U(cuteParams.mmaIterationCountWidth.W))
+    val BRequestVectorCount = RegInit(0.U(cuteParams.mmaIterationCountWidth.W))
 
     val MatrixRegRequestBankAddr = io.FromMatrixRegIO.BankAddr  // Addresses requested from the matrix register.
     MatrixRegRequestBankAddr.bits := DontCare
