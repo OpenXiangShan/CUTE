@@ -357,7 +357,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   decodedFifo.io.enq.bits := decEntryEnq
 
   // ===================== Issue window state =====================
-  class IssueWindowSlot(implicit p: Parameters) extends CuteBundle {
+  class IssueWindowSlot extends Bundle {
     val valid = Bool()
     val issued = Bool()
     val completed = Bool()
@@ -367,6 +367,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val waitReadAMask = UInt(WinDepth.W)
     val waitReadBMask = UInt(WinDepth.W)
     val opKind = TaskCtrlOpKind()
+  }
+
+  class IssueWindowPayload(implicit p: Parameters) extends CuteBundle {
     val entry = new DecodedAmuCtrlEntry
     val seqId = UInt(SeqIdWidth.W)
     val fifoIdx = UInt(4.W)
@@ -378,6 +381,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   val slots = RegInit(VecInit(Seq.fill(WinDepth)(0.U.asTypeOf(new IssueWindowSlot))))
+  // Enqueue initializes the payload before the corresponding slot becomes valid.
+  val slotPayloads = Reg(Vec(WinDepth, new IssueWindowPayload))
   val winHead = RegInit(0.U(SlotIdxWidth.W))
   val winTail = RegInit(0.U(SlotIdxWidth.W))
   val winCount = RegInit(0.U(WinCountWidth.W))
@@ -540,6 +545,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   readyBySlot.foreach(_ := false.B)
   for (slotIdx <- 0 until WinDepth) {
     val slot = slots(slotIdx)
+    val slotPayload = slotPayloads(slotIdx)
     val slotAge = (slotIdx.U + WinDepth.U - winHead)(SlotIdxWidth - 1, 0)
     val inWindow = slotAge < winCount
     val slotCanConsider = inWindow && slot.valid && !slot.issued
@@ -555,12 +561,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val slotFuReady = Mux(
       slotCanConsider,
       MuxLookup(slot.opKind.asUInt, true.B)(Seq(
-        TaskCtrlOpKind.LoadA.asUInt -> trLoadReady(decodeLsu(slot.entry.ctrl)),
-        TaskCtrlOpKind.LoadB.asUInt -> trLoadReady(decodeLsu(slot.entry.ctrl)),
+        TaskCtrlOpKind.LoadA.asUInt -> trLoadReady(decodeLsu(slotPayload.entry.ctrl)),
+        TaskCtrlOpKind.LoadB.asUInt -> trLoadReady(decodeLsu(slotPayload.entry.ctrl)),
         TaskCtrlOpKind.LoadC.asUInt -> (!fuAccLoader0.busy && io.accMemoryConfig.LoadMicroTaskReady),
         TaskCtrlOpKind.ZeroAcc.asUInt -> (!fuAccLoader0.busy && io.accMemoryConfig.LoadMicroTaskReady),
         TaskCtrlOpKind.ZeroTr.asUInt -> (!fuTrLoader0.busy && io.trLoader0Config.MicroTaskReady),
-        TaskCtrlOpKind.Store.asUInt -> Mux(decodeLsu(slot.entry.ctrl).isacc,
+        TaskCtrlOpKind.Store.asUInt -> Mux(decodeLsu(slotPayload.entry.ctrl).isacc,
           !fuAccStorer0.busy && io.accMemoryConfig.StoreMicroTaskReady,
           !fuTrStorer0.busy),
         TaskCtrlOpKind.Compute.asUInt -> (!fuCompute.busy && io.ADC_MicroTask_Config.MicroTaskReady && io.BDC_MicroTask_Config.MicroTaskReady && io.CDC_MicroTask_Config.MicroTaskReady),
@@ -588,8 +594,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   val issueFound = releaseHoldValid || normalIssueFound
   val issueSlot = slots(issueSlotIdx)
+  val issuePayload = slotPayloads(issueSlotIdx)
   val issueSelectedIsRelease = issueFound && issueSlot.opKind === TaskCtrlOpKind.Release
-  val selectedRelease = issueSlot.entry.ctrl.data.asTypeOf(new AmuReleaseIO)
+  val selectedRelease = issuePayload.entry.ctrl.data.asTypeOf(new AmuReleaseIO)
   io.ygjkctrl.mrelease.valid := issueSelectedIsRelease
   io.ygjkctrl.mrelease.bits.msyncRd(selectedRelease.msyncRd) := true.B
   val issueFire = issueFound && (!issueSelectedIsRelease || io.ygjkctrl.mrelease.ready)
@@ -628,7 +635,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val ownedWork = deqValid || (winCount =/= 0.U)
 
   // ===================== Issue dispatch bridge =====================
-  val issueCtrl = issueSlot.entry.ctrl
+  val issueCtrl = issuePayload.entry.ctrl
   val issueLsu = decodeLsu(issueCtrl)
   val issueTrLoader1 = !issueLsu.transpose && trLoader1Ready
   val issueMma = decodeMma(issueCtrl)
@@ -766,13 +773,13 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val issuePrefetchStream = prefetchStreamForOp(issueSlot.opKind)
     when(issueFire && issuePrefetchStream =/= MatrixPrefetchStream.none) {
       matrixPrefetch.activate.valid := true.B
-      matrixPrefetch.activate.bits := MatrixPrefetchTagCodec.encode(true.B, issuePrefetchStream, issueSlot.seqId)
+      matrixPrefetch.activate.bits := MatrixPrefetchTagCodec.encode(true.B, issuePrefetchStream, issuePayload.seqId)
     }
 
     val retirePrefetchStream = prefetchStreamForOp(headSlot.opKind)
     when(retireFire && retirePrefetchStream =/= MatrixPrefetchStream.none) {
       matrixPrefetch.retire.valid := true.B
-      matrixPrefetch.retire.bits := MatrixPrefetchTagCodec.encode(true.B, retirePrefetchStream, headSlot.seqId)
+      matrixPrefetch.retire.bits := MatrixPrefetchTagCodec.encode(true.B, retirePrefetchStream, slotPayloads(winHead).seqId)
     }
 
     when(issueFire && issueSlot.opKind === TaskCtrlOpKind.Store && issueLsu.isacc) {
@@ -780,12 +787,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       matrixPrefetch.cStoreStart.bits := MatrixPrefetchTagCodec.encode(
         true.B,
         MatrixPrefetchStream.cStore,
-        issueSlot.seqId
+        issuePayload.seqId
       )
     }
 
     when(accStorer0Done) {
-      val storeOwner = slots(fuAccStorer0.ownerSlot)
+      val storeOwner = slotPayloads(fuAccStorer0.ownerSlot)
       matrixPrefetch.cStoreEnd.valid := true.B
       matrixPrefetch.cStoreEnd.bits := MatrixPrefetchTagCodec.encode(
         true.B,
@@ -814,7 +821,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
           cfg.MatrixRegTensor_M := matrixDim
           cfg.MatrixRegTensor_K := beatCount
           cfg.MatrixRegId := issueLsu.ms(1, 0)
-          cfg.PrefetchTaskId.foreach(_ := issueSlot.seqId)
+          cfg.PrefetchTaskId.foreach(_ := issuePayload.seqId)
           cfg.PrefetchStream.foreach(_ := Mux(isB, MatrixPrefetchStream.b, MatrixPrefetchStream.a))
           cfg.Conherent := true.B
           cfg.Is_Transpose := issueLsu.transpose
@@ -827,14 +834,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         for ((event, kind) <- Seq(loadAllocateEvent -> 0, loadIssueEvent -> 1)) {
           event.eventType := kind.U
           event.regId := issueLsu.ms(1, 0)
-          event.fifoIdx := issueSlot.fifoIdx
+          event.fifoIdx := issuePayload.fifoIdx
           event.needMask := Mux(issueTrLoader1, "b010".U, "b001".U)
           event.row := issueLsu.row
           event.column := issueLsu.column
           event.transpose := issueLsu.transpose
           event.isAcc := false.B
           event.slotId := issueSlotIdx
-          event.seqId := issueSlot.seqId
+          event.seqId := issuePayload.seqId
         }
         loadAllocateEventEn := true.B
         loadIssueEventEn := true.B
@@ -860,7 +867,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.accMemoryConfig.MatrixRegTensor_M := matrixDimM
         io.accMemoryConfig.MatrixRegTensor_N := matrixDimN
         io.accMemoryConfig.MatrixRegId := regIdx
-        io.accMemoryConfig.PrefetchTaskId.foreach(_ := issueSlot.seqId)
+        io.accMemoryConfig.PrefetchTaskId.foreach(_ := issuePayload.seqId)
         io.accMemoryConfig.PrefetchStream.foreach(_ := MatrixPrefetchStream.cLoad)
         io.accMemoryConfig.Is_Transpose := issueLsu.transpose
         io.accMemoryConfig.LoadMicroTaskValid := true.B
@@ -872,26 +879,26 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
         loadAllocateEvent.eventType := 0.U
         loadAllocateEvent.regId := regIdx
-        loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
+        loadAllocateEvent.fifoIdx := issuePayload.fifoIdx
         loadAllocateEvent.needMask := "b100".U
         loadAllocateEvent.row := issueLsu.row
         loadAllocateEvent.column := issueLsu.column
         loadAllocateEvent.transpose := issueLsu.transpose
         loadAllocateEvent.isAcc := true.B
         loadAllocateEvent.slotId := issueSlotIdx
-        loadAllocateEvent.seqId := issueSlot.seqId
+        loadAllocateEvent.seqId := issuePayload.seqId
         loadAllocateEventEn := true.B
 
         loadIssueEvent.eventType := 1.U
         loadIssueEvent.regId := regIdx
-        loadIssueEvent.fifoIdx := issueSlot.fifoIdx
+        loadIssueEvent.fifoIdx := issuePayload.fifoIdx
         loadIssueEvent.needMask := "b100".U
         loadIssueEvent.row := issueLsu.row
         loadIssueEvent.column := issueLsu.column
         loadIssueEvent.transpose := issueLsu.transpose
         loadIssueEvent.isAcc := true.B
         loadIssueEvent.slotId := issueSlotIdx
-        loadIssueEvent.seqId := issueSlot.seqId
+        loadIssueEvent.seqId := issuePayload.seqId
         loadIssueEventEn := true.B
       }
 
@@ -916,26 +923,26 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
         loadAllocateEvent.eventType := 0.U
         loadAllocateEvent.regId := regIdx
-        loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
+        loadAllocateEvent.fifoIdx := issuePayload.fifoIdx
         loadAllocateEvent.needMask := "b100".U
         loadAllocateEvent.row := 0.U
         loadAllocateEvent.column := 0.U
         loadAllocateEvent.transpose := false.B
         loadAllocateEvent.isAcc := true.B
         loadAllocateEvent.slotId := issueSlotIdx
-        loadAllocateEvent.seqId := issueSlot.seqId
+        loadAllocateEvent.seqId := issuePayload.seqId
         loadAllocateEventEn := true.B
 
         loadIssueEvent.eventType := 1.U
         loadIssueEvent.regId := regIdx
-        loadIssueEvent.fifoIdx := issueSlot.fifoIdx
+        loadIssueEvent.fifoIdx := issuePayload.fifoIdx
         loadIssueEvent.needMask := "b100".U
         loadIssueEvent.row := 0.U
         loadIssueEvent.column := 0.U
         loadIssueEvent.transpose := false.B
         loadIssueEvent.isAcc := true.B
         loadIssueEvent.slotId := issueSlotIdx
-        loadIssueEvent.seqId := issueSlot.seqId
+        loadIssueEvent.seqId := issuePayload.seqId
         loadIssueEventEn := true.B
       }
 
@@ -959,26 +966,26 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
         loadAllocateEvent.eventType := 0.U
         loadAllocateEvent.regId := regIdx
-        loadAllocateEvent.fifoIdx := issueSlot.fifoIdx
+        loadAllocateEvent.fifoIdx := issuePayload.fifoIdx
         loadAllocateEvent.needMask := "b001".U
         loadAllocateEvent.row := 0.U
         loadAllocateEvent.column := 0.U
         loadAllocateEvent.transpose := false.B
         loadAllocateEvent.isAcc := false.B
         loadAllocateEvent.slotId := issueSlotIdx
-        loadAllocateEvent.seqId := issueSlot.seqId
+        loadAllocateEvent.seqId := issuePayload.seqId
         loadAllocateEventEn := true.B
 
         loadIssueEvent.eventType := 1.U
         loadIssueEvent.regId := regIdx
-        loadIssueEvent.fifoIdx := issueSlot.fifoIdx
+        loadIssueEvent.fifoIdx := issuePayload.fifoIdx
         loadIssueEvent.needMask := "b001".U
         loadIssueEvent.row := 0.U
         loadIssueEvent.column := 0.U
         loadIssueEvent.transpose := false.B
         loadIssueEvent.isAcc := false.B
         loadIssueEvent.slotId := issueSlotIdx
-        loadIssueEvent.seqId := issueSlot.seqId
+        loadIssueEvent.seqId := issuePayload.seqId
         loadIssueEventEn := true.B
       }
 
@@ -1028,14 +1035,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         computeIssueEvent.aReg := aReg
         computeIssueEvent.bReg := bReg
         computeIssueEvent.cReg := cReg
-        computeIssueEvent.fifoIdx := issueSlot.fifoIdx
+        computeIssueEvent.fifoIdx := issuePayload.fifoIdx
         computeIssueEvent.mtilem := mVal
         computeIssueEvent.mtilen := nVal
         computeIssueEvent.mtilek := kVal
         computeIssueEvent.isMma := true.B
         computeIssueEvent.isFp := issueMma.isfp
         computeIssueEvent.slotId := issueSlotIdx
-        computeIssueEvent.seqId := issueSlot.seqId
+        computeIssueEvent.seqId := issuePayload.seqId
         computeIssueEventEn := true.B
       }
 
@@ -1044,7 +1051,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
         when(issueLsu.isacc) {
           cStoreDesc.foreach { desc =>
-            desc.taskId := issueSlot.seqId
+            desc.taskId := issuePayload.seqId
             desc.stream := MatrixPrefetchStream.cStore
             desc.baseAddr := issueLsu.baseAddr
             desc.outerStride := issueLsu.stride
@@ -1074,7 +1081,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
             tag := MatrixPrefetchTagCodec.encode(
               true.B,
               MatrixPrefetchStream.cStore,
-              issueSlot.seqId
+              issuePayload.seqId
             )
           }
           io.accMemoryConfig.LoadMicroTaskValid := false.B
@@ -1104,13 +1111,13 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
         storeIssueEvent.eventType := 0.U
         storeIssueEvent.regId := regIdx
-        storeIssueEvent.fifoIdx := issueSlot.fifoIdx
+        storeIssueEvent.fifoIdx := issuePayload.fifoIdx
         storeIssueEvent.row := issueLsu.row
         storeIssueEvent.column := issueLsu.column
         storeIssueEvent.transpose := issueLsu.transpose
         storeIssueEvent.isAcc := issueLsu.isacc
         storeIssueEvent.slotId := issueSlotIdx
-        storeIssueEvent.seqId := issueSlot.seqId
+        storeIssueEvent.seqId := issuePayload.seqId
         storeIssueEventEn := true.B
       }
 
@@ -1120,7 +1127,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         releaseIssueEvent.eventType := 0.U
         releaseIssueEvent.msync := issueRelease.msyncRd
         releaseIssueEvent.slotId := issueSlotIdx
-        releaseIssueEvent.seqId := issueSlot.seqId
+        releaseIssueEvent.seqId := issuePayload.seqId
         releaseIssueEventEn := true.B
       }
 
@@ -1167,20 +1174,20 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     assert(!slots(owner).readADone, "TaskController: duplicated ADC done")
     slots(owner).readADone := true.B
 
-    val slot = slots(owner)
-    val mma = decodeMma(slot.entry.ctrl)
+    val slotPayload = slotPayloads(owner)
+    val mma = decodeMma(slotPayload.entry.ctrl)
     computeReadAFinishEvent.eventType := 1.U
     computeReadAFinishEvent.aReg := mma.ms1(1, 0)
     computeReadAFinishEvent.bReg := mma.ms2(1, 0)
     computeReadAFinishEvent.cReg := mma.md(1, 0)
-    computeReadAFinishEvent.fifoIdx := slot.fifoIdx
+    computeReadAFinishEvent.fifoIdx := slotPayload.fifoIdx
     computeReadAFinishEvent.mtilem := mma.mtilem
     computeReadAFinishEvent.mtilen := mma.mtilen
     computeReadAFinishEvent.mtilek := computeKFromMsew(mma.mtilek, mma.types1)
     computeReadAFinishEvent.isMma := true.B
     computeReadAFinishEvent.isFp := mma.isfp
     computeReadAFinishEvent.slotId := owner
-    computeReadAFinishEvent.seqId := slot.seqId
+    computeReadAFinishEvent.seqId := slotPayload.seqId
     computeReadAFinishEventEn := true.B
   }
 
@@ -1190,20 +1197,20 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     assert(!slots(owner).readBDone, "TaskController: duplicated BDC done")
     slots(owner).readBDone := true.B
 
-    val slot = slots(owner)
-    val mma = decodeMma(slot.entry.ctrl)
+    val slotPayload = slotPayloads(owner)
+    val mma = decodeMma(slotPayload.entry.ctrl)
     computeReadBFinishEvent.eventType := 2.U
     computeReadBFinishEvent.aReg := mma.ms1(1, 0)
     computeReadBFinishEvent.bReg := mma.ms2(1, 0)
     computeReadBFinishEvent.cReg := mma.md(1, 0)
-    computeReadBFinishEvent.fifoIdx := slot.fifoIdx
+    computeReadBFinishEvent.fifoIdx := slotPayload.fifoIdx
     computeReadBFinishEvent.mtilem := mma.mtilem
     computeReadBFinishEvent.mtilen := mma.mtilen
     computeReadBFinishEvent.mtilek := computeKFromMsew(mma.mtilek, mma.types1)
     computeReadBFinishEvent.isMma := true.B
     computeReadBFinishEvent.isFp := mma.isfp
     computeReadBFinishEvent.slotId := owner
-    computeReadBFinishEvent.seqId := slot.seqId
+    computeReadBFinishEvent.seqId := slotPayload.seqId
     computeReadBFinishEventEn := true.B
   }
 
@@ -1213,20 +1220,20 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     slots(owner).completed := true.B
     fuCompute.busy := false.B
 
-    val slot = slots(owner)
-    val mma = decodeMma(slot.entry.ctrl)
+    val slotPayload = slotPayloads(owner)
+    val mma = decodeMma(slotPayload.entry.ctrl)
     computeWriteCFinishEvent.eventType := 3.U
     computeWriteCFinishEvent.aReg := mma.ms1(1, 0)
     computeWriteCFinishEvent.bReg := mma.ms2(1, 0)
     computeWriteCFinishEvent.cReg := mma.md(1, 0)
-    computeWriteCFinishEvent.fifoIdx := slot.fifoIdx
+    computeWriteCFinishEvent.fifoIdx := slotPayload.fifoIdx
     computeWriteCFinishEvent.mtilem := mma.mtilem
     computeWriteCFinishEvent.mtilen := mma.mtilen
     computeWriteCFinishEvent.mtilek := computeKFromMsew(mma.mtilek, mma.types1)
     computeWriteCFinishEvent.isMma := true.B
     computeWriteCFinishEvent.isFp := mma.isfp
     computeWriteCFinishEvent.slotId := owner
-    computeWriteCFinishEvent.seqId := slot.seqId
+    computeWriteCFinishEvent.seqId := slotPayload.seqId
     computeWriteCFinishEventEn := true.B
   }
 
@@ -1257,13 +1264,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     slots(winHead).waitReadAMask := 0.U
     slots(winHead).waitReadBMask := 0.U
     slots(winHead).opKind := TaskCtrlOpKind.NopLike
-    slots(winHead).entry := 0.U.asTypeOf(new DecodedAmuCtrlEntry)
-    slots(winHead).seqId := 0.U
-    slots(winHead).fifoIdx := 0.U
   }
 
   when(enqueueFire) {
     val newSlot = WireInit(0.U.asTypeOf(new IssueWindowSlot))
+    val newPayload = Wire(new IssueWindowPayload)
     newSlot.valid := true.B
     newSlot.issued := false.B
     newSlot.completed := false.B
@@ -1273,9 +1278,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     newSlot.waitReadAMask := 0.U
     newSlot.waitReadBMask := 0.U
     newSlot.opKind := deqOpKind
-    newSlot.entry := deqEntry
-    newSlot.seqId := seqIdAlloc
-    newSlot.fifoIdx := 0.U
+    newPayload.entry := deqEntry
+    newPayload.seqId := seqIdAlloc
+    newPayload.fifoIdx := 0.U
 
     when(
       deqOpKind === TaskCtrlOpKind.LoadA ||
@@ -1284,11 +1289,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       deqOpKind === TaskCtrlOpKind.ZeroAcc ||
       deqOpKind === TaskCtrlOpKind.ZeroTr
     ) {
-      newSlot.fifoIdx := loadFifoIdxAlloc
+      newPayload.fifoIdx := loadFifoIdxAlloc
     }.elsewhen(deqOpKind === TaskCtrlOpKind.Compute) {
-      newSlot.fifoIdx := computeIssueIdx
+      newPayload.fifoIdx := computeIssueIdx
     }.elsewhen(deqOpKind === TaskCtrlOpKind.Store) {
-      newSlot.fifoIdx := storeIssueIdx
+      newPayload.fifoIdx := storeIssueIdx
     }
 
     val newReadsAB = deqOpKind === TaskCtrlOpKind.Compute || (deqOpKind === TaskCtrlOpKind.Store && deqStoreReadsAB)
@@ -1322,7 +1327,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     for (j <- 0 until WinDepth) {
       val older = slots(j)
       val olderValid = older.valid && depOlderMask(j)
-      val olderCtrl = older.entry.ctrl
+      val olderCtrl = slotPayloads(j).entry.ctrl
       val olderMma = decodeMma(olderCtrl)
       val olderLsu = decodeLsu(olderCtrl)
       val olderArith = decodeArith(olderCtrl)
@@ -1393,6 +1398,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     newSlot.waitReadBMask := depReadBBits.asUInt
 
     slots(enqueueSlotIdx) := newSlot
+    slotPayloads(enqueueSlotIdx) := newPayload
   }
 
   when(issueFire) {
@@ -1483,80 +1489,80 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   // ===================== Finish events (load/store) =====================
   when(trLoader0Done) {
     val owner = fuTrLoader0.ownerSlot
-    val slot = slots(owner)
-    val op = slot.opKind
-    val lsu = decodeLsu(slot.entry.ctrl)
-    val arith = decodeArith(slot.entry.ctrl)
+    val slotPayload = slotPayloads(owner)
+    val op = slots(owner).opKind
+    val lsu = decodeLsu(slotPayload.entry.ctrl)
+    val arith = decodeArith(slotPayload.entry.ctrl)
     val reg = Mux(op === TaskCtrlOpKind.ZeroTr, arith.md(1, 0), lsu.ms(1, 0))
 
     loadAFinishEvent.eventType := 2.U
     loadAFinishEvent.regId := reg
-    loadAFinishEvent.fifoIdx := slot.fifoIdx
+    loadAFinishEvent.fifoIdx := slotPayload.fifoIdx
     loadAFinishEvent.needMask := "b001".U
     loadAFinishEvent.row := Mux(op === TaskCtrlOpKind.ZeroTr, 0.U, lsu.row)
     loadAFinishEvent.column := Mux(op === TaskCtrlOpKind.ZeroTr, 0.U, lsu.column)
     loadAFinishEvent.transpose := Mux(op === TaskCtrlOpKind.ZeroTr, false.B, lsu.transpose)
     loadAFinishEvent.isAcc := false.B
     loadAFinishEvent.slotId := owner
-    loadAFinishEvent.seqId := slot.seqId
+    loadAFinishEvent.seqId := slotPayload.seqId
     loadAFinishEventEn := true.B
   }
 
   when(trLoader1Done) {
     val owner = fuTrLoader1.ownerSlot
-    val slot = slots(owner)
-    val lsu = decodeLsu(slot.entry.ctrl)
+    val slotPayload = slotPayloads(owner)
+    val lsu = decodeLsu(slotPayload.entry.ctrl)
 
     loadBFinishEvent.eventType := 2.U
     loadBFinishEvent.regId := lsu.ms(1, 0)
-    loadBFinishEvent.fifoIdx := slot.fifoIdx
+    loadBFinishEvent.fifoIdx := slotPayload.fifoIdx
     loadBFinishEvent.needMask := "b010".U
     loadBFinishEvent.row := lsu.row
     loadBFinishEvent.column := lsu.column
     loadBFinishEvent.transpose := lsu.transpose
     loadBFinishEvent.isAcc := false.B
     loadBFinishEvent.slotId := owner
-    loadBFinishEvent.seqId := slot.seqId
+    loadBFinishEvent.seqId := slotPayload.seqId
     loadBFinishEventEn := true.B
   }
 
   when(accLoader0Done) {
     val owner = fuAccLoader0.ownerSlot
-    val slot = slots(owner)
-    val op = slot.opKind
-    val lsu = decodeLsu(slot.entry.ctrl)
-    val arith = decodeArith(slot.entry.ctrl)
+    val slotPayload = slotPayloads(owner)
+    val op = slots(owner).opKind
+    val lsu = decodeLsu(slotPayload.entry.ctrl)
+    val arith = decodeArith(slotPayload.entry.ctrl)
     val reg = Mux(op === TaskCtrlOpKind.ZeroAcc, arith.md(1, 0), lsu.ms(1, 0))
     val row = Mux(op === TaskCtrlOpKind.ZeroAcc, 0.U, lsu.row)
     val col = Mux(op === TaskCtrlOpKind.ZeroAcc, 0.U, lsu.column)
 
     loadCFinishEvent.eventType := 2.U
     loadCFinishEvent.regId := reg
-    loadCFinishEvent.fifoIdx := slot.fifoIdx
+    loadCFinishEvent.fifoIdx := slotPayload.fifoIdx
     loadCFinishEvent.needMask := "b100".U
     loadCFinishEvent.row := row
     loadCFinishEvent.column := col
     loadCFinishEvent.transpose := Mux(op === TaskCtrlOpKind.ZeroAcc, false.B, lsu.transpose)
     loadCFinishEvent.isAcc := true.B
     loadCFinishEvent.slotId := owner
-    loadCFinishEvent.seqId := slot.seqId
+    loadCFinishEvent.seqId := slotPayload.seqId
     loadCFinishEventEn := true.B
   }
 
   when(storeDone) {
     val owner = Mux(trStorer0Done, fuTrStorer0.ownerSlot, fuAccStorer0.ownerSlot)
-    val slot = slots(owner)
-    val lsu = decodeLsu(slot.entry.ctrl)
+    val slotPayload = slotPayloads(owner)
+    val lsu = decodeLsu(slotPayload.entry.ctrl)
 
     storeFinishEvent.eventType := 1.U
     storeFinishEvent.regId := lsu.ms(1, 0)
-    storeFinishEvent.fifoIdx := slot.fifoIdx
+    storeFinishEvent.fifoIdx := slotPayload.fifoIdx
     storeFinishEvent.row := lsu.row
     storeFinishEvent.column := lsu.column
     storeFinishEvent.transpose := lsu.transpose
     storeFinishEvent.isAcc := lsu.isacc
     storeFinishEvent.slotId := owner
-    storeFinishEvent.seqId := slot.seqId
+    storeFinishEvent.seqId := slotPayload.seqId
     storeFinishEventEn := true.B
   }
 
@@ -1564,7 +1570,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   if (EnableDifftest) {
     val releaseFinish = CuteDifftest(new DiffAmuFinishEvent, delay = 3, dontCare = true)
     val releaseIssueOwnerSlot = issueSlotIdx
-    val releaseIssueOwnerEntry = issueSlot.entry
+    val releaseIssueOwnerEntry = issuePayload.entry
 
     releaseFinish.coreid := Mux(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release, releaseIssueOwnerEntry.ctrl.coreid.get, 0.U)
     releaseFinish.index := 1.U
@@ -1607,7 +1613,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     enable <- cStoreDescEn
   } table.log(desc, enable, "StoreDescriptor", clock, reset)
 
-  val mmaDoneType = decodeMmaComputeType(decodeMma(slots(fuCompute.ownerSlot).entry.ctrl))
+  val mmaDoneType = decodeMmaComputeType(decodeMma(slotPayloads(fuCompute.ownerSlot).entry.ctrl))
   val releaseDone = issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
   io.perfProbe.ownedWork := ownedWork
   io.perfProbe.retire := retireFire
@@ -1617,7 +1623,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.perfProbe.storeDone := storeFinishEventEn
   io.perfProbe.compDone := computeWriteCFinishEventEn
   io.perfProbe.releaseDone := releaseDone
-  io.perfProbe.mmaNonfpDone := computeWriteCFinishEventEn && !decodeMma(slots(fuCompute.ownerSlot).entry.ctrl).isfp
+  io.perfProbe.mmaNonfpDone := computeWriteCFinishEventEn && !decodeMma(slotPayloads(fuCompute.ownerSlot).entry.ctrl).isfp
   io.perfProbe.mmaFp16Done := computeWriteCFinishEventEn && (mmaDoneType === MteComputeType.F16F16F32)
   io.perfProbe.mmaBf16Done := computeWriteCFinishEventEn && (mmaDoneType === MteComputeType.BF16BF16F32)
   io.perfProbe.mmaTf32Done := computeWriteCFinishEventEn && (mmaDoneType === MteComputeType.TF32TF32F32)
