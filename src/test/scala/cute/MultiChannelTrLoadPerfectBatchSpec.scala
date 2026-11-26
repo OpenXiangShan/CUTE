@@ -67,7 +67,7 @@ class ABLocalMmuPriorityHarness(implicit p: Parameters) extends CuteModule {
 class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "MultiChannelTrLoader perfect batches"
 
-  private def testParams(seedEnabled: Boolean = true): Parameters = new Config((_, _, _) => {
+  private def testParams(): Parameters = new Config((_, _, _) => {
     case PerfCounterOptionsKey => PerfCounterOptions(
       enablePerfPrint = false,
       enablePerfDB = false,
@@ -76,7 +76,6 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
     case CuteParamsKey => CuteParams.CUTE_8Tops_128SCP.copy(
       LoaderBridgeChannelConfig = "A8B8CL8CS8",
       L2NBanks = 8,
-      ABPerfectBatchSeedEnable = seedEnabled,
       Debug = CuteDebugParams.NoDebug,
       EnableDifftest = false)
   })
@@ -276,7 +275,7 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
   }
 
   ignore should "reconcile seed fire perfect and nonzero window-repair probes" in {
-    implicit val p: Parameters = testParams(seedEnabled = true)
+    implicit val p: Parameters = testParams()
     test(new MultiChannelTrLoader("trLoader0", "TrLoader0_window_repair_probe")(p))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         val rows = 128
@@ -362,28 +361,8 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
       }
   }
 
-  Seq(true, false).foreach { seedEnabled =>
-    ignore should s"preserve the canonical request set when task-start seeding is enabled=$seedEnabled" in {
-      implicit val p: Parameters = testParams(seedEnabled)
-      test(new MultiChannelTrLoader("trLoader0", s"TrLoader0_seed_enabled_$seedEnabled")(p))
-        .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
-          startA(dut, rows = 128, kBeatCount = 1,
-            baseAddress = BigInt("8004a000", 16), rowStride = 16)
-          val observed = collectRequests(dut, expectedCount = 128)
-          val actual = observed.map { case (channel, address, _) => channel -> address }.toSet
-          val expected = (0 until 128).map { row =>
-            (row % 8) -> (BigInt("8004a000", 16) + row * 16)
-          }.toSet
-          assert(actual == expected,
-            s"seed mode coverage mismatch: missing=${expected -- actual} extra=${actual -- expected}")
-          dut.io.perfProbe.seedStatus.expect(
-            (if (seedEnabled) ABPerfectBatchSeed.Success else ABPerfectBatchSeed.Disabled).U)
-        }
-    }
-  }
-
   ignore should "wrap a nonzero seed and issue every ordinal exactly once" in {
-    implicit val p: Parameters = testParams(seedEnabled = true)
+    implicit val p: Parameters = testParams()
     test(new MultiChannelTrLoader("trLoader0", "TrLoader0_nonzero_seed_wrap")(p))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         startA(dut, rows = 128, kBeatCount = 1,
@@ -404,7 +383,7 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
   }
 
   ignore should "wrap unequal final-partial streams and skip issued ordinals exactly once" in {
-    implicit val p: Parameters = testParams(seedEnabled = true)
+    implicit val p: Parameters = testParams()
     test(new MultiChannelTrLoader("trLoader0", "TrLoader0_partial_seed_wrap")(p))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         val rows = 125
@@ -429,7 +408,7 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
   }
 
   ignore should "fall back for fixed-bank one-beat geometry without request loss" in {
-    implicit val p: Parameters = testParams(seedEnabled = true)
+    implicit val p: Parameters = testParams()
     test(new MultiChannelTrLoader("trLoader0", "TrLoader0_fixed_bank_fallback")(p))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         startA(dut, rows = 128, kBeatCount = 1,
@@ -444,7 +423,7 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
   }
 
   ignore should "clear retained seed and counter state across reset and task reaccept" in {
-    implicit val p: Parameters = testParams(seedEnabled = true)
+    implicit val p: Parameters = testParams()
     test(new MultiChannelTrLoader("trLoader0", "TrLoader0_reset_reaccept")(p))
       .withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
         startA(dut, rows = 128, kBeatCount = 1,

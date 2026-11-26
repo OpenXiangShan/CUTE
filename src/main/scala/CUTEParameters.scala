@@ -197,7 +197,6 @@ case object MteComputeType extends Field[UInt] {
 case class MatrixIsaParams(
     enableInt4Int32: Boolean = false,
     enableInt8Int32: Boolean = false,
-    enableInt84Int32: Boolean = false,
     enableFp8Fp32: Boolean = false,
     enableFp8Fp16: Boolean = false,
     enableFp8Bf16: Boolean = false,
@@ -205,26 +204,23 @@ case class MatrixIsaParams(
     enableBf16Fp32: Boolean = false,
     enableFp16Fp32: Boolean = false,
     enableTf32Fp32: Boolean = false,
-    enableFp32Fp32: Boolean = false,
     enableMxfp4Fp32: Boolean = false,
     enableMxfp8Fp32: Boolean = false,
     enableNvfp4Fp32: Boolean = false,
 ) {
-    assert(enableInt84Int32 == false, "enableInt84Int32 is not supported now")
-    assert(enableFp32Fp32 == false, "enableFp32Fp32 is not supported now")
 
     def enableMatrix: Boolean =
-        enableInt4Int32 || enableInt8Int32 || enableInt84Int32 ||
+        enableInt4Int32 || enableInt8Int32 ||
         enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16 ||
         enableFp16Fp16 || enableBf16Fp32 || enableFp16Fp32 ||
-        enableFp32Fp32 || enableTf32Fp32 ||
+        enableTf32Fp32 ||
         enableMxfp4Fp32 || enableMxfp8Fp32 || enableNvfp4Fp32
     
     def enable4BitSrc: Boolean =
         enableInt4Int32 || enableMxfp4Fp32 || enableNvfp4Fp32
 
     def enable8BitSrc: Boolean =
-        enableInt8Int32 || enableInt84Int32 ||
+        enableInt8Int32 ||
         enableFp8Fp32 || enableFp8Fp16 || enableFp8Bf16 ||
         enableMxfp8Fp32
     
@@ -232,7 +228,7 @@ case class MatrixIsaParams(
         enableFp16Fp16 || enableBf16Fp32 || enableFp16Fp32
     
     def enable32BitSrc: Boolean =
-        enableFp32Fp32 || enableTf32Fp32
+        enableTf32Fp32
     
     def enable64BitSrc: Boolean = false
 
@@ -244,10 +240,9 @@ case class MatrixIsaParams(
         enableFp8Fp16 || enableFp8Bf16 || enableFp16Fp16
     
     def enable32BitDst: Boolean =
-        enableInt4Int32 || enableInt8Int32 || enableInt84Int32 ||
+        enableInt4Int32 || enableInt8Int32 ||
         enableFp8Fp32 ||
         enableBf16Fp32 || enableFp16Fp32 ||
-        enableFp32Fp32 ||
         enableTf32Fp32
     
     def enable64BitDst: Boolean = false
@@ -270,10 +265,9 @@ object CuteParams {
     // baseParams:
     def baseParams = CuteParams()
 
-    // 256 bit outside memory bus,128 memory bus
+    // 256 bit external memory bus
     def TL256Params = baseParams.copy(
-        outsideDataWidth = 256,
-        MemoryDataWidth = 128
+        outsideDataWidth = 256
     )
 
     //default simple debug
@@ -456,12 +450,11 @@ object CuteParams {
 object Cutev3Params {
 
     // baseParams:
-    def baseParams = CuteParams().copy(v3config = Cutev3extParams.baseparams)
+    def baseParams = CuteParams.baseParams
 
-    // 256 bit outside memory bus,128 memory bus
+    // 256 bit external memory bus
     def TL256Params = baseParams.copy(
-        outsideDataWidth = 256,
-        MemoryDataWidth = 128
+        outsideDataWidth = 256
     )
 
     //default simple debug
@@ -530,11 +523,8 @@ object CuteDebugParams {
     YJPTrLoader0DebugEnable = true,
     YJPTrLoader1DebugEnable = true,
     YJPAccMemoryDebugEnable = true,
-    YJPTASKDebugEnable = true,
-    YJPVECDebugEnable = true,
     YJPMACDebugEnable = true,
-    YJPPEDebugEnable = true,
-    YJPAfterOpsDebugEnable = true)
+  )
 }
 
 case class CuteDebugParams(
@@ -545,43 +535,8 @@ case class CuteDebugParams(
     val YJPTrLoader0DebugEnable :Boolean  = false,
     val YJPTrLoader1DebugEnable :Boolean  = false,
     val YJPAccMemoryDebugEnable :Boolean  = false,
-    val YJPTASKDebugEnable :Boolean = false,
-    val YJPVECDebugEnable :Boolean  = false,
     val YJPMACDebugEnable :Boolean  = false,
-    val YJPPEDebugEnable :Boolean   = false,
-    val YJPAfterOpsDebugEnable :Boolean   = false,
 )
-
-object CuteMMUParams {
-  // baseParams:
-  def baseParams = CuteMMUParams()
-}
-
-case class CuteMMUParams(
-    val vpnBits :Int = 12,
-    val ppnBits :Int = 12,
-    val pgIdxBits :Int = 12,
-    val vaddrBits :Int = 39,
-    val paddrBits :Int = 39,
-    val corePAddrBits :Int = 64,
-)
-
-
-object Cutev3extParams {
-    // NoV3ExtParams:
-    def NoextParams = Cutev3extParams(
-    TaskCtrl_AutoClear = false, //whether the task controller auto-clears completed instructions  
-    )
-
-    // V3 Base Ext
-    def baseparams = Cutev3extParams()
-
-}
-
-case class Cutev3extParams(
-    val TaskCtrl_AutoClear :Boolean = true, //whether the task controller auto-clears completed instructions
-)
-
 
 object CuteFPEParams {
 
@@ -590,33 +545,20 @@ object CuteFPEParams {
 }
 
 case class CuteFPEParams(
-    // currently fixed
-    val MinGroupSize :Int = 16,
-    val MinDataTypeWidth : Int = 4,
-    val ScaleElementWidth : Int = 8,
-    //
-
-    val cmptreelayers :Int = 4,
     val fp8cmptreelayers :Int = 4,
-    // currently fixed and shared with FP4; leave it unchanged
+    // Number of adders in the first FP4 reduction stage
     val FP4P0AddNum :Int = 2,
 )
 
 case class CuteParams(
     val outsideDataWidth :Int = 512, //CUTE external memory bandwidth
-    val MemoryDataWidth :Int = 64,   //TODO: data width of the DRAM memory channel
-
-    val VectorWidth :Int = 256,      //vector pipeline width
 
     val L2NBanks :Int = 4,
-
-    val ApplicationMaxTensorSize :Int = 65536, //maximum tensor shape a program can handle,
 
     val MMUAddrWidth :Int = 64 , //CUTE MMU address width
 
     val LLCSourceMaxNum :Int = 64, //maximum number of sources on the LLC bus -> this parameter is tightly coupled to LLC latency; to sustain full throughput, sourceMAXnum must exceed LLC latency
     val MemorysourceMaxNum :Int = 64, //maximum number of sources on the memory bus -> this parameter is tightly coupled to memory latency; to sustain full throughput, sourceMAXnum must exceed memory latency
-
 
     //tensor shape stored in MatrixReg
     val Tensor_MN :Int = 128,   //M and N dimensions of the tensor to be stored here
@@ -625,18 +567,11 @@ case class CuteParams(
     //MTE matrix-multiply unit shape
     val Matrix_MN :Int = 4,     //Matrix_MN: M and N dimensions of the matrix multiply executed by TE
     val ReduceWidthByte :Int = 64,   //ReduceWidthByte: data width used by ReducePE for inner products, in bytes
-    val ResultWidthByte :Int = 4,    //ResultWidthByte: result width of ReducePE, in bytes
-
-    val ResultFIFODepth :Int = 8,    //MAC FIFO depth
 
     val TrLoader0ReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering trLoader0 data to CCSP
     val TrLoader1ReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering trLoader1 data to CCSP
     val AccStorer0ReadFromMatrixRegFIFODepth :Int = 4, //FIFO for buffering CCSP data to accMemory
     val AccLoader0ReadFromMemoryFIFODepth :Int = 4, //FIFO for buffering accMemory data to CMReg
-
-    val VecTaskInstBufferDepth :Int = 32, //VecTask instruction buffer depth
-    val VecTaskInstBufferSize :Int = 8, //number of VecTask instruction buffers
-    val VecTaskDataBufferDepth :Int = 4, //VecTask buffer depth only needs to cover transfer latency from VecInterface to VPU
 
     // TaskController issue window depth (compile-time only)
     val TaskCtrlIssueWindowDepth :Int = 8,
@@ -651,9 +586,6 @@ case class CuteParams(
     val EnableMatrixPrefetch: Boolean = false,
 
     val Debug : CuteDebugParams = CuteDebugParams.NoDebug, //debug parameters
-    val MMUParams: CuteMMUParams = CuteMMUParams.baseParams, //MMU parameters
-    
-    val v3config: Cutev3extParams = Cutev3extParams.NoextParams, //v3 extension parameters
 
     val FPEparams: CuteFPEParams = CuteFPEParams.baseparams, //FPE parameters
 
@@ -674,12 +606,6 @@ case class CuteParams(
 
     // Elastic safety buffer on every parameterized Omega input.
     val EnableOmegaInputQueue: Boolean = true,
-
-    // Reserved for AB lookahead; the current normal-load path uses per-bank FIFOs.
-    val ABPerfectBatchWindowDepth: Int = 8,
-
-    // Reserved seed control; the current normal-load path does not invoke seed lookup.
-    val ABPerfectBatchSeedEnable: Boolean = true,
 
     // Shared trLoader0/trLoader1 request-side C-tail mitigation; transpose and legacy paths stay natural.
     val ABBatchScheduleEnable: Boolean = true,
@@ -729,8 +655,6 @@ case class CuteParams(
       require(Seq(1, 2, 4, 8).contains(mode.responseChannelCount),
         s"$name response channel count (${mode.responseChannelCount}) must be one of 1/2/4/8")
     }
-    require(ABPerfectBatchWindowDepth >= 1 && isPow2(ABPerfectBatchWindowDepth),
-        s"ABPerfectBatchWindowDepth ($ABPerfectBatchWindowDepth) must be a positive power of two")
     require(ABBatchSchedule.modes.contains(ABBatchScheduleMode), "unsupported AB batch schedule mode")
     require(ABBatchRotateOffset >= 0 && ABBatchPermutationMul > 0,
         "AB batch offset must be non-negative and multiplier must be positive")
@@ -750,9 +674,6 @@ case class CuteParams(
     require(ReduceWidthByte == 64 || ReduceWidthByte == 32, "currently only support 512/256 bit ReduceWidth")
     require(outsideDataWidth >= ReduceWidthByte * 8, "outsideDataWidth must be larger than or equal to ReduceWidthByte")
     require((outsideDataWidth & (outsideDataWidth - 1)) == 0, "outsideDataWidth must be power of 2")
-    require((MemoryDataWidth & (MemoryDataWidth - 1)) == 0, "MemoryDataWidth must be power of 2")
-    require((VectorWidth & (VectorWidth - 1)) == 0, "VectorWidth must be power of 2")
-    require((ApplicationMaxTensorSize & (ApplicationMaxTensorSize - 1)) == 0, "ApplicationMaxTensorSize must be power of 2")
     // require((MMUAddrWidth & (MMUAddrWidth - 1)) == 0, "MMUAddrWidth must be power of 2" )
     require((LLCSourceMaxNum & (LLCSourceMaxNum - 1)) == 0, "LLCSourceMaxNum must be power of 2")
     require((MemorysourceMaxNum & (MemorysourceMaxNum - 1)) == 0, "MemorysourceMaxNum must be power of 2")
@@ -760,23 +681,15 @@ case class CuteParams(
     require((Tensor_K & (Tensor_K - 1)) == 0, "Tensor_K must be power of 2")
     require((Matrix_MN & (Matrix_MN - 1)) == 0, "Matrix_MN must be power of 2")
     require((ReduceWidthByte & (ReduceWidthByte - 1)) == 0, "ReduceWidthByte must be power of 2")
-    require((ResultWidthByte & (ResultWidthByte - 1)) == 0, "ResultWidthByte must be power of 2")
-    require((ResultFIFODepth & (ResultFIFODepth - 1)) == 0, "ResultFIFODepth must be power of 2")
     require((TrLoader0ReadFromMemoryFIFODepth & (TrLoader0ReadFromMemoryFIFODepth - 1)) == 0, "TrLoader0ReadFromMemoryFIFODepth must be power of 2")
     require((TrLoader1ReadFromMemoryFIFODepth & (TrLoader1ReadFromMemoryFIFODepth - 1)) == 0, "TrLoader1ReadFromMemoryFIFODepth must be power of 2")
     require((AccStorer0ReadFromMatrixRegFIFODepth & (AccStorer0ReadFromMatrixRegFIFODepth - 1)) == 0, "AccStorer0ReadFromMatrixRegFIFODepth must be power of 2")
     require((AccLoader0ReadFromMemoryFIFODepth & (AccLoader0ReadFromMemoryFIFODepth - 1)) == 0, "AccLoader0ReadFromMemoryFIFODepth must be power of 2")
-    require((VecTaskInstBufferDepth & (VecTaskInstBufferDepth - 1)) == 0, "VecTaskInstBufferDepth must be power of 2")
-    require((VecTaskInstBufferSize & (VecTaskInstBufferSize - 1)) == 0, "VecTaskInstBufferSize must be power of 2")
-    require((VecTaskDataBufferDepth & (VecTaskDataBufferDepth - 1)) == 0, "VecTaskDataBufferDepth must be power of 2")
     require(TrLoadResponseFifoDepth >= 1, "TRLoadResponseFifoDepth must be >= 1")
     require(AccLoader0FillQueueDepth >= 1, "AccLoader0FillQueueDepth must be >= 1")
     require(ResponseBridgeQueueDepth >= 1, "ResponseBridgeQueueDepth must be >= 1")
     require(Seq(4, 8, 16).contains(TaskCtrlIssueWindowDepth), "TaskCtrlIssueWindowDepth only supports 4/8/16")
     require(Seq(8, 16, 32).contains(MsyncRegs), "MsyncRegs only supports 8/16/32")
-    require((FPEparams.MinGroupSize == 16), "FPEparams.MinGroupSize must be 16")
-    require((FPEparams.MinDataTypeWidth == 4), "FPEparams.MinDataTypeWidth must be 4")
-    require((FPEparams.ScaleElementWidth == 8), "FPEparams.ScaleElementWidth must be 8")
 
     def cuteFpeConfig: CuteFpeConfig = CuteFpeConfig(
         enableInt8Int32 = MatrixExtension.enableInt8Int32,
@@ -791,8 +704,8 @@ case class CuteParams(
     def outsideDataWidthByte = outsideDataWidth / 8
     def ReduceWidth = ReduceWidthByte * 8
     def TrLoadNeedsFillTable = ReduceWidthByte < outsideDataWidthByte //buffer returned memory data when it cannot be written in one cycle
-    def ResultWidth = ResultWidthByte * 8
-    def ApplicationMaxTensorSizeBitSize = log2Ceil(ApplicationMaxTensorSize) + 1
+    def ResultWidth = CuteFpeFormat.ResultWidth
+    def ResultWidthByte = ResultWidth / 8
     def MMUDataWidth = outsideDataWidth //MMU data bus width
     def MMUMaskWidth = MMUDataWidth / 8 //MMU mask width
     def MMUDataWidthBitSize = log2Ceil(MMUDataWidth) + 1 //effective data-bit count of the MMU data bus
@@ -801,8 +714,6 @@ case class CuteParams(
     def SoureceMaxNum = math.max(LLCSourceMaxNum, MemorysourceMaxNum)
     def SoureceMaxNumBitSize = log2Ceil(SoureceMaxNum) + 1
 
-    def P3AddNum = ReduceWidth / 4 / FPEparams.MinGroupSize
-    def P2AddNum = ReduceWidth / (P3AddNum * 16)
 
     def ReduceGroupSize  = Tensor_K/ReduceWidthByte    //number of ReduceVectors for K to be stored, not the K size
     def MatrixRegMaxTensorDim = Math.max(Tensor_MN, Math.max(Tensor_MN, ReduceGroupSize))
@@ -835,7 +746,7 @@ case class CuteParams(
     /**
      * Scale Factor Parameters
      */
-    def ScaleWidth = ReduceWidthByte * 8 * FPEparams.ScaleElementWidth / FPEparams.MinDataTypeWidth / FPEparams.MinGroupSize   // maximum bit width needed for one group scale
+    def ScaleWidth = ReduceWidthByte * 8 * CuteFpeFormat.ScaleElementWidth / CuteFpeFormat.MinDataTypeWidth / CuteFpeFormat.MinGroupSize   // maximum bit width needed for one group scale
     def ABScaleSize = Tensor_MN * ReduceGroupSize * ScaleWidth
     def ABScaleNSlices = outsideDataWidth / ScaleWidth / ReduceGroupSize  // maximum scale length for one Tensor_K per slice
     def ABScaleBankNEntries = ABScaleSize / (ABScaleNSlices * ScaleWidth * ReduceGroupSize)
@@ -860,10 +771,7 @@ trait HasCuteParams {
     def enableMteMxfp8: Boolean = false
     def enableMteMxfp4: Boolean = false
 
-    def MMUParams: CuteMMUParams = cuteParams.MMUParams
     def DebugParams: CuteDebugParams = cuteParams.Debug
-    def v3config: Cutev3extParams = cuteParams.v3config
-    def FPEparams: CuteFPEParams = cuteParams.FPEparams
 
     def TaskCtrlIssueWindowDepth = cuteParams.TaskCtrlIssueWindowDepth
     def TaskCtrlIssueWindowDepthBitSize = log2Ceil(TaskCtrlIssueWindowDepth)
@@ -879,15 +787,6 @@ trait HasCuteParams {
     def AccMatrixRegIdWidth = log2Ceil(AccMatrixRegCount)
     def MatrixRegIdWidth = TrMatrixRegIdWidth max AccMatrixRegIdWidth
 
-    def vpnBits = MMUParams.vpnBits
-    def ppnBits = MMUParams.ppnBits
-    def pgIdxBits = MMUParams.pgIdxBits
-    def vaddrBits = MMUParams.vaddrBits
-    def paddrBits = MMUParams.paddrBits
-    def corePAddrBits = MMUParams.corePAddrBits
-
-    def TaskCtrl_AutoClear = v3config.TaskCtrl_AutoClear
-
     def YJPDebugEnable      = DebugParams.YJPDebugEnable
     def YJPADCDebugEnable   = DebugParams.YJPADCDebugEnable
     def YJPBDCDebugEnable   = DebugParams.YJPBDCDebugEnable
@@ -895,15 +794,10 @@ trait HasCuteParams {
     def YJPTrLoader0DebugEnable   = DebugParams.YJPTrLoader0DebugEnable
     def YJPTrLoader1DebugEnable   = DebugParams.YJPTrLoader1DebugEnable
     def YJPAccMemoryDebugEnable   = DebugParams.YJPAccMemoryDebugEnable
-    def YJPTASKDebugEnable        = DebugParams.YJPTASKDebugEnable
-    def YJPVECDebugEnable         = DebugParams.YJPVECDebugEnable
     def YJPMACDebugEnable         = DebugParams.YJPMACDebugEnable
-    def YJPPEDebugEnable          = DebugParams.YJPPEDebugEnable
-    def YJPAfterOpsDebugEnable    = DebugParams.YJPAfterOpsDebugEnable
 
     def outsideDataWidth = cuteParams.outsideDataWidth
     def outsideDataWidthByte = cuteParams.outsideDataWidthByte
-    def MemoryDataWidth = cuteParams.MemoryDataWidth
     def ReduceWidthByte = cuteParams.ReduceWidthByte
     def ReduceWidth = cuteParams.ReduceWidth
     def mxfp8ScaleWidth = ReduceWidth * 8 / 8 / 32 //total scale width accepted by one PE per cycle [single scale width 8-bit, single element width 4-bit, groupsize 32]
@@ -912,9 +806,6 @@ trait HasCuteParams {
     def TrLoadNeedsFillTable = cuteParams.TrLoadNeedsFillTable
     def ResultWidthByte = cuteParams.ResultWidthByte
     def ResultWidth = cuteParams.ResultWidth
-    def VectorWidth = cuteParams.VectorWidth
-    def ApplicationMaxTensorSize = cuteParams.ApplicationMaxTensorSize
-    def ApplicationMaxTensorSizeBitSize = cuteParams.ApplicationMaxTensorSizeBitSize
     def MMUAddrWidth = cuteParams.MMUAddrWidth
     def MMUDataWidth = cuteParams.MMUDataWidth
     def MMUMaskWidth = cuteParams.MMUMaskWidth
@@ -950,14 +841,10 @@ trait HasCuteParams {
     def ScaleWidth = cuteParams.ScaleWidth
     def ABScaleBankNEntries = cuteParams.ABScaleBankNEntries
     def ABScaleNSlices = cuteParams.ABScaleNSlices
-    def ResultFIFODepth = cuteParams.ResultFIFODepth
     def TrLoader0ReadFromMemoryFIFODepth = cuteParams.TrLoader0ReadFromMemoryFIFODepth
     def TrLoader1ReadFromMemoryFIFODepth = cuteParams.TrLoader1ReadFromMemoryFIFODepth
     def AccStorer0ReadFromMatrixRegFIFODepth = cuteParams.AccStorer0ReadFromMatrixRegFIFODepth
     def AccLoader0ReadFromMemoryFIFODepth = cuteParams.AccLoader0ReadFromMemoryFIFODepth
-    def VecTaskInstBufferDepth = cuteParams.VecTaskInstBufferDepth
-    def VecTaskInstBufferSize = cuteParams.VecTaskInstBufferSize
-    def VecTaskDataBufferDepth = cuteParams.VecTaskDataBufferDepth
     def TrLoadResponseFifoDepth = cuteParams.TrLoadResponseFifoDepth
     def AccLoader0FillQueueDepth = cuteParams.AccLoader0FillQueueDepth
     def ResponseBridgeQueueDepth = cuteParams.ResponseBridgeQueueDepth
@@ -969,8 +856,6 @@ trait HasCuteParams {
     def L2NBanks = cuteParams.L2NBanks
     def LoaderBridgeChannelConfig = cuteParams.LoaderBridgeChannelConfig
     def EnableOmegaInputQueue = cuteParams.EnableOmegaInputQueue
-    def ABPerfectBatchWindowDepth = cuteParams.ABPerfectBatchWindowDepth
-    def ABPerfectBatchSeedEnable = cuteParams.ABPerfectBatchSeedEnable
     def ABBatchScheduleEnable: Boolean = cuteParams.ABBatchScheduleEnable
     def ABBatchScheduleMode: String = cuteParams.ABBatchScheduleMode
     def ABBatchRotateOffset: Int = cuteParams.ABBatchRotateOffset
@@ -995,19 +880,6 @@ trait HasCuteParams {
     def AccLoader0RouteDescriptor = cuteParams.AccLoader0RouteDescriptor
     def AccStorer0RouteDescriptor = cuteParams.AccStorer0RouteDescriptor
 
-    def MinGroupSize = FPEparams.MinGroupSize //minimum compute group size of FPE
-    def MinDataTypeWidth = FPEparams.MinDataTypeWidth //minimum data type width of FPE
-    def ScaleElementWidth = FPEparams.ScaleElementWidth //FPE scale element width
-
-    def cmptreelayers = FPEparams.cmptreelayers //FPE compute tree depth
-    def fp8cmptreelayers = FPEparams.fp8cmptreelayers 
-
-    def P3AddNum :Int = cuteParams.P3AddNum //number of P3 adders in FPE
-    def P2AddNum :Int = cuteParams.P2AddNum
-
-    def FP4P0AddNum :Int = FPEparams.FP4P0AddNum
-    def FP4P1AddNum :Int = 16 / FP4P0AddNum
-
     def ScaleVecWidth(computeType : UInt) : UInt = {
         val scaleVecWidth = Wire(UInt(4.W))
         scaleVecWidth := 0.U
@@ -1030,17 +902,9 @@ case class CuteFpeParametersFromCuteParams(cuteParams: CuteParams) extends CuteF
     def cuteFpeConfig: CuteFpeConfig = cuteParams.cuteFpeConfig
 
     def ReduceWidth: Int = cuteParams.ReduceWidth
-    def ResultWidth: Int = cuteParams.ResultWidth
-    def MinGroupSize: Int = fpeParams.MinGroupSize
-    def MinDataTypeWidth: Int = fpeParams.MinDataTypeWidth
-    def ScaleElementWidth: Int = fpeParams.ScaleElementWidth
-    def cmptreelayers: Int = fpeParams.cmptreelayers
     def fp8cmptreelayers: Int = fpeParams.fp8cmptreelayers
 
-    def P3AddNum: Int = cuteParams.P3AddNum
-    def P2AddNum: Int = cuteParams.P2AddNum
     def FP4P0AddNum: Int = fpeParams.FP4P0AddNum
-    def FP4P1AddNum: Int = 16 / FP4P0AddNum
 
     def DEBUG_FP8: Boolean = false
     def DEBUG_FP4: Boolean = false
@@ -1067,33 +931,37 @@ class AfterOpsInterface()(implicit p: Parameters) extends CuteBundle{
     val VecInstQueueID = UInt(1.W)
 }
 
-class VPUInterface_Input()(implicit p: Parameters) extends CuteBundle{
+class VPUInterface_Input(vectorWidth: Int = 256)(implicit p: Parameters) extends CuteBundle{
+    require(isPow2(vectorWidth))
     val inst_uop = Output(UInt(32.W))
-    val inst_src0 = Output(UInt(VectorWidth.W))
-    val inst_src1 = Output(UInt(VectorWidth.W))
+    val inst_src0 = Output(UInt(vectorWidth.W))
+    val inst_src1 = Output(UInt(vectorWidth.W))
     val inst_src0_type = Output(UInt(2.W))//from register or input
     val inst_src1_type = Output(UInt(2.W))//from register or input
     val inst_dest_type = Output(UInt(2.W))//write back to register or output
     val stream_id = Output(UInt(log2Ceil(Matrix_MN*Matrix_MN+10).W))//stream data ID
 }
 
-class VPUInterface_Output()(implicit p: Parameters) extends CuteBundle{
+class VPUInterface_Output(vectorWidth: Int = 256)(implicit p: Parameters) extends CuteBundle{
+    require(isPow2(vectorWidth))
     val stream_id = Output(UInt(log2Ceil(Matrix_MN*Matrix_MN+10).W))//stream data ID
-    val stream_data = Output(UInt(VectorWidth.W))//stream data can carry extra information that is also returned; later it can be used to configure some VPU implicit registers or kept in VPU implicit registers visible to uops, such as the next scale or bias
+    val stream_data = Output(UInt(vectorWidth.W))//stream data can carry extra information that is also returned; later it can be used to configure some VPU implicit registers or kept in VPU implicit registers visible to uops, such as the next scale or bias
 }
 
-class VPUInterfaceIO()(implicit p: Parameters) extends CuteBundle{
-    val VPU_Input = (DecoupledIO(new VPUInterface_Input))
-    val VPU_Output = Flipped(DecoupledIO(new VPUInterface_Output))
+class VPUInterfaceIO(vectorWidth: Int = 256)(implicit p: Parameters) extends CuteBundle{
+    val VPU_Input = (DecoupledIO(new VPUInterface_Input(vectorWidth)))
+    val VPU_Output = Flipped(DecoupledIO(new VPUInterface_Output(vectorWidth)))
 }
 
 
-class VectorInterfaceIO()(implicit p: Parameters) extends CuteBundle{
+class VectorInterfaceIO(vectorWidth: Int = 256, instBufferCount: Int = 8)(implicit p: Parameters) extends CuteBundle{
 
-    //can accept per-cycle data from AfterOpsInterface matching VectorWidth
-    val VecTask = DecoupledIO(UInt(log2Ceil(VecTaskInstBufferSize).W))
-    val VectorDataIn     = DecoupledIO(UInt((VectorWidth).W))
-    val VectorDataOut     = Flipped(DecoupledIO(UInt((VectorWidth).W)))
+    require(isPow2(vectorWidth) && isPow2(instBufferCount))
+
+    //can accept per-cycle data from AfterOpsInterface matching vectorWidth
+    val VecTask = DecoupledIO(UInt(log2Ceil(instBufferCount).W))
+    val VectorDataIn     = DecoupledIO(UInt((vectorWidth).W))
+    val VectorDataOut     = Flipped(DecoupledIO(UInt((vectorWidth).W)))
 }
 
 
