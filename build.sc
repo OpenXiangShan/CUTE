@@ -209,6 +209,24 @@ object CUTE extends SbtModule with HasChisel with $file.common.CUTEModule {
   def difftestModule: ScalaModule = difftest
 
   object test extends SbtTests with TestModule.ScalaTest {
+    def panelDiagnosticSources = T.input {
+      val value = sys.env.getOrElse("CUTE_PANEL_DIAGNOSTIC", "0")
+      require(value == "0" || value == "1", "CUTE_PANEL_DIAGNOSTIC must be 0 or 1")
+      value == "1"
+    }
+
+    // A bounded observation-only run of the existing standalone probe is not
+    // the full Scala regression. Keep the default complete source set intact.
+    override def sources = T.sources {
+      val all = super.sources()
+      if (panelDiagnosticSources()) {
+        val selected = all.map(ref => ref.path / "TestTop.scala")
+          .filter(path => os.isFile(path)).map(PathRef(_))
+        require(selected.size == 1, "diagnostic requires exactly the canonical TestTop.scala")
+        selected
+      } else all
+    }
+
     override def ivyDeps = super.ivyDeps() ++ Agg(
       defaultVersions("chiseltest"),
     )
