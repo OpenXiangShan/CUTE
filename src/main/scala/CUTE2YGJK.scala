@@ -51,6 +51,15 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
 
   val time_stamp = RegInit(0.U(64.W))
   time_stamp := time_stamp + 1.U
+  // Six memory FUs, each with at most (2^dim-1)^2 vector positions.
+  // Four input bytes per result byte bounds BML's widening conversion; round
+  // the vector/cacheline ratio up. This bounds all FUs across all channels.
+  private val maxDim = (BigInt(1) << MatrixRegMaxTensorDimBitSize) - 1
+  private val beatsPerVector = ((4 * ReduceWidthByte + outsideDataWidthByte - 1) /
+    outsideDataWidthByte) max 1
+  private val maxOutstanding = 6 * maxDim * maxDim * beatsPerVector
+  private val pendingWidth = maxOutstanding.bitLength
+  val transportIdle = Wire(Vec(ABMatrixRegNBanks, Bool()))
 
   for (channel <- 0 until ABMatrixRegNBanks) {
     val edge_ch = edges(channel)
@@ -72,10 +81,11 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     tlA.valid := mmuReq.valid
     mmuReq.ready := tlA.ready
 
-    assert(
-      !(mmuReq.valid && mmuReqBits.RequestType_isWrite) || mmuReqBits.RequestMask.andR,
-      "HBL2 supports PutFullData only, so Mask must be set to all 1"
-    )
+    when (mmuReq.valid && mmuReqBits.RequestType_isWrite) {
+      assert(mmuReqBits.RequestMask.orR &&
+        mmuReqBits.RequestAddr(log2Ceil(outsideDataWidthByte)-1, 0) === 0.U,
+        "CUTE store fragments require aligned containing lines and nonempty byte masks")
+    }
 
     tlABits := Mux1H(Seq(
       (mmuReqBits.RequestType_isWrite === 0.U) -> edge_ch.Get(
@@ -83,12 +93,18 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
         mmuReqBits.RequestAddr,
         log2Ceil(outsideDataWidthByte).U
       )._2,
-      (mmuReqBits.RequestType_isWrite === 1.U) -> edge_ch.Put(
+      (mmuReqBits.RequestType_isWrite === 1.U) -> Mux(mmuReqBits.RequestMask.andR, edge_ch.Put(
         0.U,
         mmuReqBits.RequestAddr,
         log2Ceil(outsideDataWidthByte).U,
         mmuReqBits.RequestData
-      )._2
+      )._2, edge_ch.Put(
+        0.U,
+        mmuReqBits.RequestAddr,
+        log2Ceil(outsideDataWidthByte).U,
+        mmuReqBits.RequestData,
+        mmuReqBits.RequestMask
+      )._2)
     ))
 
     // Only C matrix reads use the accumulator MatrixKey. C stores still use the normal matrix key.
@@ -120,6 +136,9 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     matrixDataIn.ready := mmuResp.ready
     tlD.ready := mmuResp.ready && !matrixDataIn.valid
 
+    transportIdle(channel) := !mmuReq.valid &&
+      !matrixDataIn.valid && !tlD.valid && !mmuResp.valid
+
     // Debug output for AML channels
     when(mmuReq.fire){
       if (YJPDebugEnable)
@@ -150,7 +169,19 @@ class CUTE2TLImp(outer: Cute2TL) extends LazyModuleImp(outer) with CUTEImplParam
     }
   }
 
-  io.idle := true.B
+  // L2 routes matrix responses by physical slice, NOT originating CUTE
+  // channel. Only the all-channel totals have a 1:1 request/response contract.
+  val pending = RegInit(0.U(pendingWidth.W))
+  val accepted = PopCount(io.mmu.Request.map(_.fire))
+  val returned = PopCount(io.mmu.Response.map(_.fire))
+  val available = pending +& accepted
+  val remaining = available - returned
+  assert(returned <= available, "CUTE2TL extra/unowned response")
+  assert(remaining <= maxOutstanding.U, "CUTE2TL outstanding bound exceeded")
+  when(accepted =/= returned) {
+    pending := remaining
+  }
+  io.idle := pending === 0.U && transportIdle.asUInt.andR
   io.mmu.ConherentRequsetSourceID.bits := 0.U
   io.mmu.ConherentRequsetSourceID.valid := true.B
   io.mmu.nonConherentRequsetSourceID.bits := 0.U

@@ -11,7 +11,7 @@ import freechips.rocketchip.util.SeqToAugmentedSeq
 //从不同的存储介质中加载数据，供给MatrixReg使用
 
 class AScaleSourceIdSearch(implicit p: Parameters) extends CuteBundle{
-    val MatrixRegAddr = UInt(log2Ceil(ABMatrixRegBankNEntries).W)
+    val MatrixRegAddr = UInt(log2Ceil(ABScaleBankNEntries).W)
 }
 
 //对于卷积，数据摆放是[khkwoc][ic],对于矩阵乘，数据摆放是[N][K]
@@ -23,7 +23,10 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
         val ConfigInfo = Flipped(new ASLMicroTaskConfigIO)
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
-        val SpadId = Output(UInt(1.W))//双缓冲选择信号，0或1
+        val SpadId = Output(UInt(ABScaleRegIdWidth.W))
+        val idle = Output(Bool())
+        val GeneratedScale = Option.when(ExperimentalMxfpDynamicQuant)(
+            Flipped(Decoupled(new MxfpGeneratedScale)))
     })
 
     io.ToMatrixRegIO.BankAddr := 0.U.asTypeOf(io.ToMatrixRegIO.BankAddr)
@@ -42,11 +45,18 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
     // val MatrixRegData = io.ToMatrixRegIO.Data
 
     val ConfigInfo = io.ConfigInfo
+    val generated = ConfigInfo.Generated.map(g =>
+        RegEnable(g, false.B, ConfigInfo.MicroTaskValid && ConfigInfo.MicroTaskReady)).getOrElse(false.B)
 
     val computeType = RegInit(MteComputeType.ComputeTypeUndef)
 
     val MatrixRegTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val ScaleBlocksPerRow = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val RowStrideBytes = RegInit(0.U(MMUAddrWidth.W))
+    val strided = !generated && RowStrideBytes > ScaleBlocksPerRow
+    private val scaleBeatBits = log2Ceil(outsideDataWidthByte)
+    val SourceByteOffset = RegInit(0.U(scaleBeatBits.W))
 
     val Scale_A_BaseVaddr = RegInit(0.U(MMUAddrWidth.W))
 
@@ -62,11 +72,17 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
     //访存状态机，用来配合流水线刷新
     val s_load_idle :: s_load_init :: s_load_working :: s_load_end :: Nil = Enum(4)
     val memoryload_state = RegInit(s_load_idle)
+    io.idle := state === s_idle && memoryload_state === s_load_idle &&
+        !ConfigInfo.MicroTaskValid && !ConfigInfo.MicroTaskEndValid &&
+        !io.LocalMMUIO.Request.map(_.valid).reduce(_ || _) &&
+        !io.LocalMMUIO.Response.map(_.valid).reduce(_ || _) &&
+        !io.GeneratedScale.map(_.valid).getOrElse(false.B) &&
+        !io.ToMatrixRegIO.BankAddr.valid && !io.ToMatrixRegIO.Data.valid
     val Tensor_Block_BaseAddr = Reg(UInt(MMUAddrWidth.W)) //分块矩阵的基地址
 
     val Conherent = RegInit(true.B) //是否一致性访存的标志位，由TaskController提供
 
-    val CurrentSpadId = RegInit(0.U(1.W))
+    val CurrentSpadId = RegInit(0.U(ABScaleRegIdWidth.W))
     io.SpadId := CurrentSpadId
 
     //如果configinfo有效
@@ -75,6 +91,35 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
         //idel状态才可以接受新的配置信息
         ConfigInfo.MicroTaskReady := true.B
         when(ConfigInfo.MicroTaskReady && ConfigInfo.MicroTaskValid){
+            val mode = ConfigInfo.ApplicationScale_A.computeType
+            val beats = (ConfigInfo.ApplicationScale_A.ScaleBlocksPerRow * ConfigInfo.MatrixRegTensor_M +
+                (outsideDataWidthByte - 1).U) / outsideDataWidthByte.U
+            val perVector = ScaleVecWidth(mode)
+            assert(ConfigInfo.MatrixRegTensor_K ===
+                (ConfigInfo.ApplicationScale_A.ScaleBlocksPerRow +& (perVector - 1.U)) / perVector,
+                "ASL: K is data-vector count, source rows contain one byte per MX32 block")
+            assert(ConfigInfo.MatrixRegTensor_M =/= 0.U && ConfigInfo.MatrixRegTensor_K =/= 0.U &&
+                beats =/= 0.U && beats <= ABScaleBankNEntries.U,
+                "ASL: scale transfer must fit the allocated bank")
+            assert(mode === MteComputeType.Mxfp4F32 || mode === MteComputeType.Mxfp8e4m3F32 ||
+                mode === MteComputeType.Mxfp8e5m2F32, "ASL: first stage supports MX32/E8M0 only")
+            when(ConfigInfo.Generated.getOrElse(false.B)) {
+                assert(mode === MteComputeType.Mxfp4F32 && ConfigInfo.MatrixRegTensor_M === 8.U &&
+                    ConfigInfo.MatrixRegTensor_K === 1.U &&
+                    ConfigInfo.ApplicationScale_A.ScaleBlocksPerRow === 2.U,
+                    "generated ASL requires SF8x2 / one packed FP4 vector")
+            }
+            val sourceBase = ConfigInfo.ApplicationScale_A.BlockScale_A_BaseVaddr
+            val sourceOffset = sourceBase(scaleBeatBits - 1, 0)
+            val stride = ConfigInfo.ApplicationScale_A.RowStrideBytes
+            val rowBytes = ConfigInfo.ApplicationScale_A.ScaleBlocksPerRow
+            when(!ConfigInfo.Generated.getOrElse(false.B)) {
+                assert(stride >= rowBytes, "ASL: scale source stride is shorter than the logical row")
+                assert(stride =/= rowBytes || sourceOffset === 0.U ||
+                    sourceOffset +& (rowBytes * ConfigInfo.MatrixRegTensor_M) <= outsideDataWidthByte.U,
+                    "ASL: an unaligned compact scale rectangle must fit its containing cacheline")
+            }
+            RowStrideBytes := stride
             //当前配置的指令有效
             state := s_mm_task
             memoryload_state := s_load_init
@@ -82,9 +127,12 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
             computeType := io.ConfigInfo.ApplicationScale_A.computeType
             MatrixRegTensor_M := io.ConfigInfo.MatrixRegTensor_M
             MatrixRegTensor_K := io.ConfigInfo.MatrixRegTensor_K
+            ScaleBlocksPerRow := ConfigInfo.ApplicationScale_A.ScaleBlocksPerRow
             Scale_A_BaseVaddr := io.ConfigInfo.ApplicationScale_A.ApplicationScale_A_BaseVaddr //这个不重要
-            Tensor_Block_BaseAddr := io.ConfigInfo.ApplicationScale_A.BlockScale_A_BaseVaddr //这个是关键
+            Tensor_Block_BaseAddr := Cat(sourceBase(MMUAddrWidth - 1, scaleBeatBits), 0.U(scaleBeatBits.W))
+            SourceByteOffset := sourceOffset
             Conherent := io.ConfigInfo.Conherent
+            CurrentSpadId := ConfigInfo.ScaleBankId
 
             if(YJPAMLDebugEnable)
             {
@@ -141,9 +189,10 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
         TotalLoadSize := 0.U
         CurrentLoaded_BlockTensor_M := 0.U
         CurrentLoaded_BlockTensor_K := 0.U
-        MaxRequestIter := MatrixRegTensor_K * MatrixRegTensor_M * ScaleVecWidth(computeType) / (outsideDataWidthByte.U) //总共要发出的访存请求的次数
-        printf("[bSL] MaxRequestIter:%d. MatrixRegTensor_K:%d,MatrixRegTensor_M:%d,ScaleVecWidth:%d,outsideDataWidthByte:%d\n",MaxRequestIter,MatrixRegTensor_K,MatrixRegTensor_M,ScaleVecWidth(computeType), outsideDataWidthByte.U)
-    }.elsewhen(memoryload_state === s_load_working){
+        // The final physical beat is padded by the scale-buffer contract.
+        MaxRequestIter := (ScaleBlocksPerRow * MatrixRegTensor_M +
+            (outsideDataWidthByte - 1).U) / outsideDataWidthByte.U
+    }.elsewhen(memoryload_state === s_load_working && !strided){
         //根据不同的MemoryOrder，执行不同的访存模式
 
         //只要Request是ready，我们发出的访存请求就会被MMU送往总线，我们可以发出下一个访存请求
@@ -166,10 +215,11 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
 
         
         when(Request.fire && sourceId.valid){//符合条件的话，这条访存请求一定会被发出
+            assert(sourceId.bits < SoureceMaxNum.U, "ASL: allocated source ID outside CAM")
             //Request.ready表明了LocalMMU会处理这条访存请求，sourceID valid，表明这条访存请求的sourceID是被LocalMMU认可有效才发送到这个模块的
             val TableItem = Wire(new AScaleSourceIdSearch)
             TableItem.MatrixRegAddr := MemoryRequestSize 
-            SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
+            SoureceIdSearchTable(sourceId.bits(log2Ceil(SoureceMaxNum) - 1, 0)) := TableItem.asUInt
             if (YJPBMLDebugEnable)
             {
                 //输出id和request的信息
@@ -192,9 +242,22 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
             //Trick注意这个设计，是doublebuffer的，AB只能是doublebuffer，回数一定是不会堵的，而且我们有时间对数据进行压缩解压缩～
             //如果要做release设计，要么数据位宽翻倍，腾出周期来使得有空泡能给写任务进行，要么就是数据位宽不变，将读写端口变成独立的读和独立的写端口
             val sourceId = Response.bits.ReseponseSourceID
-            val MatrixRegAddr = SoureceIdSearchTable(sourceId).asTypeOf(new AScaleSourceIdSearch).MatrixRegAddr
+            assert(sourceId < SoureceMaxNum.U, "ASL: response source ID outside CAM")
+            assert(TotalLoadSize < MaxRequestIter, "ASL: excess scale response")
+            val MatrixRegAddr = SoureceIdSearchTable(sourceId(log2Ceil(SoureceMaxNum) - 1, 0))
+                .asTypeOf(new AScaleSourceIdSearch).MatrixRegAddr
             val ResponseData = Wire(Vec(ABScaleNSlices,UInt((ScaleWidth * ReduceGroupSize).W)))
-            ResponseData := Response.bits.ReseponseData.asTypeOf(ResponseData)
+            // CUTE2TL fetches a physical cacheline. Only declared compact source
+            // bytes enter the scale buffer; owned padding is E8M0 127, not NaN.
+            val sourceBytes = (Response.bits.ReseponseData >> (SourceByteOffset << 3))
+                .asTypeOf(Vec(outsideDataWidthByte, UInt(8.W)))
+            val liveBytes = MatrixRegTensor_M * ScaleBlocksPerRow
+            val padded = Wire(Vec(outsideDataWidthByte, UInt(8.W)))
+            for (i <- 0 until outsideDataWidthByte) {
+                padded(i) := Mux(MatrixRegAddr * outsideDataWidthByte.U + i.U < liveBytes,
+                    sourceBytes(i), 127.U)
+            }
+            ResponseData := padded.asUInt.asTypeOf(ResponseData)
 
             TotalLoadSize := TotalLoadSize + 1.U
             io.ToMatrixRegIO.BankAddr.valid := true.B
@@ -235,7 +298,6 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
         when(io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady){
             memoryload_state := s_load_idle
             state := s_idle
-            CurrentSpadId := ~CurrentSpadId  // 切换双缓冲
             if(YJPBMLDebugEnable)
             {
                 printf("[BSL<%d>]BScaleLoader Task End\n",io.DebugInfo.DebugTimeStampe)
@@ -244,4 +306,135 @@ class AScaleLoader(implicit p: Parameters) extends CuteModule{
     }.otherwise{
     }
 
+    val stridedDone = StridedScaleFill(
+        strided && memoryload_state === s_load_init,
+        strided && memoryload_state === s_load_working,
+        Tensor_Block_BaseAddr | SourceByteOffset, RowStrideBytes, MatrixRegTensor_M,
+        ScaleBlocksPerRow, Conherent, io.LocalMMUIO, io.ToMatrixRegIO)
+    when(stridedDone) { memoryload_state := s_load_end }
+
+    // This is an alternate INPUT of the original sole scale writer. No
+    // second SSCP port and no external Get in generated mode.
+    io.GeneratedScale.foreach { port =>
+        val staging = Reg(Vec(outsideDataWidthByte, UInt(8.W)))
+        val received = RegInit(0.U(16.W))
+        when(ConfigInfo.MicroTaskValid && ConfigInfo.MicroTaskReady) {
+            staging := VecInit(Seq.fill(outsideDataWidthByte)(127.U(8.W)))
+            received := 0.U
+        }
+        port.ready := generated && memoryload_state === s_load_working &&
+            !received.andR && !reset.asBool
+        val index = Cat(port.bits.row(2, 0), port.bits.block)
+        when(port.fire) {
+            assert(port.bits.row < 8.U, "generated ASL row out of range")
+            assert(!received(index), "generated ASL duplicate K32 scale")
+            staging(index) := Mux(port.bits.unsupported, 0.U, port.bits.e)
+            received := received | UIntToOH(index, 16)
+        }
+        when(generated) {
+            io.LocalMMUIO.Request.foreach(_.valid := false.B)
+            io.LocalMMUIO.Response.foreach(_.ready := false.B)
+            when(memoryload_state === s_load_working && received.andR) {
+                io.ToMatrixRegIO.BankAddr.valid := !reset.asBool
+                io.ToMatrixRegIO.BankAddr.bits := 0.U
+                io.ToMatrixRegIO.Data.valid := !reset.asBool
+                io.ToMatrixRegIO.Data.bits := staging.asUInt.asTypeOf(io.ToMatrixRegIO.Data.bits)
+                // The Valid-only write occurs on this edge, BEFORE held End.
+                memoryload_state := s_load_end
+            }
+        }
+    }
+}
+
+// Noncompact input fill logic shared by the existing ASL/BSL state machines.
+// Reuse their channel 0, selected bank, sole write port and completion handshake.
+private[cute] object StridedScaleFill {
+    def apply(init: Bool, active: Bool, sourceBase: UInt, stride: UInt, rows: UInt,
+              rowBytes: UInt, coherent: Bool, mmu: LocalMMUIO,
+              writer: ABScaleLoaderMatrixRegIO)(implicit p: Parameters): Bool = {
+        val params = p(CuteParamsKey)
+        val beatBytes = params.outsideDataWidthByte
+        val beatBits = log2Ceil(beatBytes)
+        val addrBits = params.MMUAddrWidth
+        val rowBase = Reg(UInt(addrBits.W))
+        val row = Reg(UInt(rows.getWidth.W))
+        val column = Reg(UInt(rowBytes.getWidth.W))
+        val dstByte = Reg(UInt(beatBits.W))
+        val dstBeat = Reg(UInt(log2Ceil(params.ABScaleBankNEntries).W))
+        val staged = Reg(Vec(beatBytes, UInt(8.W)))
+        val neutral = VecInit(Seq.fill(beatBytes)(127.U(8.W)))
+
+        // One outstanding aligned Get. Keep its beat for other live bytes/rows
+        // in the same cacheline, but skip cachelines that contain only padding.
+        val request = mmu.Request(0)
+        val response = mmu.Response(0)
+        val sourceId = Mux(coherent, mmu.ConherentRequsetSourceID, mmu.nonConherentRequsetSourceID)
+        val pendingId = Reg(chiselTypeOf(sourceId.bits))
+        val waiting = RegInit(false.B)
+        val cacheValid = RegInit(false.B)
+        val cacheAddr = Reg(UInt(addrBits.W))
+        val cacheData = Reg(Vec(beatBytes, UInt(8.W)))
+        val srcAddr = rowBase + column
+        val alignedAddr = Cat(srcAddr(addrBits - 1, beatBits), 0.U(beatBits.W))
+        val hit = cacheValid && cacheAddr === alignedAddr
+        val done = WireDefault(false.B)
+
+        when(init) {
+            rowBase := sourceBase
+            row := 0.U
+            column := 0.U
+            dstByte := 0.U
+            dstBeat := 0.U
+            staged := neutral
+            waiting := false.B
+            cacheValid := false.B
+        }
+        when(active) {
+            request.valid := !waiting && !hit
+            request.bits.RequestAddr := alignedAddr
+            request.bits.RequestConherent := coherent
+            request.bits.RequestSourceID := sourceId.bits
+            request.bits.UseAllocatedSourceID := true.B
+            response.ready := waiting
+            when(request.fire) {
+                assert(sourceId.valid && sourceId.bits < params.SoureceMaxNum.U,
+                    "strided scale fill: invalid allocated source ID")
+                pendingId := sourceId.bits
+                waiting := true.B
+                cacheValid := false.B
+                cacheAddr := alignedAddr
+            }
+            when(response.fire) {
+                assert(response.bits.ReseponseSourceID === pendingId,
+                    "strided scale fill: response does not own the pending beat")
+                waiting := false.B
+                cacheValid := true.B
+                cacheData := response.bits.ReseponseData.asTypeOf(cacheData)
+            }
+            when(hit) {
+                val next = WireDefault(staged)
+                next(dstByte) := cacheData(srcAddr(beatBits - 1, 0))
+                val rowDone = column === rowBytes - 1.U
+                val last = rowDone && row === rows - 1.U
+                column := Mux(rowDone, 0.U, column + 1.U)
+                when(rowDone && !last) {
+                    row := row + 1.U
+                    rowBase := rowBase + stride
+                }
+                dstByte := dstByte + 1.U
+                when(dstByte.andR || last) {
+                    writer.BankAddr.valid := true.B
+                    writer.BankAddr.bits := dstBeat
+                    writer.Data.valid := true.B
+                    writer.Data.bits := next.asUInt.asTypeOf(writer.Data.bits)
+                    dstBeat := dstBeat + 1.U
+                    staged := neutral
+                }.otherwise {
+                    staged := next
+                }
+                done := last
+            }
+        }
+        done
+    }
 }

@@ -20,6 +20,11 @@ val difftestSourceFiles =
       .filter(os.isFile)
       .filter(_.ext == "scala")
   } else Seq.empty
+// Match the parent XSAI build's existing fudian dependency. NOOP_HOME is
+// the canonical XSAI source-root override; otherwise use the sibling checkout.
+val fudianRoot = sys.env.get("NOOP_HOME")
+  .map(root => os.Path(root) / "fudian")
+  .getOrElse(projectRoot / os.up / "fudian")
 val defaultScalaVersion = "2.13.15"
 def defaultVersions = Map(
   "chisel"        -> ivy"org.chipsalliance::chisel:6.7.0",
@@ -130,8 +135,13 @@ object cuteFpe extends SbtModule with HasChisel {
   }
 
   override def moduleDeps = super.moduleDeps ++ Seq(
-    rocketchip.cde
+    rocketchip.cde,
+    rocketchip.hardfloat
   )
+}
+
+object fudian extends SbtModule with HasChisel {
+  override def millSourcePath = fudianRoot
 }
 
 object CUTEBase extends SbtModule with HasChisel {
@@ -162,7 +172,8 @@ object CUTE extends SbtModule with HasChisel with $file.common.CUTEModule {
 
   override def moduleDeps = super.moduleDeps ++ Seq(
     CUTEBase,
-    cuteFpe
+    cuteFpe,
+    fudian
   )
 
   def rocketModule: ScalaModule = rocketchip
@@ -174,6 +185,24 @@ object CUTE extends SbtModule with HasChisel with $file.common.CUTEModule {
   def difftestModule: ScalaModule = difftest
 
   object test extends SbtTests with TestModule.ScalaTest {
+    def panelDiagnosticSources = T.input {
+      val value = sys.env.getOrElse("CUTE_PANEL_DIAGNOSTIC", "0")
+      require(value == "0" || value == "1", "CUTE_PANEL_DIAGNOSTIC must be 0 or 1")
+      value == "1"
+    }
+
+    // A bounded observation-only run of the existing standalone probe is not
+    // the full Scala regression. Keep the default complete source set intact.
+    override def sources = T.sources {
+      val all = super.sources()
+      if (panelDiagnosticSources()) {
+        val selected = all.map(ref => ref.path / "TestTop.scala")
+          .filter(path => os.isFile(path)).map(PathRef(_))
+        require(selected.size == 1, "diagnostic requires exactly the canonical TestTop.scala")
+        selected
+      } else all
+    }
+
     override def ivyDeps = super.ivyDeps() ++ Agg(
       defaultVersions("chiseltest"),
     )

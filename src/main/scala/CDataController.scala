@@ -20,9 +20,15 @@ class CDataController(implicit p: Parameters) extends CuteModule{
         val ConfigInfo = Flipped(new CDCMicroTaskConfigIO)
         val Matrix_C = DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W))
         val ResultMatrix_D = Flipped(DecoupledIO(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)))
+        val ResultFlags_D = Input(Vec(Matrix_MN*Matrix_MN, UInt(5.W)))
         val ComputeGo = Input(Bool())//由TE发出的计算同步锁步信号，指可以接收新的数据了
+        // Request admission is distinct from consuming an already fetched
+        // tuple. CUTETOP shares this grant with A/B and both scale readers.
+        val ReadIssueEnable = Input(Bool())
+        val ReadIssueReady = Output(Bool())
         val DebugInfo = Input(new DebugInfoIO)
         val MatrixRegId = Output(UInt(CMatrixRegIdWidth.W))
+        val idle = Output(Bool())
     })
 
     io.Matrix_C.valid := false.B
@@ -52,12 +58,18 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
     if (EnableDifftest) {
       val pcReg = RegInit(0.U(64.W))
+      val ownerRetireId = RegEnable(io.ConfigInfo.retireId.get, 0.U(64.W), io.ConfigInfo.MicroTaskValid)
+      val ownerEpoch = RegEnable(io.ConfigInfo.epoch.get, 0.U(64.W), io.ConfigInfo.MicroTaskValid)
+      val ownerCoreId = RegEnable(io.ConfigInfo.coreid.get, 0.U(8.W), io.ConfigInfo.MicroTaskValid)
         when (io.ConfigInfo.MicroTaskValid) {
           pcReg := io.ConfigInfo.pc.get
         }
-        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
+        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits), delay = 0, dontCare = true)
+        difftestAmuFinish.clearScaleTrace()
         // 默认值初始化
-        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        difftestAmuFinish.coreid := ownerCoreId
+        difftestAmuFinish.retireId := ownerRetireId
+        difftestAmuFinish.epoch := ownerEpoch
         difftestAmuFinish.index := 3.U
         difftestAmuFinish.valid := (io.FromMatrixRegIO.WriteBankAddr.map(_.valid).reduce(_||_)
           || (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
@@ -95,6 +107,10 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val MatrixRegWorkingTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegWorkingTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegWorkingTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val activeM = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val activeN = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val microtaskFlags = RegInit(0.U(5.W))
+    io.ConfigInfo.MicroTaskFlags := microtaskFlags
     
 
     val Is_Transpose                        = RegInit(false.B)      //是否需要转置
@@ -122,6 +138,9 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
             MatrixRegWorkingTensor_N := ConfigInfo.MatrixRegTensor_N    //当前执行的矩阵乘任务的N
             MatrixRegWorkingTensor_K := ConfigInfo.MatrixRegTensor_K    //当前执行的矩阵乘任务的K的ReduceVector的数量
+            activeM := ConfigInfo.MatrixRegActive_M
+            activeN := ConfigInfo.MatrixRegActive_N
+            microtaskFlags := 0.U
             CurrentMatrixRegId := ConfigInfo.MatrixRegId
             
 
@@ -166,6 +185,13 @@ class CDataController(implicit p: Parameters) extends CuteModule{
 
     val Store_M_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Store_N_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val activeDFlags = (0 until Matrix_MN).flatMap { m =>
+        (0 until Matrix_MN).map { n =>
+            val live = ((Store_M_Iterator * Matrix_MN.U) +& m.U) < activeM &&
+                ((Store_N_Iterator * Matrix_MN.U) +& n.U) < activeN
+            Mux(live, io.ResultFlags_D(m*Matrix_MN+n), 0.U(5.W))
+        }
+    }.reduce(_ | _)
 
     val M_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_MN.U)
     val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_MN.U)
@@ -177,13 +203,31 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val Max_Store_Iter   = (MatrixRegWorkingTensor_M * MatrixRegWorkingTensor_N * D_Datatype) / (ResultWidthByte*Matrix_MN*Matrix_MN).U
 
     val CVectorCount = RegInit(0.U(32.W))
+    val CRequestVectorCount = RegInit(0.U(32.W))
     val DVectorCount = RegInit(0.U(32.W))
+    val physicalNGroups = (Tensor_MN / Matrix_MN).U
+    val nextReadAddress = M_Iterator * physicalNGroups + N_Iterator
+    val nextWriteAddress = Store_M_Iterator * physicalNGroups + Store_N_Iterator
+    // Never reread a C tile until its previous K contribution was written.
+    // Also protect the actual even/odd single-port SRAM when short N makes
+    // consecutive logical row groups land on the same physical parity.
+    val cReuseReady = (CRequestVectorCount - DVectorCount) < addr_IteratorMax
+    val cPortConflict = io.ResultMatrix_D.valid && nextReadAddress(0) === nextWriteAddress(0)
+    io.ReadIssueReady := state === s_mm_task && calculate_state === s_cal_working &&
+        cReuseReady && !cPortConflict
     //对MatrixReg的数据请求
     val ReadRequest = WireInit(false.B)
     val WriteRequset = WireInit(false.B)
 
     val ReadMatrixRegDataHoldReg = Reg(UInt((ResultWidth*Matrix_MN*Matrix_MN).W)) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数；仅当ReadMatrixRegDataHoldValid为true时被使用，故无需初始化
     val ReadMatrixRegDataHoldValid = RegInit(false.B) //保存MatrixReg的数据，当发生MTE的NACK时，可以不需要重新从MatrixReg读数
+    io.idle := state === s_idle && calculate_state === s_cal_idle &&
+        !ReadMatrixRegDataHoldValid && !MatrixRegReadResponseData.map(_.valid).reduce(_ || _) &&
+        !io.FromMatrixRegIO.ReadBankAddr.map(_.valid).reduce(_ || _) &&
+        !io.FromMatrixRegIO.WriteBankAddr.map(_.valid).reduce(_ || _) &&
+        !io.FromMatrixRegIO.WriteRequestData.map(_.valid).reduce(_ || _) &&
+        !io.Matrix_C.valid && !io.ResultMatrix_D.valid && !ConfigInfo.MicroTaskValid &&
+        !ConfigInfo.MicroTaskEndValid && !ConfigInfo.MicroTask_TEComputeEndValid
 
     //如果是mm_task,且计算状态机是init，那么就开始初始化
     when(state === s_mm_task){
@@ -197,11 +241,17 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                 Store_M_Iterator := 0.U
                 Store_N_Iterator := 0.U
                 CVectorCount := 0.U
+                CRequestVectorCount := 0.U
                 DVectorCount := 0.U
                 ReadMatrixRegDataHoldReg := 0.U
                 ReadMatrixRegDataHoldValid := false.B
 
-                assert(MatrixRegWorkingTensor_N === Tensor_MN.U, "MatrixRegWorkingTensor_N = %d is not Full!", MatrixRegWorkingTensor_N)
+                assert(MatrixRegWorkingTensor_M =/= 0.U && MatrixRegWorkingTensor_M <= Tensor_MN.U &&
+                    MatrixRegWorkingTensor_N =/= 0.U && MatrixRegWorkingTensor_N <= Tensor_MN.U &&
+                    MatrixRegWorkingTensor_M % Matrix_MN.U === 0.U &&
+                    MatrixRegWorkingTensor_N % Matrix_MN.U === 0.U &&
+                    activeM <= MatrixRegWorkingTensor_M && activeN <= MatrixRegWorkingTensor_N,
+                    "CDC working shape must be positive, bounded and array-aligned")
                 //阶段1，计算初始化完成，开始工作
                 calculate_state := s_cal_working
 
@@ -216,12 +266,16 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                 //阶段2，计算开始，计算对MatrixReg的取数地址
 
                 //循环的最外层是M，然后是N
-                val load_addr =  M_Iterator * N_IteratorMax + N_Iterator
+                val load_addr = nextReadAddress
                 dontTouch(load_addr)
 
-                when(io.ComputeGo && CVectorCount < Max_Caculate_Iter){
+                // Reserve each one-cycle SRAM response when its read issues,
+                // not when C is consumed: the final C.fire must not prefetch
+                // an unowned terminal C-only tuple.
+                when(io.ComputeGo && io.ReadIssueEnable && CRequestVectorCount < Max_Caculate_Iter){
                     //计算取数地址
                     ReadRequest := true.B
+                    CRequestVectorCount := CRequestVectorCount + 1.U
                     io.FromMatrixRegIO.ReadBankAddr.map(_.valid := true.B)
                     io.FromMatrixRegIO.ReadBankAddr.map(_.bits := load_addr)
                     N_Iterator := N_Iterator + 1.U
@@ -302,9 +356,20 @@ class CDataController(implicit p: Parameters) extends CuteModule{
                     WriteRequset := true.B//此时只要数据有效，就喜欢进行写MReg
                     io.ResultMatrix_D.ready := true.B
                     
-                    val store_addr = WireInit(addr_Iterator)
+                    val store_addr = nextWriteAddress
                     io.FromMatrixRegIO.WriteBankAddr.map(_.bits := store_addr)//写地址就是DVector的计数
                     when(io.ResultMatrix_D.fire){
+                        microtaskFlags := microtaskFlags | activeDFlags
+                        // Logical coordinates drive fixed physical row pitch;
+                        // addr_Iterator remains only the logical K-loop count.
+                        Store_N_Iterator := Store_N_Iterator + 1.U
+                        when(Store_N_Iterator === N_IteratorMax - 1.U) {
+                            Store_N_Iterator := 0.U
+                            Store_M_Iterator := Store_M_Iterator + 1.U
+                            when(Store_M_Iterator === M_IteratorMax - 1.U) {
+                                Store_M_Iterator := 0.U
+                            }
+                        }
                         addr_Iterator := addr_Iterator + 1.U
                         when(addr_Iterator === addr_IteratorMax - 1.U){
                             //如果地址迭代器到达最大值，那么我们就结束计算

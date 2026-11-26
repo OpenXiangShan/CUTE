@@ -15,6 +15,7 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
         val CStoreLocalMMUIO = (new LocalMMUIO)
         val LastLevelCacheTLIO = Flipped(new MMU2TLIO)
         val perfProbe = Output(new LocalMMUPerfProbe)
+        val idle = Output(Bool())
     })
 
     val logTime = RegInit(0.U(64.W))
@@ -75,6 +76,10 @@ class LocalMMU()(implicit p: Parameters) extends CuteModule{
     }
 
     val allocatedBusy = RegInit(VecInit(Seq.fill(LLCSourceMaxNum)(false.B)))
+    io.idle := !allocatedBusy.asUInt.orR &&
+        !abcss.flatMap(m => m.Request.map(_.valid) ++ m.Response.map(_.valid)).reduce(_ || _) &&
+        !io.LastLevelCacheTLIO.Request.map(_.valid).reduce(_ || _) &&
+        !io.LastLevelCacheTLIO.Response.map(_.valid).reduce(_ || _)
     val allocatedTag = RegInit(VecInit(Seq.fill(LLCSourceMaxNum)(0.U(SourceTagWidth.W))))
     val allocatedId = Wire(UInt(LLCSourceMaxNumBitSize.W))
     allocatedId := 0.U

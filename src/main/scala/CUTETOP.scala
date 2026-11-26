@@ -3,6 +3,7 @@ package cute
 
 import chisel3._
 import chisel3.util._
+import difftest._
 import org.chipsalliance.cde.config._
 // import boom.exu.ygjk._
 // import scala.collection.parallel.Task
@@ -23,7 +24,15 @@ class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends Cu
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
         val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
+        val FromScaleRegIO = Option.when(ExperimentalMxfpConvertLoad)(
+            Flipped(new ABScaleControlMatrixRegIO))
+        val ScaleBankId = Output(UInt(ABScaleRegIdWidth.W))
+        val ScaleReadActive = Output(Bool())
+        val GeneratedScale = Option.when(ExperimentalMxfpDynamicQuant)(
+            Decoupled(new MxfpGeneratedScale))
     })
+    io.ScaleBankId := 0.U
+    io.ScaleReadActive := false.B
 
     if (!AMLUseLegacyLoader) {
         val inner = Module(new MultiChannelsABMemLoader("AML", nameContext))
@@ -40,6 +49,12 @@ class AMLWrapper(contextName: String = "AML")(implicit p: Parameters) extends Cu
         inner.io.LocalMMUIO <> io.LocalMMUIO
         inner.io.DebugInfo <> io.DebugInfo
         io.MatrixRegId := inner.io.MatrixRegId
+        io.FromScaleRegIO.foreach(_ <> inner.io.FromScaleRegIO.get)
+        io.ScaleBankId := inner.io.ScaleBankId
+        io.ScaleReadActive := inner.io.ScaleReadActive
+        io.GeneratedScale.zip(inner.io.GeneratedScale).foreach {
+            case (outer, source) => outer <> source
+        }
     }
 }
 
@@ -53,7 +68,15 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
         val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
+        val FromScaleRegIO = Option.when(ExperimentalMxfpConvertLoad)(
+            Flipped(new ABScaleControlMatrixRegIO))
+        val ScaleBankId = Output(UInt(ABScaleRegIdWidth.W))
+        val ScaleReadActive = Output(Bool())
+        val GeneratedScale = Option.when(ExperimentalMxfpDynamicQuant)(
+            Decoupled(new MxfpGeneratedScale))
     })
+    io.ScaleBankId := 0.U
+    io.ScaleReadActive := false.B
 
     if (!BMLUseLegacyLoader) {
         val inner = Module(new MultiChannelsABMemLoader("BML", nameContext))
@@ -70,6 +93,10 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         bToAConfig.MatrixRegId := io.ConfigInfo.MatrixRegId
         bToAConfig.Conherent := io.ConfigInfo.Conherent
         bToAConfig.Is_Transpose := io.ConfigInfo.Is_Transpose
+        bToAConfig.ConvertF32ToMx := io.ConfigInfo.ConvertF32ToMx
+        bToAConfig.ConvertComputeType := io.ConfigInfo.ConvertComputeType
+        bToAConfig.ConvertKElements := io.ConfigInfo.ConvertKElements
+        bToAConfig.ConvertScaleBankId := io.ConfigInfo.ConvertScaleBankId
         bToAConfig.MicroTaskValid := io.ConfigInfo.MicroTaskValid
         bToAConfig.MicroTaskEndReady := io.ConfigInfo.MicroTaskEndReady
         bToAConfig.LoadTaskInfo.Is_FullLoad := true.B
@@ -77,9 +104,12 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         bToAConfig.LoadTaskInfo.Is_RepeatRowLoad := false.B
         bToAConfig.pc.foreach(_ := io.ConfigInfo.pc.getOrElse(0xDEAD1234.U))
         bToAConfig.coreid.foreach(_ := io.ConfigInfo.coreid.getOrElse(0xDEAD5678.U))
+        bToAConfig.retireId.foreach(_ := io.ConfigInfo.retireId.get)
+        bToAConfig.epoch.foreach(_ := io.ConfigInfo.epoch.get)
 
         io.ConfigInfo.MicroTaskReady := bToAConfig.MicroTaskReady
         io.ConfigInfo.MicroTaskEndValid := bToAConfig.MicroTaskEndValid
+        io.ConfigInfo.MicroTaskFlags := bToAConfig.MicroTaskFlags
 
         inner.io.ToMatrixRegIO <> io.ToMatrixRegIO
         inner.io.ConfigInfo <> bToAConfig
@@ -93,6 +123,12 @@ class BMLWrapper(contextName: String = "BML")(implicit p: Parameters) extends Cu
         inner.io.LocalMMUIO <> io.LocalMMUIO
         inner.io.DebugInfo <> io.DebugInfo
         io.MatrixRegId := inner.io.MatrixRegId
+        io.FromScaleRegIO.foreach(_ <> inner.io.FromScaleRegIO.get)
+        io.ScaleBankId := inner.io.ScaleBankId
+        io.ScaleReadActive := inner.io.ScaleReadActive
+        io.GeneratedScale.zip(inner.io.GeneratedScale).foreach {
+            case (outer, source) => outer <> source
+        }
     }
 }
 
@@ -131,6 +167,55 @@ class CMLWrapper(contextName: String = "CML")(implicit p: Parameters) extends Cu
     }
 }
 
+object CUTEV2Top {
+    private[cute] def connectScaleControlToRegs(
+        spadId: UInt,
+        ScaleCtrlIO: ABScaleControlMatrixRegIO,
+        ScaleRegs: Seq[ABScaleMatrixReg],
+        convertIO: Option[ABScaleControlMatrixRegIO],
+        convertSpadId: UInt,
+        convertActive: Bool
+    )(implicit clock: Clock, reset: Reset): Unit = {
+        // TC serializes same-side task readers. Latch BOTH response owner and
+        // bank on request fire: the SRAM response is Valid-only, not readyable.
+        val selectedSpad = Mux(convertActive, convertSpadId, spadId)
+        val requestValid = Mux(convertActive, convertIO.map(_.BankAddr.valid).getOrElse(false.B),
+            ScaleCtrlIO.BankAddr.valid)
+        val requestAddr = Mux(convertActive, convertIO.map(_.BankAddr.bits).getOrElse(0.U),
+            ScaleCtrlIO.BankAddr.bits)
+        for (spadIdx <- 0 until ScaleRegs.length) {
+            val dest = ScaleRegs(spadIdx).io.FromScaleController
+            when(selectedSpad === spadIdx.U) {
+                dest.BankAddr.valid := requestValid
+                dest.BankAddr.bits := requestAddr
+            }.otherwise {
+                dest.BankAddr.valid := false.B
+                dest.BankAddr.bits := DontCare
+            }
+        }
+
+        val sels = ScaleRegs.indices.map(selectedSpad === _.U)
+        val ready = Mux1H(sels zip ScaleRegs.map(_.io.FromScaleController.BankAddr.ready))
+        val requestFire = requestValid && ready
+        val responseSpad = RegEnable(selectedSpad, 0.U, requestFire)
+        val responseConvert = RegEnable(convertActive, false.B, requestFire)
+        val responseSels = ScaleRegs.indices.map(responseSpad === _.U)
+        val responseValid = Mux1H(responseSels zip ScaleRegs.map(_.io.FromScaleController.Data.valid))
+        val responseData = Mux1H(responseSels zip ScaleRegs.map(_.io.FromScaleController.Data.bits))
+        ScaleCtrlIO.BankAddr.ready := !convertActive && ready
+        ScaleCtrlIO.Data.valid := responseValid && !responseConvert
+        ScaleCtrlIO.Data.bits := responseData
+        convertIO.foreach { port =>
+            port.BankAddr.ready := convertActive && ready
+            port.Data.valid := responseValid && responseConvert
+            port.Data.bits := responseData
+            when(convertActive) {
+                assert(!ScaleCtrlIO.BankAddr.valid, "SF port has two simultaneous task readers")
+            }
+        }
+    }
+}
+
 class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     private def summarizeLoaderMode(mode: ResponseChannelHelper.LoaderMode): String = {
         if (mode.isLegacy) "legacy(1resp)"
@@ -152,6 +237,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     )
 
     val io = IO(new CUTETopIO)
+    private val responseBridgeIdles = scala.collection.mutable.ArrayBuffer[Bool]()
 
     val time_stamp = RegInit(0.U(40.W))
     time_stamp := time_stamp + 1.U
@@ -294,6 +380,7 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
             contextName = nameContext
         )).suggestName(s"${nameContext}_response_bridge")
         bridge.io.timeStamp := time_stamp
+        responseBridgeIdles += bridge.io.idle
 
         for (i <- 0 until channelCount) {
             bridge.io.in(i).valid := mmu.Response(i).valid
@@ -376,8 +463,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     val CMatrixRegs = Seq.tabulate(CMatrixRegCount)(i => Module(new CMatrixReg(i))).toVector
 
     val ASMRegs = Option.when(cuteMatrixExtension.enableScalingFactor)(
-      Seq.tabulate(2)(i => Module(new ABScaleMatrixReg)).toVector
-    ) //双缓冲
+      Seq.tabulate(ABScaleRegCount)(i => Module(new ABScaleMatrixReg)).toVector
+    )
     val ASC = Option.when(cuteMatrixExtension.enableScalingFactor)(
       Module(new AScaleController)
     )
@@ -386,8 +473,8 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     )
 
     val BSMRegs = Option.when(cuteMatrixExtension.enableScalingFactor)(
-      Seq.tabulate(2)(i => Module(new ABScaleMatrixReg)).toVector
-    ) //双缓冲
+      Seq.tabulate(ABScaleRegCount)(i => Module(new ABScaleMatrixReg)).toVector
+    )
     val BSC = Option.when(cuteMatrixExtension.enableScalingFactor)(
       Module(new BScaleController)
     )
@@ -579,12 +666,15 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     MTE.io.VectorB <> BDC.io.VectorB
     MTE.io.ScaleA.zip(ASC).foreach { case (scaleA, asc) =>
         scaleA <> asc.io.ScaleA
+        MTE.io.ScaleALiveK.get := asc.io.LiveK
     }
     MTE.io.ScaleB.zip(BSC).foreach { case (scaleB, bsc) =>
         scaleB <> bsc.io.ScaleB
+        MTE.io.ScaleBLiveK.get := bsc.io.LiveK
     }
     MTE.io.MatrixC <> CDC.io.Matrix_C
     MTE.io.MatrixD <> CDC.io.ResultMatrix_D
+    CDC.io.ResultFlags_D := MTE.io.DFlags
     MTE.io.ConfigInfo <> TaskCtrl.io.MTE_MicroTask_Config
     MTE.io.DebugInfo.DebugTimeStampe := DebugTimeStampe
     ADC.io.ComputeGo := MTE.io.ComputeGo
@@ -592,11 +682,29 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     ASC.foreach(_.io.ComputeGo := MTE.io.ComputeGo)
     BSC.foreach(_.io.ComputeGo := MTE.io.ComputeGo)
     CDC.io.ComputeGo := MTE.io.ComputeGo
+    // One request grant for the complete A/B/C/scale tuple. Consumers keep
+    // their existing ComputeGo/ready handshake for responses already in flight.
+    ADC.io.ReadIssueEnable := CDC.io.ReadIssueReady
+    BDC.io.ReadIssueEnable := CDC.io.ReadIssueReady
+    ASC.foreach(_.io.ReadIssueEnable := CDC.io.ReadIssueReady)
+    BSC.foreach(_.io.ReadIssueEnable := CDC.io.ReadIssueReady)
+    CDC.io.ReadIssueEnable := CDC.io.ReadIssueReady
     
     //后续需要连入CPU的MMU或者IOMMU
     MMU.io.LastLevelCacheTLIO <> io.mmu2llc
 
     io.ctrl2top <> TaskCtrl.io.ygjkctrl
+    TaskCtrl.io.downstreamIdle := MMU.io.idle && MTE.io.idle &&
+        ADC.io.idle && BDC.io.idle && CDC.io.idle &&
+        ASC.map(_.io.idle).getOrElse(true.B) && BSC.map(_.io.idle).getOrElse(true.B) &&
+        ASL.map(_.io.idle).getOrElse(true.B) && BSL.map(_.io.idle).getOrElse(true.B) &&
+        responseBridgeIdles.foldLeft(true.B)(_ && _) &&
+        ASMRegs.map(_.map(r => !r.io.FromScaleController.Data.valid &&
+            !r.io.FromScaleController.BankAddr.valid && !r.io.FromScaleLoader.BankAddr.valid &&
+            !r.io.FromScaleLoader.Data.valid).reduce(_ && _)).getOrElse(true.B) &&
+        BSMRegs.map(_.map(r => !r.io.FromScaleController.Data.valid &&
+            !r.io.FromScaleController.BankAddr.valid && !r.io.FromScaleLoader.BankAddr.valid &&
+            !r.io.FromScaleLoader.Data.valid).reduce(_ && _)).getOrElse(true.B)
     val perf = WireInit(0.U.asTypeOf(new CutePerfToCoreIO))
     perf.backendEvents(0) := TaskCtrl.io.perfProbe.ownedWork
     perf.backendEvents(1) := TaskCtrl.io.perfProbe.retire
@@ -652,32 +760,17 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     }
 
     // ============================================
-    // A Scale MatrixReg 路由逻辑 (双缓冲)
+    // A Scale MatrixReg 路由逻辑（四个架构 bank）
     // ============================================
     def connectScaleControlToRegs(
         spadId: UInt,
         ScaleCtrlIO: ABScaleControlMatrixRegIO,
-        ScaleRegs: Seq[ABScaleMatrixReg]
-    ): Unit = {
-        // ASC 选择 ScaleRegs，根据 SpadId 选择对应的 MatrixReg
-        for (spadIdx <- 0 until ScaleRegs.length) {
-            val dest = ScaleRegs(spadIdx).io.FromScaleController
-            val ascSel = spadId === spadIdx.U
-            when(ascSel) {
-                dest.BankAddr.valid := ScaleCtrlIO.BankAddr.valid
-                dest.BankAddr.bits := ScaleCtrlIO.BankAddr.bits
-            }.otherwise {
-                dest.BankAddr.valid := false.B
-                dest.BankAddr.bits := DontCare
-            }
-        }
-
-        // ASC 接收 ScaleRegs 返回的数据
-        val sels = ScaleRegs.indices.map(spadId === _.U)
-        ScaleCtrlIO.BankAddr.ready := Mux1H(sels zip ScaleRegs.map(_.io.FromScaleController.BankAddr.ready))
-        ScaleCtrlIO.Data.valid     := Mux1H(sels zip ScaleRegs.map(_.io.FromScaleController.Data.valid))
-        ScaleCtrlIO.Data.bits      := Mux1H(sels zip ScaleRegs.map(_.io.FromScaleController.Data.bits))
-    }
+        ScaleRegs: Seq[ABScaleMatrixReg],
+        convertIO: Option[ABScaleControlMatrixRegIO],
+        convertSpadId: UInt,
+        convertActive: Bool
+    ): Unit = CUTEV2Top.connectScaleControlToRegs(
+        spadId, ScaleCtrlIO, ScaleRegs, convertIO, convertSpadId, convertActive)(clock, reset)
 
     def connectScaleLoaderToRegs(
         spadId: UInt,
@@ -701,13 +794,103 @@ class CUTEV2Top()(implicit p: Parameters) extends CuteModule{
     }
 
     ASC.zip(ASL).zip(ASMRegs).foreach { case ((asc, asl), asmRegs) =>
-        connectScaleControlToRegs(asc.io.SpadId, asc.io.FromMatrixRegIO, asmRegs)
+        asl.io.GeneratedScale.zip(AML.io.GeneratedScale).foreach {
+            case (sink, source) => sink <> source
+        }
+        connectScaleControlToRegs(asc.io.SpadId, asc.io.FromMatrixRegIO, asmRegs,
+            AML.io.FromScaleRegIO, AML.io.ScaleBankId, AML.io.ScaleReadActive)
         connectScaleLoaderToRegs(asl.io.SpadId, asl.io.ToMatrixRegIO, asmRegs)
+        when(asl.io.ToMatrixRegIO.BankAddr.valid && asc.io.FromMatrixRegIO.BankAddr.valid) {
+            assert(asl.io.SpadId =/= asc.io.SpadId, "CUTE: A scale bank must not be loaded while owned by a reader")
+        }
+        AML.io.FromScaleRegIO.foreach { port =>
+            when(asl.io.ToMatrixRegIO.BankAddr.valid && port.BankAddr.valid) {
+                assert(asl.io.SpadId =/= AML.io.ScaleBankId,
+                    "CUTE: A scale writer overlaps a converting-load reader")
+            }
+        }
     }
 
     BSC.zip(BSL).zip(BSMRegs).foreach { case ((bsc, bsl), bsmRegs) =>
-        connectScaleControlToRegs(bsc.io.SpadId, bsc.io.FromMatrixRegIO, bsmRegs)
+        bsl.io.GeneratedScale.zip(BML.io.GeneratedScale).foreach {
+            case (sink, source) => sink <> source
+        }
+        connectScaleControlToRegs(bsc.io.SpadId, bsc.io.FromMatrixRegIO, bsmRegs,
+            BML.io.FromScaleRegIO, BML.io.ScaleBankId, BML.io.ScaleReadActive)
         connectScaleLoaderToRegs(bsl.io.SpadId, bsl.io.ToMatrixRegIO, bsmRegs)
+        when(bsl.io.ToMatrixRegIO.BankAddr.valid && bsc.io.FromMatrixRegIO.BankAddr.valid) {
+            assert(bsl.io.SpadId =/= bsc.io.SpadId, "CUTE: B scale bank must not be loaded while owned by a reader")
+        }
+        BML.io.FromScaleRegIO.foreach { port =>
+            when(bsl.io.ToMatrixRegIO.BankAddr.valid && port.BankAddr.valid) {
+                assert(bsl.io.SpadId =/= BML.io.ScaleBankId,
+                    "CUTE: B scale writer overlaps a converting-load reader")
+            }
+        }
+    }
+
+    if (EnableDifftest && cuteMatrixExtension.enableScalingFactor) {
+        DifftestModule.addCppMacro("CONFIG_DIFF_AMU_SCALE_BEAT_BYTES", outsideDataWidthByte)
+        DifftestModule.addCppMacro("CONFIG_DIFF_AMU_SCALE_VECTOR_DATA_BYTES", ReduceWidthByte)
+        DifftestModule.addCppMacro("CONFIG_DIFF_AMU_SCALE_BANK_BYTES",
+            ABScaleBankNEntries * outsideDataWidthByte)
+        val eventBankBytes = DiffAmuFinishWordsPerBank * 8
+        require(outsideDataWidth % 64 == 0)
+        require(outsideDataWidthByte <= ABMatrixRegNBanks * eventBankBytes,
+            "scale observation must fit the existing finish payload")
+        // Existing lanes0..5 remain AML/BML/C-load/CDC/C-store/Release.
+        // New lanes follow them; canonical Difftest generation counts width.
+        Seq(ASMRegs.get, BSMRegs.get).zipWithIndex.foreach { case (regs, side) =>
+            val owner = TaskCtrl.io.ownedScaleTrace.get(side)
+            val writes = regs.map(r => r.io.FromScaleLoader.BankAddr.valid &&
+                r.io.FromScaleLoader.Data.valid)
+            val write = VecInit(writes).asUInt.orR
+            val bank = OHToUInt(VecInit(writes).asUInt)
+            val addr = Mux1H(writes zip regs.map(_.io.FromScaleLoader.BankAddr.bits))
+            val data = Mux1H(writes zip regs.map(_.io.FromScaleLoader.Data.bits.asUInt))
+            when(write) {
+                assert(PopCount(VecInit(writes)) === 1.U && owner.busy,
+                    "scale destination write without a unique owned loader")
+                assert(bank === owner.bankId, "scale destination differs from FU-owned bank")
+            }
+            val event = DifftestModule(
+                new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits),
+                delay = 0, dontCare = true)
+            event.clearScaleTrace()
+            event.coreid := owner.coreid
+            event.index := (6 + side).U
+            event.valid := write || owner.complete
+            event.pc := owner.pc
+            event.retireId := owner.retireId
+            event.epoch := owner.epoch
+            event.kind := (if (side == 0) AmuFinishKind.ScaleA else AmuFinishKind.ScaleB).U
+            event.computeType := owner.computeType
+            val actualBank = Mux(write, bank, owner.bankId)
+            (if (side == 0) event.scaleRegA else event.scaleRegB) := owner.regId
+            (if (side == 0) event.scaleBankA else event.scaleBankB) := actualBank
+            (if (side == 0) event.scaleGenA else event.scaleGenB) := owner.generation
+            // This bit means publication on the current owned completion edge.
+            (if (side == 0) event.scaleValidA else event.scaleValidB) :=
+                owner.complete && owner.completionPublishes.getOrElse(true.B)
+            (if (side == 0) event.scaleRowsA else event.scaleRowsB) := owner.rows
+            (if (side == 0) event.scaleKVectorsA else event.scaleKVectorsB) := owner.kVectors
+            (if (side == 0) event.scaleBlocksA else event.scaleBlocksB) := owner.blocks
+            (if (side == 0) event.scaleRowPitchA else event.scaleRowPitchB) := owner.rowPitch
+            val liveBytes = owner.rows * owner.blocks
+            val flat = data.pad(ABMatrixRegNBanks * eventBankBytes * 8)
+            for (b <- 0 until ABMatrixRegNBanks) {
+                event.bankValid(b) := write && (b * eventBankBytes < outsideDataWidthByte).B
+                event.bankAddr(b) := addr
+                event.bankMask(b) := VecInit((0 until eventBankBytes).map(k =>
+                    write && (b * eventBankBytes + k < outsideDataWidthByte).B &&
+                    addr * outsideDataWidthByte.U + (b * eventBankBytes + k).U < liveBytes)).asUInt
+                for (w <- 0 until DiffAmuFinishWordsPerBank) {
+                    val lo = (b * DiffAmuFinishWordsPerBank + w) * 64
+                    event.data(b * DiffAmuFinishWordsPerBank + w) := flat(lo + 63, lo)
+                }
+            }
+            event.finish := owner.complete
+        }
     }
 
     def disableABLoaderPort(dest: ABMemoryLoaderMatrixRegIO): Unit = {

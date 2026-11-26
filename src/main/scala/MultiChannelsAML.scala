@@ -34,6 +34,11 @@ class MultiChannelsABMemLoader(
 
     val CurrentMatrixRegId = RegInit(0.U(ABMatrixRegIdWidth.W))
     val ConfigInfo = io.ConfigInfo
+    ConfigInfo.MicroTaskFlags := 0.U
+    when(ConfigInfo.MicroTaskValid) {
+        assert(!ConfigInfo.ConvertF32ToMx,
+            "multi-channel loader does not implement experimental MX conversion")
+    }
     val BaseVAddr = RegInit(0.U(MMUAddrWidth.W))
     val MatrixRegTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
@@ -547,11 +552,17 @@ class MultiChannelsABMemLoader(
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_WORDS_PER_BANK", ABMatrixRegEntryBitSize / 64)
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", ABMatrixRegSize)
         val pcReg = RegInit(0.U(64.W))
+        val ownerRetireId = RegEnable(io.ConfigInfo.retireId.get, 0.U(64.W), io.ConfigInfo.MicroTaskValid)
+        val ownerEpoch = RegEnable(io.ConfigInfo.epoch.get, 0.U(64.W), io.ConfigInfo.MicroTaskValid)
+        val ownerCoreId = RegEnable(io.ConfigInfo.coreid.get, 0.U(8.W), io.ConfigInfo.MicroTaskValid)
         when (io.ConfigInfo.MicroTaskValid) {
           pcReg := io.ConfigInfo.pc.get
         }
-        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
-        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits), delay = 0, dontCare = true)
+        difftestAmuFinish.clearScaleTrace()
+        difftestAmuFinish.coreid := ownerCoreId
+        difftestAmuFinish.retireId := ownerRetireId
+        difftestAmuFinish.epoch := ownerEpoch
         val diffIndexMap = Map(
             "AML" -> 0,
             "BML" -> 1

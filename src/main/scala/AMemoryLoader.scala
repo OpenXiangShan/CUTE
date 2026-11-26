@@ -14,6 +14,243 @@ class ASourceIdSearch(implicit p: Parameters) extends CuteBundle{
     val MatrixRegAddr = UInt(log2Ceil(ABMatrixRegBankNEntries).W)
     val MatrixRegisTail = Bool()
     val BeatIndex = UInt(log2Ceil(ABMatrixRegEntryByteSize).W)
+    val ReadByteOffset = UInt(log2Ceil(outsideDataWidthByte).W)
+    val WriteByteOffset = UInt(log2Ceil(outsideDataWidthByte).W)
+    val FragmentBytes = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+    val ConvertRow = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val ConvertBeat = UInt(2.W)
+}
+
+// Owned source fragments of the existing normal-load CAM, not a second memory
+// protocol. Reserve a K32 owner before issuing its first containing-line Get.
+class MxfpConvertSource(implicit p: Parameters) extends CuteBundle {
+    val row = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val beat = UInt(2.W) // four 64-byte F32 beats in the experimental K64 row
+}
+
+class MxfpConvertFragment(implicit p: Parameters) extends CuteBundle {
+    val source = new MxfpConvertSource
+    val data = UInt(outsideDataWidth.W)
+    val readByteOffset = UInt(log2Ceil(outsideDataWidthByte).W)
+    val writeByteOffset = UInt(log2Ceil(outsideDataWidthByte).W)
+    val fragmentBytes = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+}
+
+// Shared AML/BML response-fill extension. The original loaders still own
+// addresses, containing-line fragments and SourceID allocation. This stage
+// owns K32 assembly, the existing supplied-scale encoder and packed SCP writes.
+class MxfpConvertFill(implicit p: Parameters) extends CuteModule {
+    require(outsideDataWidth == 512 && ABMatrixRegEntryByteSize >= 32)
+    private val Owners = MxfpConvertOwners
+    private val OwnerBits = log2Ceil(Owners)
+    val io = IO(new Bundle {
+        val start = Input(Bool())
+        val computeType = Input(UInt(MteComputeType.ComputeTypeBitWidth.W))
+        val dynamic = Option.when(ExperimentalMxfpDynamicQuant)(Input(Bool()))
+        val request = Flipped(Decoupled(new MxfpConvertSource))
+        val response = Flipped(Decoupled(new MxfpConvertFragment))
+        val FromScaleRegIO = Flipped(new ABScaleControlMatrixRegIO)
+        val ToMatrixRegIO = Flipped(new ABMemoryLoaderMatrixRegIO)
+        val GeneratedScale = Option.when(ExperimentalMxfpDynamicQuant)(
+            Decoupled(new MxfpGeneratedScale))
+        val idle = Output(Bool())
+        val flags = Output(UInt(5.W))
+    })
+    val mode = RegEnable(io.computeType, MteComputeType.ComputeTypeUndef, io.start)
+    val dynamic = io.dynamic.map(d => RegEnable(d, false.B, io.start)).getOrElse(false.B)
+    val flags = RegInit(0.U(5.W))
+    io.flags := flags
+    val allocated = RegInit(VecInit(Seq.fill(Owners)(false.B)))
+    val submitted = RegInit(VecInit(Seq.fill(Owners)(false.B)))
+    val rows = Reg(Vec(Owners, UInt(MatrixRegMaxTensorDimBitSize.W)))
+    val blocks = Reg(Vec(Owners, Bool()))
+    val raw = Reg(Vec(Owners, UInt(1024.W)))
+    val received = RegInit(VecInit(Seq.fill(Owners)(0.U(128.W))))
+    val scales = Reg(Vec(Owners, UInt(8.W)))
+    val scaleRequested = RegInit(VecInit(Seq.fill(Owners)(false.B)))
+    val scaleValid = RegInit(VecInit(Seq.fill(Owners)(false.B)))
+    val dynamicUnsupported = Option.when(ExperimentalMxfpDynamicQuant)(
+        RegInit(VecInit(Seq.fill(Owners)(false.B))))
+
+    val requestMatches = VecInit((0 until Owners).map(i => allocated(i) &&
+        rows(i) === io.request.bits.row && blocks(i) === io.request.bits.beat(1)))
+    val free = VecInit(allocated.map(!_))
+    val requestOwner = Mux(requestMatches.asUInt.orR,
+        PriorityEncoder(requestMatches), PriorityEncoder(free))
+    io.request.ready := !reset.asBool && (requestMatches.asUInt.orR || free.asUInt.orR)
+    when(io.request.fire && !requestMatches.asUInt.orR) {
+        allocated(requestOwner) := true.B
+        submitted(requestOwner) := false.B
+        rows(requestOwner) := io.request.bits.row
+        blocks(requestOwner) := io.request.bits.beat(1)
+        raw(requestOwner) := 0.U
+        received(requestOwner) := 0.U
+        scaleRequested(requestOwner) := false.B
+        scaleValid(requestOwner) := false.B
+        dynamicUnsupported.foreach(_(requestOwner) := false.B)
+    }
+
+    val responseMatches = VecInit((0 until Owners).map(i => allocated(i) &&
+        rows(i) === io.response.bits.source.row &&
+        blocks(i) === io.response.bits.source.beat(1)))
+    val responseOwner = PriorityEncoder(responseMatches)
+    io.response.ready := !reset.asBool && responseMatches.asUInt.orR && !submitted(responseOwner)
+    val fragmentOffset = Cat(io.response.bits.source.beat(0), 0.U(6.W)) +&
+        io.response.bits.writeByteOffset
+    val lowMask = (UIntToOH(io.response.bits.fragmentBytes, 65) - 1.U)(63, 0)
+    val fragmentMask = (lowMask.pad(128) << fragmentOffset)(127, 0)
+    val byteMask = Cat((0 until 128).reverse.map(i => Fill(8, fragmentMask(i))))
+    val aligned = (io.response.bits.data >> (io.response.bits.readByteOffset << 3)).pad(1024)
+    val positioned = (aligned << (fragmentOffset << 3))(1023, 0)
+    when(io.response.valid) {
+        assert(responseMatches.asUInt.orR, "MX fill response has no reserved K32 owner")
+        assert(PopCount(responseMatches) === 1.U, "MX fill response has ambiguous owner")
+    }
+    when(io.response.fire) {
+        assert(io.response.bits.fragmentBytes =/= 0.U &&
+            fragmentOffset +& io.response.bits.fragmentBytes <= 128.U,
+            "MX fill fragment exceeds its K32")
+        assert((received(responseOwner) & fragmentMask) === 0.U,
+            "MX fill received a duplicate source fragment")
+        raw(responseOwner) := (raw(responseOwner) & ~byteMask) | (positioned & byteMask)
+        received(responseOwner) := received(responseOwner) | fragmentMask
+    }
+
+    // Reserve a destination owner before accepting the synchronous Valid-only
+    // SF response. One outstanding read, independently held scale per K32.
+    val scalePending = RegInit(false.B)
+    val scaleOwner = Reg(UInt(OwnerBits.W))
+    val scaleByte = Reg(UInt(6.W))
+    val scaleCandidates = VecInit((0 until Owners).map(i => allocated(i) && !scaleRequested(i)))
+    val nextScaleOwner = PriorityEncoder(scaleCandidates)
+    val scaleIndex = (rows(nextScaleOwner) << 1) + blocks(nextScaleOwner)
+    io.FromScaleRegIO.BankAddr.valid := !reset.asBool && !dynamic &&
+        !scalePending && scaleCandidates.asUInt.orR
+    io.FromScaleRegIO.BankAddr.bits := scaleIndex >> 6
+    when(io.FromScaleRegIO.BankAddr.fire) {
+        scalePending := true.B
+        scaleOwner := nextScaleOwner
+        scaleByte := scaleIndex(5, 0)
+        scaleRequested(nextScaleOwner) := true.B
+    }
+    when(io.FromScaleRegIO.Data.valid && !reset.asBool) {
+        assert(scalePending, "MX fill received an unowned SF response")
+        scales(scaleOwner) := (io.FromScaleRegIO.Data.bits.asUInt >> (scaleByte << 3))(7, 0)
+        scaleValid(scaleOwner) := true.B
+        scalePending := false.B
+    }
+
+    val choose = Module(new RRArbiter(UInt(OwnerBits.W), Owners))
+    for (i <- 0 until Owners) {
+        choose.io.in(i).valid := allocated(i) && received(i).andR &&
+            (dynamic || scaleValid(i)) && !submitted(i) && !reset.asBool
+        choose.io.in(i).bits := i.U
+    }
+    val ownerQ = Module(new Queue(UInt(OwnerBits.W), Owners))
+    val fp4 = Module(new Mxfp4EncodeBlock(MxfpConvertLanes))
+    val e4 = Module(new Mxfp8EncodeBlock(true, MxfpConvertLanes))
+    val e5 = Module(new Mxfp8EncodeBlock(false, MxfpConvertLanes))
+    val use4 = mode === MteComputeType.Mxfp4F32
+    val useE4 = mode === MteComputeType.Mxfp8e4m3F32
+    val useE5 = mode === MteComputeType.Mxfp8e5m2F32
+    val selected = choose.io.out.bits
+    // One shared K32 tree AFTER owner selection, never one tree per owner.
+    val dynamicScale = Option.when(ExperimentalMxfpDynamicQuant)(Module(new Mxfp4DynamicScale))
+    dynamicScale.foreach(_.io.values := raw(selected).asTypeOf(Vec(32, UInt(32.W))))
+    val selectedE = Mux(dynamic, dynamicScale.map(_.io.e).getOrElse(0.U), scales(selected))
+    val selectedSupported = dynamicScale.map(_.io.supported).getOrElse(true.B)
+    Seq(fp4.io.in, e4.io.in, e5.io.in).zip(Seq(use4, useE4, useE5)).foreach {
+        case (port, enabled) =>
+            port.valid := choose.io.out.valid && ownerQ.io.enq.ready && enabled
+            // Unsupported dynamic input still traverses an owned encoder
+            // token, so it cannot strand an owner or suppress task End.
+            port.bits.values := Mux(dynamic && !selectedSupported, 0.U, raw(selected))
+                .asTypeOf(Vec(32, UInt(32.W)))
+            port.bits.e := selectedE
+            port.bits.active := Fill(32, true.B)
+    }
+    val encoderReady = Mux(use4, fp4.io.in.ready, Mux(useE4, e4.io.in.ready, e5.io.in.ready))
+    choose.io.out.ready := encoderReady && ownerQ.io.enq.ready
+    ownerQ.io.enq.valid := choose.io.out.valid && encoderReady
+    ownerQ.io.enq.bits := selected
+    when(choose.io.out.fire) {
+        submitted(selected) := true.B
+        dynamicUnsupported.foreach(_(selected) := dynamic && !selectedSupported)
+    }
+
+    class PackedWrite extends Bundle {
+        val row = UInt(MatrixRegMaxTensorDimBitSize.W)
+        val block = Bool()
+        val payload = UInt(256.W)
+        val e = Option.when(ExperimentalMxfpDynamicQuant)(UInt(8.W))
+        val unsupported = Option.when(ExperimentalMxfpDynamicQuant)(Bool())
+    }
+    val writes = Module(new Queue(new PackedWrite, Owners))
+    val encoderValid = Mux(use4, fp4.io.out.valid, Mux(useE4, e4.io.out.valid, e5.io.out.valid))
+    val encoderEligible = Mux(use4, fp4.io.out.bits.eligible,
+        Mux(useE4, e4.io.out.bits.eligible, e5.io.out.bits.eligible))
+    val encoderInvalid = Mux(use4, fp4.io.out.bits.invalid,
+        Mux(useE4, e4.io.out.bits.invalid, e5.io.out.bits.invalid))
+    val reject = !encoderEligible || encoderInvalid ||
+        (dynamic && dynamicUnsupported.map(_(ownerQ.io.deq.bits)).getOrElse(false.B))
+    val payload = Mux(use4, fp4.io.out.bits.payload.pad(256),
+        Mux(useE4, e4.io.out.bits.payload, e5.io.out.bits.payload))
+    fp4.io.out.ready := use4 && ownerQ.io.deq.valid && writes.io.enq.ready
+    e4.io.out.ready := useE4 && ownerQ.io.deq.valid && writes.io.enq.ready
+    e5.io.out.ready := useE5 && ownerQ.io.deq.valid && writes.io.enq.ready
+    writes.io.enq.valid := encoderValid && ownerQ.io.deq.valid
+    writes.io.enq.bits.row := rows(ownerQ.io.deq.bits)
+    writes.io.enq.bits.block := blocks(ownerQ.io.deq.bits)
+    writes.io.enq.bits.payload := Mux(reject, 0.U, payload)
+    writes.io.enq.bits.e.foreach(_ := fp4.io.out.bits.scale)
+    writes.io.enq.bits.unsupported.foreach(_ := reject)
+    ownerQ.io.deq.ready := encoderValid && writes.io.enq.ready
+    when(encoderValid) { assert(ownerQ.io.deq.valid, "MX encoder result lost its source owner") }
+    when(writes.io.enq.fire) {
+        allocated(ownerQ.io.deq.bits) := false.B
+        when(reject) { flags := flags | "h10".U }
+    }
+    // The existing SCP write port is Valid-only: each asserted write really
+    // reaches the selected bank. Retain packed payload+mask together in FIFO.
+    io.GeneratedScale.foreach { port =>
+        port.valid := dynamic && writes.io.deq.valid && !reset.asBool
+        port.bits.row := writes.io.deq.bits.row
+        port.bits.block := writes.io.deq.bits.block
+        port.bits.e := writes.io.deq.bits.e.get
+        port.bits.unsupported := writes.io.deq.bits.unsupported.get
+    }
+    writes.io.deq.ready := !reset.asBool &&
+        (!dynamic || io.GeneratedScale.map(_.ready).getOrElse(true.B))
+    io.ToMatrixRegIO := 0.U.asTypeOf(io.ToMatrixRegIO)
+    io.ToMatrixRegIO.active := allocated.asUInt.orR || writes.io.deq.valid
+    val write = writes.io.deq.bits
+    val packedByteOffset = Mux(use4, write.block.asUInt << 4, write.block.asUInt << 5)
+    val entryOffset = packedByteOffset % ABMatrixRegEntryByteSize.U
+    val entry = (write.row / ABMatrixRegNBanks.U) * ReduceGroupSize.U +
+        packedByteOffset / ABMatrixRegEntryByteSize.U
+    val mask = Mux(use4, "hffff".U(ABMatrixRegEntryByteSize.W),
+        "hffffffff".U(ABMatrixRegEntryByteSize.W)) << entryOffset
+    for (i <- 0 until ABMatrixRegNBanks) {
+        val valid = writes.io.deq.fire && write.row % ABMatrixRegNBanks.U === i.U
+        io.ToMatrixRegIO.BankAddr(i).valid := valid
+        io.ToMatrixRegIO.BankAddr(i).bits := entry
+        io.ToMatrixRegIO.Data(i).valid := valid
+        io.ToMatrixRegIO.Data(i).bits := write.payload << (entryOffset << 3)
+        io.ToMatrixRegIO.ByteMask(i).valid := valid
+        io.ToMatrixRegIO.ByteMask(i).bits := mask
+    }
+    io.idle := !allocated.asUInt.orR && !ownerQ.io.deq.valid && !writes.io.deq.valid &&
+        !scalePending && !io.FromScaleRegIO.Data.valid && !encoderValid
+    when(io.start) {
+        assert(io.idle, "MX fill task replaced before all actual writes drained")
+        assert(io.computeType === MteComputeType.Mxfp4F32 ||
+            io.computeType === MteComputeType.Mxfp8e4m3F32 ||
+            io.computeType === MteComputeType.Mxfp8e5m2F32, "MX fill requires a supported format")
+        when(io.dynamic.getOrElse(false.B)) {
+            assert(io.computeType === MteComputeType.Mxfp4F32, "dynamic quantization is FP4 only")
+        }
+        flags := 0.U
+    }
 }
 
 object TransposeBytePlane {
@@ -408,6 +645,12 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         val LocalMMUIO = Flipped(new LocalMMUIO)
         val DebugInfo = Input(new DebugInfoIO)
         val MatrixRegId = Output(UInt(ABMatrixRegIdWidth.W))
+        val FromScaleRegIO = Option.when(ExperimentalMxfpConvertLoad)(
+            Flipped(new ABScaleControlMatrixRegIO))
+        val ScaleBankId = Output(UInt(ABScaleRegIdWidth.W))
+        val ScaleReadActive = Output(Bool())
+        val GeneratedScale = Option.when(ExperimentalMxfpDynamicQuant)(
+            Decoupled(new MxfpGeneratedScale))
     })
 
     io.ToMatrixRegIO.active := false.B
@@ -427,6 +670,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     }
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
+    io.ConfigInfo.MicroTaskFlags := 0.U
 
     // Legacy AML only uses channel 0 for requests and responses.
     val Request = io.LocalMMUIO.Request(0)
@@ -441,11 +685,17 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_WORDS_PER_BANK", ABMatrixRegEntryBitSize / 64)
         DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", ABMatrixRegSize)
         val pcReg = RegInit(0.U(64.W))
+        val ownerRetireId = RegEnable(io.ConfigInfo.retireId.get, 0.U(64.W), io.ConfigInfo.MicroTaskValid)
+        val ownerEpoch = RegEnable(io.ConfigInfo.epoch.get, 0.U(64.W), io.ConfigInfo.MicroTaskValid)
+        val ownerCoreId = RegEnable(io.ConfigInfo.coreid.get, 0.U(8.W), io.ConfigInfo.MicroTaskValid)
         when (io.ConfigInfo.MicroTaskValid) {
           pcReg := io.ConfigInfo.pc.get
         }
-        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 0, dontCare = true)
-        difftestAmuFinish.coreid := io.ConfigInfo.coreid.get
+        val difftestAmuFinish = DifftestModule(new DiffAmuFinishEvent(ABMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits), delay = 0, dontCare = true)
+        difftestAmuFinish.clearScaleTrace()
+        difftestAmuFinish.coreid := ownerCoreId
+        difftestAmuFinish.retireId := ownerRetireId
+        difftestAmuFinish.epoch := ownerEpoch
         difftestAmuFinish.index := 0.U
         difftestAmuFinish.valid := (io.ToMatrixRegIO.BankAddr.map(_.valid).reduce(_||_) ||
           (io.ConfigInfo.MicroTaskEndValid && io.ConfigInfo.MicroTaskEndReady))
@@ -482,6 +732,11 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val MatrixRegTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Conherent = RegInit(true.B)
     val Is_Transpose = RegInit(false.B)
+    val ConvertF32ToMx = RegInit(false.B)
+    val ConvertDynamic = ConfigInfo.ConvertDynamic.map(d =>
+        RegEnable(d, false.B, ConfigInfo.MicroTaskValid && ConfigInfo.MicroTaskReady)).getOrElse(false.B)
+    val ConvertScaleBankId = RegInit(0.U(ABScaleRegIdWidth.W))
+    io.ScaleBankId := ConvertScaleBankId
     val transposeBytesPerElement = RegInit(1.U(3.W))
 
     val Is_ZeroLoad = RegInit(false.B)
@@ -491,11 +746,14 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val state = RegInit(s_idle)
     val s_load_idle :: s_load_init :: s_load_working :: s_load_quiesce :: s_load_end :: Nil = Enum(5)
     val memoryload_state = RegInit(s_load_idle)
+    io.ScaleReadActive := ConvertF32ToMx && !ConvertDynamic && state === s_mm_task
     private val transposeEndDrainCycles = Trans_Load_Size + 2 + 3
     val transposeEndDrainCnt = RegInit(0.U(log2Ceil(transposeEndDrainCycles + 1).W))
 
     val TotalLoadSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*outsideDataWidthByte)+1).W))
     val TotalRequestSize = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)).W))
+    val normalPhysicalRequests = RegInit(0.U((TotalRequestSize.getWidth + 1).W))
+    val normalSecondFragment = RegInit(false.B)
     val CurrentLoaded_BlockTensor_M_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val CurrentLoaded_BlockTensor_K_Iter = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Request_M_Iter_Time = RegInit(0.U(log2Ceil(math.max(Matrix_MN, ABMatrixRegEntryByteSize)).W))
@@ -509,10 +767,30 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
     val SoureceIdSearchTable = RegInit(VecInit(Seq.fill(SoureceMaxNum)(0.U((new ASourceIdSearch).getWidth.W))))
     val MaxRequestIter = RegInit(0.U((log2Ceil(Tensor_MN*ReduceGroupSize*ReduceWidthByte)).W))
 
+    val convertFill = Option.when(ExperimentalMxfpConvertLoad)(Module(new MxfpConvertFill))
+    convertFill.foreach { fill =>
+        fill.io.start := ConfigInfo.MicroTaskValid && ConfigInfo.MicroTaskReady && ConfigInfo.ConvertF32ToMx
+        fill.io.computeType := ConfigInfo.ConvertComputeType
+        fill.io.dynamic.foreach(_ := ConfigInfo.ConvertDynamic.get)
+        io.GeneratedScale.zip(fill.io.GeneratedScale).foreach { case (outer, inner) => outer <> inner }
+        fill.io.request.valid := false.B
+        fill.io.request.bits := 0.U.asTypeOf(fill.io.request.bits)
+        fill.io.response.valid := false.B
+        val meta = SoureceIdSearchTable(Response.bits.ReseponseSourceID).asTypeOf(new ASourceIdSearch)
+        fill.io.response.bits.source.row := meta.ConvertRow
+        fill.io.response.bits.source.beat := meta.ConvertBeat
+        fill.io.response.bits.data := Response.bits.ReseponseData
+        fill.io.response.bits.readByteOffset := meta.ReadByteOffset
+        fill.io.response.bits.writeByteOffset := meta.WriteByteOffset
+        fill.io.response.bits.fragmentBytes := meta.FragmentBytes
+        fill.io.FromScaleRegIO <> io.FromScaleRegIO.get
+        io.ConfigInfo.MicroTaskFlags := Mux(ConvertF32ToMx, fill.io.flags, 0.U)
+    }
+
     val MReg_Fill_Table = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidth.W)))))
     val MReg_Fill_Table_MReg_Addr = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(log2Ceil(ABMatrixRegBankNEntries).W)))))
     val MReg_Fill_Table_Time = RegInit((VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U((log2Ceil(outsideDataWidthByte/ABMatrixRegEntryByteSize)+1).W)))))
-    val MReg_Fill_Table_IsTail = RegInit(VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(false.B)))
+    val MReg_Fill_Table_ByteMask = RegInit(VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidthByte.W))))
     val MReg_Fill_Table_Free = MReg_Fill_Table_Time.map(_ === 0.U)
     val MReg_Fill_Table_Insert_Index = PriorityEncoder(MReg_Fill_Table_Free)
     val MReg_Fill_Table_Not_Full = MReg_Fill_Table_Free.reduce(_ || _)
@@ -585,6 +863,23 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             Is_FullLoad := ConfigInfo.LoadTaskInfo.Is_FullLoad
             Conherent := ConfigInfo.Conherent
             Is_Transpose := ConfigInfo.Is_Transpose
+            ConvertF32ToMx := ConfigInfo.ConvertF32ToMx
+            ConvertScaleBankId := ConfigInfo.ConvertScaleBankId
+            when(ConfigInfo.ConvertF32ToMx) {
+                assert(ExperimentalMxfpConvertLoad.B, "AML converting load is disabled")
+                assert(!ConfigInfo.Is_Transpose && ConfigInfo.LoadTaskInfo.Is_FullLoad &&
+                    !ConfigInfo.LoadTaskInfo.Is_ZeroLoad && !ConfigInfo.ApplicationTensor_A.HasTail,
+                    "AML converting load requires a normal complete F32 tile")
+                assert(ConfigInfo.ConvertKElements === 64.U &&
+                    ConfigInfo.ApplicationTensor_A.K_Beat_Count === 4.U &&
+                    ConfigInfo.ApplicationTensor_A.dataType === ElementDataType.DataTypeWidth32,
+                    "AML converting load currently requires K64 / four F32 source beats")
+                when(ConfigInfo.ConvertDynamic.getOrElse(false.B)) {
+                    assert(ConfigInfo.MatrixRegTensor_M === 8.U &&
+                        ConfigInfo.ConvertComputeType === MteComputeType.Mxfp4F32,
+                        "dynamic AML requires exactly eight K64 FP4 rows")
+                }
+            }
             transposeBytesPerElement := TransposeBytePlane.bytesPerElement(ConfigInfo.ApplicationTensor_A.dataType)
             if(YJPAMLDebugEnable){
                 printf("[AML<%d>]AMemoryLoader Task Start, MatrixRegTensor_M:%d, MatrixRegTensor_K:%d, BaseVaddr:%x, Stride_M:%x, dataType:%d, Is_Transpose:%d, Is_ZeroLoad:%d, Is_FullLoad:%d\n",
@@ -601,6 +896,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             memoryload_state := s_load_working
             TotalLoadSize := 0.U
             TotalRequestSize := 0.U
+            normalPhysicalRequests := 0.U
+            normalSecondFragment := false.B
             CurrentLoaded_BlockTensor_M_Iter := 0.U
             CurrentLoaded_BlockTensor_K_Iter := 0.U
             Request_M_Iter_Time := 0.U
@@ -616,7 +913,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
             MReg_Fill_Table := 0.U.asTypeOf(MReg_Fill_Table)
             MReg_Fill_Table_MReg_Addr := 0.U.asTypeOf(MReg_Fill_Table_MReg_Addr)
             MReg_Fill_Table_Time := 0.U.asTypeOf(MReg_Fill_Table_Time)
-            MReg_Fill_Table_IsTail := VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(false.B))
+            MReg_Fill_Table_ByteMask := VecInit(Seq.fill(AMemoryLoaderReadFromMemoryFIFODepth)(0.U(outsideDataWidthByte.W)))
         }
         is(s_load_working) {
             io.ToMatrixRegIO.active := true.B
@@ -692,7 +989,17 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 val RequestMatrixRegBankId = Mux(Is_Transpose, 0.U, NormalRequestMatrixRegBankId)
                 val RequestMatrixRegAddr = Mux(Is_Transpose, TransposeRequestMatrixRegAddr, NormalRequestMatrixRegAddr)
 
-                Request.bits.RequestAddr := Tensor_Block_BaseAddr + RequestMatrixRegMIndex * ApplicationTensor_A_Stride_M + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))
+                val logicalRequestAddr = Tensor_Block_BaseAddr + RequestMatrixRegMIndex * ApplicationTensor_A_Stride_M +
+                    (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))
+                val lineOffset = logicalRequestAddr(log2Ceil(outsideDataWidthByte) - 1, 0)
+                val liveBytes = Mux(RequestBeatIsTail, TailByteMask, outsideDataWidthByte.U)
+                val firstLineRoom = outsideDataWidthByte.U - lineOffset
+                val firstFragmentBytes = Mux(liveBytes < firstLineRoom, liveBytes, firstLineRoom)
+                val normalNeedsSecond = liveBytes > firstLineRoom
+                val normalBeatComplete = normalSecondFragment || !normalNeedsSecond
+                val normalAlignedAddr = logicalRequestAddr & (~(outsideDataWidthByte - 1).U(MMUAddrWidth.W))
+                Request.bits.RequestAddr := Mux(Is_Transpose, logicalRequestAddr,
+                    normalAlignedAddr + Mux(normalSecondFragment, outsideDataWidthByte.U, 0.U))
                 val sourceId = Mux(Conherent, io.LocalMMUIO.ConherentRequsetSourceID, io.LocalMMUIO.nonConherentRequsetSourceID)
                 Request.bits.RequestConherent := Conherent
                 Request.bits.RequestSourceID := sourceId.bits
@@ -700,6 +1007,14 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 Request.bits.UseAllocatedSourceID := true.B
                 Request.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
                 Request.valid := Mux(Is_Transpose, transpose_req_enable, TotalRequestSize < MaxRequestIter)
+                convertFill.foreach { fill =>
+                    when(ConvertF32ToMx) {
+                        Request.valid := TotalRequestSize < MaxRequestIter && fill.io.request.ready
+                        fill.io.request.valid := Request.fire
+                        fill.io.request.bits.row := RequestMatrixRegMIndex
+                        fill.io.request.bits.beat := CurrentLoaded_BlockTensor_K_Iter(1, 0)
+                    }
+                }
 
                 when(Request.fire){
                     val TableItem = Wire(new ASourceIdSearch)
@@ -707,6 +1022,12 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                     TableItem.MatrixRegAddr := RequestMatrixRegAddr
                     TableItem.MatrixRegisTail := RequestBeatIsTail
                     TableItem.BeatIndex := Request_M_Iter_Time
+                    TableItem.ReadByteOffset := Mux(Is_Transpose || normalSecondFragment, 0.U, lineOffset)
+                    TableItem.WriteByteOffset := Mux(!Is_Transpose && normalSecondFragment, firstFragmentBytes, 0.U)
+                    TableItem.FragmentBytes := Mux(Is_Transpose, outsideDataWidthByte.U,
+                        Mux(normalSecondFragment, liveBytes - firstFragmentBytes, firstFragmentBytes))
+                    TableItem.ConvertRow := Mux(ConvertF32ToMx, RequestMatrixRegMIndex, 0.U)
+                    TableItem.ConvertBeat := Mux(ConvertF32ToMx, CurrentLoaded_BlockTensor_K_Iter(1, 0), 0.U)
                     SoureceIdSearchTable(sourceId.bits) := TableItem.asUInt
 
                     if (YJPAMLDebugEnable) {
@@ -744,17 +1065,29 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                             }
                         }
                     }.otherwise {
-                        Request_M_Iter_Time := Request_M_Iter_Time + 1.U
-                        when(Request_M_Iter_Time === (Matrix_MN - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === MatrixRegTensor_M - 1.U){
-                            Request_M_Iter_Time := 0.U
-                            CurrentLoaded_BlockTensor_K_Iter := CurrentLoaded_BlockTensor_K_Iter + 1.U
-                            when(CurrentLoaded_BlockTensor_K_Iter + 1.U === K_Beat_Count){
-                                CurrentLoaded_BlockTensor_K_Iter := 0.U
-                                CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_MN.U
+                        normalPhysicalRequests := normalPhysicalRequests + 1.U
+                        normalSecondFragment := normalNeedsSecond && !normalSecondFragment
+                        when(normalBeatComplete) {
+                            when(ConvertF32ToMx) {
+                                CurrentLoaded_BlockTensor_K_Iter := CurrentLoaded_BlockTensor_K_Iter + 1.U
+                                when(CurrentLoaded_BlockTensor_K_Iter + 1.U === K_Beat_Count) {
+                                    CurrentLoaded_BlockTensor_K_Iter := 0.U
+                                    CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + 1.U
+                                }
+                            }.otherwise {
+                                Request_M_Iter_Time := Request_M_Iter_Time + 1.U
+                                when(Request_M_Iter_Time === (Matrix_MN - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === MatrixRegTensor_M - 1.U){
+                                    Request_M_Iter_Time := 0.U
+                                    CurrentLoaded_BlockTensor_K_Iter := CurrentLoaded_BlockTensor_K_Iter + 1.U
+                                    when(CurrentLoaded_BlockTensor_K_Iter + 1.U === K_Beat_Count){
+                                        CurrentLoaded_BlockTensor_K_Iter := 0.U
+                                        CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_MN.U
+                                    }
+                                }
                             }
                         }
                     }
-                    when(TotalRequestSize =/= MaxRequestIter){
+                    when(TotalRequestSize =/= MaxRequestIter && (Is_Transpose || normalBeatComplete)){
                         TotalRequestSize := TotalRequestSize + 1.U
                     }
                     if (YJPAMLDebugEnable){
@@ -771,6 +1104,12 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                     current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(MatrixRegBankId)
                 }
                 Response.ready := Mux(Is_Transpose, !transBusStall, MReg_Fill_Table_Not_Full && !current_fill_fifo_full)
+                convertFill.foreach { fill =>
+                    when(ConvertF32ToMx) {
+                        fill.io.response.valid := Response.valid
+                        Response.ready := fill.io.response.ready
+                    }
+                }
 
                 when(Response.fire){
                     val sourceId = Response.bits.ReseponseSourceID
@@ -784,7 +1123,9 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                         printf("[AML_ResponseHandshake<%d>] Data:%x, BankId:%d, RegAddr:%d, SourceId:%d, FIFOIndex:%d, Tail:%d\n", io.DebugInfo.DebugTimeStampe, ResponseData, MatrixRegBankId, MatrixRegAddr, sourceId, FIFOIndex, MatrixRegSearch.MatrixRegisTail)
                     }
 
-                    when(Is_Transpose) {
+                    when(ConvertF32ToMx) {
+                        // Captured atomically by the reserved K32 fill owner.
+                    }.elsewhen(Is_Transpose) {
                         val next_group_resp_cnt = group_resp_cnt + 1.U
                         val drain_trigger = next_group_resp_cnt === active_group_size
 
@@ -815,10 +1156,16 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                             group_resp_cnt := next_group_resp_cnt
                         }
                     }.otherwise {
-                        MReg_Fill_Table(MReg_Fill_Table_Insert_Index) := ResponseData
+                        val alignedData = Wire(UInt(outsideDataWidth.W))
+                        alignedData := Mux(MatrixRegSearch.WriteByteOffset === 0.U,
+                            ResponseData >> (MatrixRegSearch.ReadByteOffset << 3),
+                            ResponseData << (MatrixRegSearch.WriteByteOffset << 3))
+                        val fragmentMask = (UIntToOH(MatrixRegSearch.FragmentBytes, outsideDataWidthByte + 1) - 1.U)
+                        MReg_Fill_Table(MReg_Fill_Table_Insert_Index) := alignedData
                         MReg_Fill_Table_MReg_Addr(MReg_Fill_Table_Insert_Index) := MatrixRegAddr
                         MReg_Fill_Table_Time(MReg_Fill_Table_Insert_Index) := MAX_Fill_Times.U
-                        MReg_Fill_Table_IsTail(MReg_Fill_Table_Insert_Index) := MatrixRegSearch.MatrixRegisTail
+                        MReg_Fill_Table_ByteMask(MReg_Fill_Table_Insert_Index) :=
+                            (fragmentMask << MatrixRegSearch.WriteByteOffset)(outsideDataWidthByte - 1, 0)
                         Bank_Fill_Search_FIFO(MatrixRegBankId)(FIFOIndex) := MReg_Fill_Table_Insert_Index
                         Bank_Fill_Search_FIFO_Head(MatrixRegBankId) := WrapInc(Bank_Fill_Search_FIFO_Head(MatrixRegBankId), AMemoryLoaderReadFromMemoryFIFODepth)
                     }
@@ -869,17 +1216,14 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                         transposeEndDrainCnt := (transposeEndDrainCycles - 1).U
                         if (YJPAMLDebugEnable) printf("[AML<%d>]TransposeFullLoadEnd\n", io.DebugInfo.DebugTimeStampe)
                     }
-                }.otherwise {
+                }.elsewhen(!ConvertF32ToMx) {
                     val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(ABMatrixRegNBanks)(0.U(1.W))))
-                    // Generic per-slot tail mask derived from tailTaskMask.
-                    val tailByteMaskPerSlot = VecInit((0 until MAX_Fill_Times).map { j =>
-                        tailTaskMask((j + 1) * ABMatrixRegEntryByteSize - 1, j * ABMatrixRegEntryByteSize)
-                    })
                     for (i <- 0 until ABMatrixRegNBanks){
                         when(Bank_Fill_Search_FIFO_Empty(i) === false.B){
                             val CurrentFIFOIndex = Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Tail(i))
                             val fillSlot = MAX_Fill_Times.U - MReg_Fill_Table_Time(CurrentFIFOIndex)
-                            val currentIsTail = MReg_Fill_Table_IsTail(CurrentFIFOIndex)
+                            val byteMaskPerSlot = MReg_Fill_Table_ByteMask(CurrentFIFOIndex)
+                                .asTypeOf(Vec(MAX_Fill_Times, UInt(ABMatrixRegEntryByteSize.W)))
                             Current_Fill_MReg_Time(i) := 1.U
                             val FIFOData = WireInit((VecInit(Seq.fill(MAX_Fill_Times)(0.U((8*ABMatrixRegEntryByteSize).W)))))
                             FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
@@ -887,7 +1231,7 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                             io.ToMatrixRegIO.BankAddr(i).valid := true.B
                             io.ToMatrixRegIO.Data(i).bits := FIFOData(fillSlot)
                             io.ToMatrixRegIO.Data(i).valid := true.B
-                            io.ToMatrixRegIO.ByteMask(i).bits := Mux(currentIsTail, tailByteMaskPerSlot(fillSlot), Fill(ABMatrixRegEntryByteSize, true.B))
+                            io.ToMatrixRegIO.ByteMask(i).bits := byteMaskPerSlot(fillSlot)
                             io.ToMatrixRegIO.ByteMask(i).valid := true.B
                             if (YJPAMLDebugEnable) {
                                 printf("[AML_MRegWriteHandshake<%d>] bank:%d, RegAddr:%x, WriteAddr:%x, Data:%x, ByteMask:%x, Time:%d\n", io.DebugInfo.DebugTimeStampe, i.U, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), io.ToMatrixRegIO.BankAddr(i).bits, io.ToMatrixRegIO.Data(i).bits, io.ToMatrixRegIO.ByteMask(i).bits, MReg_Fill_Table_Time(CurrentFIFOIndex))
@@ -908,7 +1252,8 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                             printf("[AML<%d>]TotalLoadSize:%d, FillSize:%d, Max:%d\n", io.DebugInfo.DebugTimeStampe, TotalLoadSize, Current_Load_Fill_Size, MaxRequestIter * MAX_Fill_Times.U)
                         }
                     }
-                    when(TotalLoadSize === (MaxRequestIter * MAX_Fill_Times.U)){
+                    when(TotalRequestSize === MaxRequestIter && !normalSecondFragment &&
+                        TotalLoadSize === normalPhysicalRequests * MAX_Fill_Times.U){
                         memoryload_state := s_load_end
                         if (YJPAMLDebugEnable) printf("[AML<%d>]FullLoadEnd\n", io.DebugInfo.DebugTimeStampe)
                     }
@@ -954,6 +1299,16 @@ class AMemoryLoader(implicit p: Parameters) extends CuteModule{
                 memoryload_state := s_load_idle
                 state := s_idle
                 if(YJPAMLDebugEnable) printf("[AML<%d>]AMemoryLoader Task End\n", io.DebugInfo.DebugTimeStampe)
+            }
+        }
+    }
+    convertFill.foreach { fill =>
+        when(ConvertF32ToMx && state === s_mm_task) {
+            io.ToMatrixRegIO := fill.io.ToMatrixRegIO
+            io.ToMatrixRegIO.active := memoryload_state === s_load_working
+            when(memoryload_state === s_load_working &&
+                TotalRequestSize === MaxRequestIter && !normalSecondFragment && fill.io.idle) {
+                memoryload_state := s_load_end
             }
         }
     }

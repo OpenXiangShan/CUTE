@@ -632,13 +632,33 @@ case class CuteParams(
     val ResponseBridgeQueueDepth: Int = 8,
 
     // When enabled, CStore ack path bypasses the response bridge and only counts total acks.
-    val CStoreDirectAckCountMode: Boolean = true
+    val CStoreDirectAckCountMode: Boolean = true,
+
+    // Explicit experimental converting-load interface, never inferred from
+    // ordinary e4/e8 loads or the unrelated fixed-scale INT8 experiment.
+    val ExperimentalMxfpConvertLoad: Boolean = false,
+    val MxfpConvertLanes: Int = 8,
+    // Independent K32 gather/encode owners; default preserves the original
+    // experimental datapath. Larger pools trade storage for latency hiding.
+    val MxfpConvertOwners: Int = 4,
+    // Separate opt-in: generated scale + packed TR share one task owner.
+    val ExperimentalMxfpDynamicQuant: Boolean = false
 ) {
     val parsedLoaderBridgeChannelConfig = ResponseChannelHelper.parseLoaderBridgeChannelConfig(LoaderBridgeChannelConfig)
     val AMLChannelMode = parsedLoaderBridgeChannelConfig.a
     val BMLChannelMode = parsedLoaderBridgeChannelConfig.b
     val CLoadChannelMode = parsedLoaderBridgeChannelConfig.cLoad
     val CStoreChannelMode = parsedLoaderBridgeChannelConfig.cStore
+    require(Seq(8, 32).contains(MxfpConvertLanes), "MX converting-load lanes must be 8 or 32")
+    require(Seq(4, 8, 16).contains(MxfpConvertOwners),
+      "MX converting-load owners must be 4, 8 or 16")
+    require(!ExperimentalMxfpDynamicQuant || ExperimentalMxfpConvertLoad,
+      "dynamic MX quantization requires the existing converting-load path")
+    require(!ExperimentalMxfpConvertLoad || (AMLChannelMode.isLegacy && BMLChannelMode.isLegacy),
+      "experimental MX converting loads currently require the legacy A/B loaders")
+    require(!ExperimentalMxfpConvertLoad ||
+      (MatrixExtension.enableScalingFactor && outsideDataWidth == 512),
+      "experimental MX converting loads require scaling and 64-byte memory responses")
 
     require(
       CLoadChannelMode.isLegacy == CStoreChannelMode.isLegacy,
@@ -722,6 +742,10 @@ case class CuteParams(
     // DiffAmuFinishEvent flattens per-bank payload into UInt(64) lanes.
     // Use the maximum bank payload width so one event layout works for AB/C paths.
     def DiffAmuFinishWordsPerBank = Math.max(ABMatrixRegEntryBitSize, CMatrixRegEntryBitSize) / 64
+    // All producers of the shared finish event must preserve the deepest
+    // physical register address, including narrow-entry 2T accumulators.
+    def DiffAmuFinishAddrBits = log2Ceil(
+        Seq(ABMatrixRegBankNEntries, CMatrixRegBankNEntries, ABScaleBankNEntries).max)
     def ABMatrixRegNBanks = Matrix_MN //note that this is strongly tied to Matrix_MN and is generally an integer multiple of Matrix_MN
     def CMatrixRegNBanks = Matrix_MN //convenient for reorder
     def Trans_Load_Size = outsideDataWidthByte / ABMatrixRegNBanks
@@ -741,6 +765,11 @@ case class CuteParams(
     def ABScaleSize = Tensor_MN * ReduceGroupSize * ScaleWidth
     def ABScaleNSlices = outsideDataWidth / ScaleWidth / ReduceGroupSize  // maximum scale length for one Tensor_K per slice
     def ABScaleBankNEntries = ABScaleSize / (ABScaleNSlices * ScaleWidth * ReduceGroupSize)
+    // The difftest finish-event ABI encodes this architectural bank ID in two
+    // bits. Keep the physical count and transport width tied together.
+    def ABScaleRegCount = 4
+    def ABScaleRegIdWidth = log2Ceil(ABScaleRegCount)
+    require(ABScaleRegCount == 4, "ABScaleRegCount must match the 2-bit difftest bank ABI")
 
     // require(ReduceGroupSize == 2, "ReduceGroupSize must be 2, Wait for update")
     require(outsideDataWidthByte <= Tensor_K, "outsideDataWidthByte must be less than or equal to Tensor_K, or a load will exceed the subtensor in micro load")
@@ -758,9 +787,9 @@ trait HasCuteParams {
     def enableMteFp16: Boolean = cuteMatrixExtension.enableFp16Fp32 || cuteMatrixExtension.enableFp16Fp16
     def enableMteBf16: Boolean = cuteMatrixExtension.enableBf16Fp32
     def enableMteTf32: Boolean = cuteMatrixExtension.enableTf32Fp32
-    def enableMteNvfp4: Boolean = false
-    def enableMteMxfp8: Boolean = false
-    def enableMteMxfp4: Boolean = false
+    def enableMteNvfp4: Boolean = cuteMatrixExtension.enableNvfp4Fp32
+    def enableMteMxfp8: Boolean = cuteMatrixExtension.enableMxfp8Fp32
+    def enableMteMxfp4: Boolean = cuteMatrixExtension.enableMxfp4Fp32
 
     def MMUParams: CuteMMUParams = cuteParams.MMUParams
     def DebugParams: CuteDebugParams = cuteParams.Debug
@@ -776,6 +805,8 @@ trait HasCuteParams {
     def DecodedAmuCtrlFIFODepthBitSize = log2Ceil(DecodedAmuCtrlFIFODepth) // Bit width of the decoded AMU instruction FIFO depth
 
     def ABMatrixRegCount = 4
+    def ABScaleRegCount = cuteParams.ABScaleRegCount
+    def ABScaleRegIdWidth = cuteParams.ABScaleRegIdWidth
     def CMatrixRegCount = 4
     def ABMatrixRegIdWidth = log2Ceil(ABMatrixRegCount)
     def CMatrixRegIdWidth = log2Ceil(CMatrixRegCount)
@@ -839,6 +870,7 @@ trait HasCuteParams {
     def ABMatrixRegEntryBitSize = cuteParams.ABMatrixRegEntryBitSize
     def CMatrixRegEntryBitSize = cuteParams.CMatrixRegEntryBitSize
     def DiffAmuFinishWordsPerBank = cuteParams.DiffAmuFinishWordsPerBank
+    def DiffAmuFinishAddrBits = cuteParams.DiffAmuFinishAddrBits
     def ABMatrixRegNBanks = cuteParams.ABMatrixRegNBanks
     def CMatrixRegNBanks = cuteParams.CMatrixRegNBanks
     def Trans_Load_Size = cuteParams.Trans_Load_Size
@@ -865,6 +897,10 @@ trait HasCuteParams {
     def CLoadMultiFillQueueDepth = cuteParams.CLoadMultiFillQueueDepth
     def ResponseBridgeQueueDepth = cuteParams.ResponseBridgeQueueDepth
     def CStoreDirectAckCountMode = cuteParams.CStoreDirectAckCountMode
+    def ExperimentalMxfpConvertLoad = cuteParams.ExperimentalMxfpConvertLoad
+    def MxfpConvertLanes = cuteParams.MxfpConvertLanes
+    def MxfpConvertOwners = cuteParams.MxfpConvertOwners
+    def ExperimentalMxfpDynamicQuant = cuteParams.ExperimentalMxfpDynamicQuant
     def ReduceGroupSize = cuteParams.ReduceGroupSize
     def EnableDifftest = cuteParams.EnableDifftest
     def L2NBanks = cuteParams.L2NBanks
@@ -898,6 +934,8 @@ trait HasCuteParams {
     def FP4P0AddNum :Int = FPEparams.FP4P0AddNum
     def FP4P1AddNum :Int = 16 / FP4P0AddNum
 
+    // Number of 8-bit scale factors for ONE ReduceWidth-bit data vector.
+    // This is a byte count, unlike ScaleWidth (maximum carrier width in bits).
     def ScaleVecWidth(computeType : UInt) : UInt = {
         val scaleVecWidth = Wire(UInt(4.W))
         scaleVecWidth := 0.U
@@ -1050,6 +1088,9 @@ class ADCMicroTaskConfigIO()(implicit p: Parameters) extends ADCMicroTaskConfigB
 
 class ASCMicroTaskConfigIO()(implicit p: Parameters) extends ADCMicroTaskConfigBaseIO {
     val computeType                       = UInt(MteComputeType.ComputeTypeBitWidth.W)
+    val ScaleBankId                       = UInt(ABScaleRegIdWidth.W)
+    val ScaleBlocksPerRow                 = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val KElements                        = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
 class BDCMicroTaskConfigBaseIO()(implicit p: Parameters) extends CuteBundle{
@@ -1072,6 +1113,9 @@ class BDCMicroTaskConfigIO()(implicit p: Parameters) extends BDCMicroTaskConfigB
 
 class BSCMicroTaskConfigIO()(implicit p: Parameters) extends BDCMicroTaskConfigBaseIO {
     val computeType                       = UInt(MteComputeType.ComputeTypeBitWidth.W)
+    val ScaleBankId                       = UInt(ABScaleRegIdWidth.W)
+    val ScaleBlocksPerRow                 = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val KElements                        = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
 class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -1090,6 +1134,9 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    // Original output shape, only for flags masking; working data layout is unchanged.
+    val MatrixRegActive_M                 = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val MatrixRegActive_N                 = UInt(MatrixRegMaxTensorDimBitSize.W)
     val MatrixRegId                       = UInt(CMatrixRegIdWidth.W)
 
     val Is_Transpose                        = (Bool())      //whether transpose is needed
@@ -1103,11 +1150,14 @@ class CDCMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val MicroTaskValid                      = (Bool())       //current task configuration is valid
     val MicroTaskEndValid                   = Flipped(Bool())//current task completed
     val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
+    val MicroTaskFlags                      = Flipped(UInt(5.W)) // atomic with EndValid/EndReady
     val MicroTask_TEComputeEndValid         = Flipped(Bool())//current TE compute task completed (post-ops still pending), but TE occupancy can be released early
     val MicroTask_TEComputeEndReady         = (Bool())       //current TE compute task completion acknowledged
 
     val pc                                = Option.when(EnableDifftest) (UInt(64.W))
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
+    val retireId                          = Option.when(EnableDifftest) (UInt(64.W))
+    val epoch                             = Option.when(EnableDifftest) (UInt(64.W))
 }
 
 class ApplicationTensor_A_Info()(implicit p: Parameters) extends CuteBundle{
@@ -1124,6 +1174,17 @@ class ApplicationScale_A_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationScale_A_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockScale_A_BaseVaddr         = (UInt(MMUAddrWidth.W))  // main active field
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
+    val RowStrideBytes                  = UInt(MMUAddrWidth.W) // source pitch; destination rows remain packed
+    val ScaleBlocksPerRow               = UInt(MatrixRegMaxTensorDimBitSize.W)
+}
+
+// Internal stream owned by the same converting-load task, not a new ISA or
+// memory protocol. ASL/BSL remains the only writer of its selected scale bank.
+class MxfpGeneratedScale(implicit p: Parameters) extends CuteBundle {
+    val row = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val block = Bool()
+    val e = UInt(8.W)
+    val unsupported = Bool()
 }
 
 class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -1139,13 +1200,24 @@ class AMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
     val Conherent                           = (Bool())      //whether coherence is needed
     val Is_Transpose                        = (Bool())      //whether transpose is needed
 
+    // Source geometry remains ApplicationTensor_A's F32 beat count;
+    // MatrixRegTensor_K is the packed destination's reduce-vector count.
+    val ConvertF32ToMx                       = Bool()
+    val ConvertComputeType                   = UInt(MteComputeType.ComputeTypeBitWidth.W)
+    val ConvertKElements                     = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val ConvertScaleBankId                   = UInt(ABScaleRegIdWidth.W)
+    val ConvertDynamic                      = Option.when(ExperimentalMxfpDynamicQuant)(Bool())
+
     val MicroTaskReady                      = Flipped(Bool())//can configure the next task
     val MicroTaskValid                      = (Bool())       //current task configuration is valid
     val MicroTaskEndValid                        = Flipped(Bool())//current task completed
     val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
+    val MicroTaskFlags                      = Flipped(UInt(5.W)) // atomic with held End
 
     val pc                                = Option.when(EnableDifftest) (UInt(64.W))
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
+    val retireId                          = Option.when(EnableDifftest) (UInt(64.W))
+    val epoch                             = Option.when(EnableDifftest) (UInt(64.W))
 }
 
 class ASLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -1154,6 +1226,8 @@ class ASLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val ScaleBankId                       = UInt(ABScaleRegIdWidth.W)
+    val Generated                        = Option.when(ExperimentalMxfpDynamicQuant)(Bool())
 
     val Conherent                           = (Bool())      //whether coherence is needed
 
@@ -1173,14 +1247,25 @@ class BMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val Conherent                           = (Bool())      //whether coherence is needed
     val Is_Transpose                        = (Bool())      //whether transpose is needed
+    // Opt-in fixed-scale 1/64 F32-to-INT8 conversion in the response fill path.
+    // The source beat count remains in ApplicationTensor_B.K_Beat_Count.
+    val ConvertF32ToI8                      = Bool()
+    val ConvertF32ToMx                       = Bool()
+    val ConvertComputeType                   = UInt(MteComputeType.ComputeTypeBitWidth.W)
+    val ConvertKElements                     = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val ConvertScaleBankId                   = UInt(ABScaleRegIdWidth.W)
+    val ConvertDynamic                      = Option.when(ExperimentalMxfpDynamicQuant)(Bool())
 
     val MicroTaskReady                      = Flipped(Bool())//can configure the next task
     val MicroTaskValid                      = (Bool())       //current task configuration is valid
     val MicroTaskEndValid                   = Flipped(Bool())//current task completed
     val MicroTaskEndReady                   = (Bool())       //current task completion acknowledged
+    val MicroTaskFlags                      = Flipped(UInt(5.W)) // atomic with held End
 
     val pc                                = Option.when(EnableDifftest) (UInt(64.W))
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
+    val retireId                          = Option.when(EnableDifftest) (UInt(64.W))
+    val epoch                             = Option.when(EnableDifftest) (UInt(64.W))
 }
 
 class BSLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -1189,6 +1274,8 @@ class BSLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val MatrixRegTensor_N                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val ScaleBankId                       = UInt(ABScaleRegIdWidth.W)
+    val Generated                        = Option.when(ExperimentalMxfpDynamicQuant)(Bool())
 
     val Conherent                           = (Bool())      //whether coherence is needed
 
@@ -1212,6 +1299,8 @@ class ApplicationScale_B_Info()(implicit p: Parameters) extends CuteBundle{
     val ApplicationScale_B_BaseVaddr   = (UInt(MMUAddrWidth.W))
     val BlockScale_B_BaseVaddr         = (UInt(MMUAddrWidth.W))   // main active field
     val computeType                     = (UInt(MteComputeType.ComputeTypeBitWidth.W))
+    val RowStrideBytes                  = UInt(MMUAddrWidth.W) // source pitch; destination rows remain packed
+    val ScaleBlocksPerRow               = UInt(MatrixRegMaxTensorDimBitSize.W)
 }
 
 class ApplicationTensor_C_Info()(implicit p: Parameters) extends CuteBundle{
@@ -1263,6 +1352,8 @@ class CMLMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val pc                                = Option.when(EnableDifftest) (UInt(64.W))
     val coreid                            = Option.when(EnableDifftest) (UInt(8.W))
+    val retireId                          = Option.when(EnableDifftest) (UInt(64.W))
+    val epoch                             = Option.when(EnableDifftest) (UInt(64.W))
 }
 
 class MTEMicroTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
@@ -1305,6 +1396,28 @@ class ABMemoryLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     //bankdata is the row data for each of the nbanks banks; it is a Vec with nbanks elements, each a UInt whose width is ReduceWidthByte*8
     val Data = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryBitSize.W))))
     val ByteMask = Flipped(Vec(ABMatrixRegNBanks, Valid(UInt(ABMatrixRegEntryByteSize.W))))
+}
+
+// Difftest-only owner projection of the existing scheduler FU/bank state.
+// No request, buffering, scheduling or publication decision lives here.
+class TaskCtrlOwnedScaleTrace(implicit p: Parameters) extends CuteBundle {
+    val busy = Bool()
+    val complete = Bool()
+    // Completion remains observable even when a dynamic result is rejected.
+    val completionPublishes = Option.when(ExperimentalMxfpDynamicQuant)(Bool())
+    val pc = UInt(64.W)
+    val coreid = UInt(8.W)
+    val retireId = UInt(64.W)
+    val epoch = UInt(64.W)
+    val regId = UInt(4.W)
+    val bankId = UInt(ABScaleRegIdWidth.W)
+    val generation = UInt(32.W)
+    val rows = UInt(16.W)
+    val kVectors = UInt(16.W)
+    val blocks = UInt(16.W)
+    val rowPitch = UInt(32.W)
+    val computeType = UInt(4.W)
+    val published = Bool()
 }
 
 class ABScaleLoaderMatrixRegIO(implicit p: Parameters) extends CuteBundle{

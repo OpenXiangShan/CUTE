@@ -30,7 +30,15 @@ class TaskControllerIO(implicit p: Parameters) extends CuteBundle {
   val CML_MicroTask_Config = new CMLMicroTaskConfigIO
   val MTE_MicroTask_Config = new MTEMicroTaskConfigIO
   val DebugTimeStampe = Input(UInt(32.W))
+  val downstreamIdle = Input(Bool())
   val perfProbe = Output(new TaskControllerPerfProbe)
+  // Observation only: source the live FU owner, not the current issue mux.
+  val ownedScaleTrace = Option.when(EnableDifftest && cuteMatrixExtension.enableScalingFactor)(
+    Output(Vec(2, new TaskCtrlOwnedScaleTrace)))
+  val mmaTrace = Option.when(EnableDifftest && cuteMatrixExtension.enableScalingFactor)(
+    Output(Vec(2, new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits))))
+  val retirementTrace = Option.when(EnableDifftest && cuteMatrixExtension.enableScalingFactor)(
+    Output(Vec(2, new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits))))
 }
 
 abstract class BaseTaskController(implicit p: Parameters) extends CuteModule {
@@ -54,7 +62,7 @@ class DecodedAmuCtrlEntry(implicit p: Parameters) extends CuteBundle {
 }
 
 object TaskCtrlOpKind extends ChiselEnum {
-  val NopLike, LoadA, LoadB, LoadC, Compute, Store, Release, ZeroAcc, ZeroTr = Value
+  val NopLike, LoadA, LoadB, LoadC, Compute, Store, Release, ZeroAcc, ZeroTr, LoadScaleA, LoadScaleB = Value
 }
 
 class TaskController(implicit p: Parameters) extends BaseTaskController {
@@ -69,10 +77,28 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private val SlotIdxWidth = log2Ceil(WinDepth)
   private val WinCountWidth = log2Ceil(WinDepth + 1)
   private val SeqIdWidth = 16
+  private val ScaleGenerationWidth = 32
 
   // ===================== Default output assignments =====================
-  io.ygjkctrl.mrelease.valid := false.B
-  io.ygjkctrl.mrelease.bits := 0.U.asTypeOf(new MreleaseIO)
+  // This is the single canonical postcommit return stream. Once enqueued, the
+  // complete event belongs to the Queue, never to a retired/reused window slot.
+  // No flow-through: an older flags merge precedes a replacement Release by
+  // at least one cycle. Pipe permits a full entry to pop/push on the same edge.
+  // Enrich the SAME queue token for observation only. No tail crosses the
+  // production return interface, and no trace storage exists without Difftest.
+  private class OwnedReturn extends MreleaseIO {
+    val tracePc = Option.when(EnableDifftest)(UInt(64.W))
+    val traceCoreid = Option.when(EnableDifftest)(UInt(8.W))
+    val traceRetireId = Option.when(EnableDifftest)(UInt(64.W))
+    val traceEpoch = Option.when(EnableDifftest)(UInt(64.W))
+    val traceComputeType = Option.when(EnableDifftest)(UInt(4.W))
+  }
+  private val returnQ = Module(new Queue(new OwnedReturn, 1, pipe = true, flow = false))
+  io.ygjkctrl.mrelease.valid := returnQ.io.deq.valid
+  io.ygjkctrl.mrelease.bits.msyncRd := returnQ.io.deq.bits.msyncRd
+  io.ygjkctrl.mrelease.bits.flagsValid := returnQ.io.deq.bits.flagsValid
+  io.ygjkctrl.mrelease.bits.flags := returnQ.io.deq.bits.flags
+  returnQ.io.deq.ready := io.ygjkctrl.mrelease.ready
 
   io.ADC_MicroTask_Config.dataType := 0.U
   io.ADC_MicroTask_Config.MatrixRegTensor_M := 0.U
@@ -88,6 +114,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     cfg.MatrixRegTensor_K := 0.U
     cfg.MatrixRegTensor_N := 0.U
     cfg.MatrixRegId := 0.U
+    cfg.ScaleBankId := 0.U
+    cfg.ScaleBlocksPerRow := 0.U
+    cfg.KElements := 0.U
     cfg.computeType := MteComputeType.ComputeTypeUndef
     cfg.Is_Transpose := false.B
     cfg.MicroTaskValid := false.B
@@ -108,6 +137,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     cfg.MatrixRegTensor_K := 0.U
     cfg.MatrixRegTensor_N := 0.U
     cfg.MatrixRegId := 0.U
+    cfg.ScaleBankId := 0.U
+    cfg.ScaleBlocksPerRow := 0.U
+    cfg.KElements := 0.U
     cfg.computeType := MteComputeType.ComputeTypeUndef
     cfg.Is_Transpose := false.B
     cfg.MicroTaskValid := false.B
@@ -119,6 +151,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.CDC_MicroTask_Config.MatrixRegTensor_M := 0.U
   io.CDC_MicroTask_Config.MatrixRegTensor_K := 0.U
   io.CDC_MicroTask_Config.MatrixRegTensor_N := 0.U
+  io.CDC_MicroTask_Config.MatrixRegActive_M := 0.U
+  io.CDC_MicroTask_Config.MatrixRegActive_N := 0.U
   io.CDC_MicroTask_Config.MatrixRegId := 0.U
   io.CDC_MicroTask_Config.Is_Transpose := false.B
   io.CDC_MicroTask_Config.Is_AfterOps_Tile := false.B
@@ -139,6 +173,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.AML_MicroTask_Config.MatrixRegTensor_K := 0.U
   io.AML_MicroTask_Config.Conherent := false.B
   io.AML_MicroTask_Config.Is_Transpose := false.B
+  io.AML_MicroTask_Config.ConvertF32ToMx := false.B
+  io.AML_MicroTask_Config.ConvertComputeType := 0.U
+  io.AML_MicroTask_Config.ConvertKElements := 0.U
+  io.AML_MicroTask_Config.ConvertScaleBankId := 0.U
+  io.AML_MicroTask_Config.ConvertDynamic.foreach(_ := false.B)
   io.AML_MicroTask_Config.MatrixRegId := 0.U
   io.AML_MicroTask_Config.MicroTaskValid := false.B
   io.AML_MicroTask_Config.MicroTaskEndReady := false.B
@@ -151,6 +190,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     cfg.ApplicationScale_A := 0.U.asTypeOf(cfg.ApplicationScale_A)
     cfg.MatrixRegTensor_M := 0.U
     cfg.MatrixRegTensor_K := 0.U
+    cfg.ScaleBankId := 0.U
+    cfg.Generated.foreach(_ := false.B)
     cfg.Conherent := false.B
     cfg.MicroTaskValid := false.B
     cfg.MicroTaskEndReady := false.B
@@ -161,6 +202,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   io.BML_MicroTask_Config.MatrixRegTensor_K := 0.U
   io.BML_MicroTask_Config.Conherent := false.B
   io.BML_MicroTask_Config.Is_Transpose := false.B
+  io.BML_MicroTask_Config.ConvertF32ToI8 := false.B
+  io.BML_MicroTask_Config.ConvertF32ToMx := false.B
+  io.BML_MicroTask_Config.ConvertComputeType := 0.U
+  io.BML_MicroTask_Config.ConvertKElements := 0.U
+  io.BML_MicroTask_Config.ConvertScaleBankId := 0.U
+  io.BML_MicroTask_Config.ConvertDynamic.foreach(_ := false.B)
   io.BML_MicroTask_Config.MatrixRegId := 0.U
   io.BML_MicroTask_Config.MicroTaskValid := false.B
   io.BML_MicroTask_Config.MicroTaskEndReady := false.B
@@ -173,6 +220,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     cfg.ApplicationScale_B := 0.U.asTypeOf(cfg.ApplicationScale_B)
     cfg.MatrixRegTensor_N := 0.U
     cfg.MatrixRegTensor_K := 0.U
+    cfg.ScaleBankId := 0.U
+    cfg.Generated.foreach(_ := false.B)
     cfg.Conherent := false.B
     cfg.MicroTaskValid := false.B
     cfg.MicroTaskEndReady := false.B
@@ -320,7 +369,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     decEntryEnq.writeRegs(0) := mma.md
     decEntryEnq.writeValid(0) := true.B
   }
-  when(amuCtrlBits.isMls()) {
+  when(amuCtrlBits.isMls() && !AmuScaleLoad.selected(amuCtrlBits)) {
     val lsu = enqLsu
     when(lsu.ls === 0.U) {
       decEntryEnq.writeRegs(0) := lsu.ms
@@ -349,9 +398,19 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val completed = Bool()
     val readADone = Bool()
     val readBDone = Bool()
+    val scaleReadADone = Bool()
+    val scaleReadBDone = Bool()
+    val writeCDone = Bool()
+    val completionFlags = UInt(5.W)
+    val scaleAGeneration = UInt(ScaleGenerationWidth.W)
+    val scaleBGeneration = UInt(ScaleGenerationWidth.W)
+    val scaleABank = UInt(ABScaleRegIdWidth.W)
+    val scaleBBank = UInt(ABScaleRegIdWidth.W)
     val waitCompleteMask = UInt(WinDepth.W)
     val waitReadAMask = UInt(WinDepth.W)
     val waitReadBMask = UInt(WinDepth.W)
+    val waitScaleReadAMask = UInt(WinDepth.W)
+    val waitScaleReadBMask = UInt(WinDepth.W)
     val opKind = TaskCtrlOpKind()
     val entry = new DecodedAmuCtrlEntry
     val seqId = UInt(SeqIdWidth.W)
@@ -378,6 +437,32 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val fuCMLLoad = RegInit(0.U.asTypeOf(new FuTracker))
   val fuCompute = RegInit(0.U.asTypeOf(new FuTracker))
   val fuCMLStore = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuASL = RegInit(0.U.asTypeOf(new FuTracker))
+  val fuBSL = RegInit(0.U.asTypeOf(new FuTracker))
+
+  // Four resident registers per side, one active reader per side (compute or
+  // converting load). Converting loads conservatively hold through loader End.
+  // Reader end releases inUse, not architectural scale validity. A same-reg
+  // reload may replace a resident generation only after scale WAR deps drain.
+  // Per-register generations are captured by consumers at enqueue.
+  // Independent loader/controller toggle order is never an ownership signal.
+  class ScaleBankState extends Bundle {
+    val occupied = Bool()
+    val valid = Bool()
+    val inUse = Bool()
+    val regId = UInt(ABMatrixRegIdWidth.W)
+    val generation = UInt(ScaleGenerationWidth.W)
+    val computeType = UInt(MteComputeType.ComputeTypeBitWidth.W)
+    val rows = UInt(Bundles.Mtilex.width.W)
+    val kVectors = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val scaleBlocks = UInt(MatrixRegMaxTensorDimBitSize.W)
+  }
+  val scaleA = RegInit(VecInit(Seq.fill(ABScaleRegCount)(0.U.asTypeOf(new ScaleBankState))))
+  val scaleB = RegInit(VecInit(Seq.fill(ABScaleRegCount)(0.U.asTypeOf(new ScaleBankState))))
+  val latestScaleA = RegInit(VecInit(Seq.fill(ABMatrixRegCount)(0.U(ScaleGenerationWidth.W))))
+  val latestScaleB = RegInit(VecInit(Seq.fill(ABMatrixRegCount)(0.U(ScaleGenerationWidth.W))))
+  val freeScaleA = VecInit(scaleA.map(b => !b.occupied)).asUInt
+  val freeScaleB = VecInit(scaleB.map(b => !b.occupied)).asUInt
 
   private def slotOH(idx: UInt): UInt = UIntToOH(idx, WinDepth)
   private def abIdx(x: UInt): UInt = x(ABMatrixRegIdWidth - 1, 0)
@@ -387,6 +472,62 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   private def decodeLsu(ctrl: AmuCtrlIO): AmuLsuIO = ctrl.data.asTypeOf(new AmuLsuIO)
   private def decodeArith(ctrl: AmuCtrlIO): AmuArithIO = ctrl.data.asTypeOf(new AmuArithIO)
   private def isMzeroLike(arith: AmuArithIO): Bool = arith.opType(8, 2) === "b1101110".U
+  private def isScaledCtrl(ctrl: AmuCtrlIO): Bool = {
+    val mode = AmuScaleLoad.mmaComputeType(ctrl)
+    ctrl.isMma() && (mode === MteComputeType.Mxfp4F32 ||
+      mode === MteComputeType.Mxfp8e4m3F32 || mode === MteComputeType.Mxfp8e5m2F32)
+  }
+  private def isConvertCtrl(ctrl: AmuCtrlIO): Bool =
+    ExperimentalMxfpConvertLoad.B && AmuConvertLoad.selected(ctrl)
+  private def isDynamicCtrl(ctrl: AmuCtrlIO): Bool =
+    ExperimentalMxfpDynamicQuant.B && AmuConvertLoad.dynamic(ctrl)
+  private def writesScale(op: TaskCtrlOpKind.Type, ctrl: AmuCtrlIO, a: Boolean): Bool =
+    (op === (if (a) TaskCtrlOpKind.LoadScaleA else TaskCtrlOpKind.LoadScaleB)) ||
+      (isDynamicCtrl(ctrl) && op === (if (a) TaskCtrlOpKind.LoadA else TaskCtrlOpKind.LoadB))
+  private def isFlagProducer(op: TaskCtrlOpKind.Type, ctrl: AmuCtrlIO): Bool =
+    op === TaskCtrlOpKind.Compute ||
+      ((op === TaskCtrlOpKind.LoadA || op === TaskCtrlOpKind.LoadB) && isConvertCtrl(ctrl))
+  private def readsScale(ctrl: AmuCtrlIO, a: Boolean): Bool =
+    isScaledCtrl(ctrl) || (isConvertCtrl(ctrl) && !isDynamicCtrl(ctrl) &&
+      (if (a) decodeLsu(ctrl).isA else decodeLsu(ctrl).isB))
+  private def scaleReaderReg(ctrl: AmuCtrlIO, a: Boolean): UInt =
+    Mux(isConvertCtrl(ctrl), decodeLsu(ctrl).ms, if (a) decodeMma(ctrl).ms1 else decodeMma(ctrl).ms2)
+  private def convertKElements(ctrl: AmuCtrlIO): UInt = {
+    val lsu = decodeLsu(ctrl)
+    Mux(lsu.isA, lsu.column, lsu.row)
+  }
+  private def convertKVectors(ctrl: AmuCtrlIO): UInt = {
+    val k = convertKElements(ctrl)
+    val bytes = Mux(AmuConvertLoad.computeType(ctrl) === MteComputeType.Mxfp4F32, (k +& 1.U) >> 1, k)
+    (bytes +& (ReduceWidthByte - 1).U) / ReduceWidthByte.U
+  }
+  private def scaleReaderRows(ctrl: AmuCtrlIO, a: Boolean): UInt =
+    Mux(isConvertCtrl(ctrl), if (a) decodeLsu(ctrl).row else decodeLsu(ctrl).column,
+      if (a) decodeMma(ctrl).mtilem else decodeMma(ctrl).mtilen)
+  private def scaleReaderElements(ctrl: AmuCtrlIO): UInt =
+    Mux(isConvertCtrl(ctrl), convertKElements(ctrl), decodeMma(ctrl).mtilek)
+  private def scaleReaderKVectors(ctrl: AmuCtrlIO): UInt =
+    Mux(isConvertCtrl(ctrl), convertKVectors(ctrl), mmaKVectors(ctrl))
+  private def computeTypeForCtrl(ctrl: AmuCtrlIO): UInt =
+    Mux(isConvertCtrl(ctrl), AmuConvertLoad.computeType(ctrl),
+      Mux(isScaledCtrl(ctrl), AmuScaleLoad.mmaComputeType(ctrl), decodeMmaComputeType(decodeMma(ctrl))))
+
+  private def matchingScaleBanks(
+    banks: Vec[ScaleBankState], reg: UInt, generation: UInt, rows: UInt, k: UInt, blocks: UInt, mode: UInt
+  ): UInt = VecInit(banks.map(b => b.occupied && b.valid && !b.inUse &&
+    b.regId === abIdx(reg) && b.generation === generation &&
+    b.rows === rows && b.kVectors === k && b.scaleBlocks === blocks && b.computeType === mode)).asUInt
+  private def reusableScaleBanks(banks: Vec[ScaleBankState], reg: UInt): UInt =
+    VecInit(banks.map(b => !b.occupied || (b.valid && !b.inUse && b.regId === abIdx(reg)))).asUInt
+  val scaleAReaderBusy = scaleA.map(_.inUse).reduce(_ || _)
+  val scaleBReaderBusy = scaleB.map(_.inUse).reduce(_ || _)
+  private def scaleBlocks(kElements: UInt): UInt = (kElements +& 31.U) >> 5
+  private def mmaKVectors(ctrl: AmuCtrlIO): UInt = {
+    val mma = decodeMma(ctrl)
+    val bytes = computeKFromMsew(mma.mtilek, mma.types1)
+    Mux(isScaledCtrl(ctrl), (bytes +& (ReduceWidthByte - 1).U) / ReduceWidthByte.U,
+      bytes / ReduceWidthByte.U)
+  }
 
   private def isReadAB(op: TaskCtrlOpKind.Type, mma: AmuMmaIO, lsu: AmuLsuIO, reg: UInt, treatStoreAsABRead: Bool): Bool = {
     (op === TaskCtrlOpKind.Compute) && (abIdx(mma.ms1) === abIdx(reg) || abIdx(mma.ms2) === abIdx(reg)) ||
@@ -423,14 +564,43 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val cmlLoadOwnerValid = fuCMLLoad.busy && slots(fuCMLLoad.ownerSlot).valid
   val cmlStoreOwnerValid = fuCMLStore.busy && slots(fuCMLStore.ownerSlot).valid
   val computeOwnerValid = fuCompute.busy && slots(fuCompute.ownerSlot).valid
+  val aslOwnerValid = fuASL.busy && slots(fuASL.ownerSlot).valid
+  val bslOwnerValid = fuBSL.busy && slots(fuBSL.ownerSlot).valid
+  val computeOwnerSlot = slots(fuCompute.ownerSlot)
+  val computeOwnerMma = decodeMma(computeOwnerSlot.entry.ctrl)
+  val computeOwnerScaled = isScaledCtrl(computeOwnerSlot.entry.ctrl)
+  val dynamicAOwner = amlOwnerValid && isDynamicCtrl(slots(fuAML.ownerSlot).entry.ctrl)
+  val dynamicBOwner = bmlOwnerValid && isDynamicCtrl(slots(fuBML.ownerSlot).entry.ctrl)
+  val dynamicAScaleOwner = aslOwnerValid && isDynamicCtrl(slots(fuASL.ownerSlot).entry.ctrl)
+  val dynamicBScaleOwner = bslOwnerValid && isDynamicCtrl(slots(fuBSL.ownerSlot).entry.ctrl)
+  val aOwnersMatch = amlOwnerValid && aslOwnerValid && fuAML.ownerSlot === fuASL.ownerSlot
+  val bOwnersMatch = bmlOwnerValid && bslOwnerValid && fuBML.ownerSlot === fuBSL.ownerSlot
+  assert(!(amlOwnerValid && isConvertCtrl(slots(fuAML.ownerSlot).entry.ctrl) && !dynamicAOwner &&
+    computeOwnerValid && computeOwnerScaled && !computeOwnerSlot.scaleReadADone),
+    "TaskController: AML conversion and ASC cannot own the A scale read port together")
+  assert(!(bmlOwnerValid && isConvertCtrl(slots(fuBML.ownerSlot).entry.ctrl) && !dynamicBOwner &&
+    computeOwnerValid && computeOwnerScaled && !computeOwnerSlot.scaleReadBDone),
+    "TaskController: BML conversion and BSC cannot own the B scale read port together")
 
-  io.AML_MicroTask_Config.MicroTaskEndReady := amlOwnerValid
-  io.BML_MicroTask_Config.MicroTaskEndReady := bmlOwnerValid
+  // Both engines hold End independently. Cross-qualify Ready with the OTHER
+  // valid, never its ready/fire, so the same-owner join has no combinational loop.
+  io.AML_MicroTask_Config.MicroTaskEndReady := amlOwnerValid && (!dynamicAOwner ||
+    (aOwnersMatch && io.ASL_MicroTask_Config.map(_.MicroTaskEndValid).getOrElse(false.B)))
+  io.BML_MicroTask_Config.MicroTaskEndReady := bmlOwnerValid && (!dynamicBOwner ||
+    (bOwnersMatch && io.BSL_MicroTask_Config.map(_.MicroTaskEndValid).getOrElse(false.B)))
   io.CML_MicroTask_Config.LoadMicroTaskEndReady := cmlLoadOwnerValid
   io.CML_MicroTask_Config.StoreMicroTaskEndReady := cmlStoreOwnerValid
   io.ADC_MicroTask_Config.MicroTaskEndReady := computeOwnerValid
   io.BDC_MicroTask_Config.MicroTaskEndReady := computeOwnerValid
-  io.CDC_MicroTask_Config.MicroTaskEndReady := computeOwnerValid
+  io.CDC_MicroTask_Config.MicroTaskEndReady := computeOwnerValid && !computeOwnerSlot.writeCDone
+  io.ASL_MicroTask_Config.foreach(_.MicroTaskEndReady := aslOwnerValid &&
+    (!dynamicAScaleOwner || (aOwnersMatch && io.AML_MicroTask_Config.MicroTaskEndValid)))
+  io.BSL_MicroTask_Config.foreach(_.MicroTaskEndReady := bslOwnerValid &&
+    (!dynamicBScaleOwner || (bOwnersMatch && io.BML_MicroTask_Config.MicroTaskEndValid)))
+  io.ASC_MicroTask_Config.foreach(_.MicroTaskEndReady :=
+    computeOwnerValid && computeOwnerScaled && !computeOwnerSlot.scaleReadADone)
+  io.BSC_MicroTask_Config.foreach(_.MicroTaskEndReady :=
+    computeOwnerValid && computeOwnerScaled && !computeOwnerSlot.scaleReadBDone)
 
   val amlDone = io.AML_MicroTask_Config.MicroTaskEndValid && io.AML_MicroTask_Config.MicroTaskEndReady
   val bmlDone = io.BML_MicroTask_Config.MicroTaskEndValid && io.BML_MicroTask_Config.MicroTaskEndReady
@@ -439,6 +609,59 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val adcDone = io.ADC_MicroTask_Config.MicroTaskEndValid && io.ADC_MicroTask_Config.MicroTaskEndReady
   val bdcDone = io.BDC_MicroTask_Config.MicroTaskEndValid && io.BDC_MicroTask_Config.MicroTaskEndReady
   val cdcDone = io.CDC_MicroTask_Config.MicroTaskEndValid && io.CDC_MicroTask_Config.MicroTaskEndReady
+  val aslDone = io.ASL_MicroTask_Config.map(c => c.MicroTaskEndValid && c.MicroTaskEndReady).getOrElse(false.B)
+  val bslDone = io.BSL_MicroTask_Config.map(c => c.MicroTaskEndValid && c.MicroTaskEndReady).getOrElse(false.B)
+  val ascDone = io.ASC_MicroTask_Config.map(c => c.MicroTaskEndValid && c.MicroTaskEndReady).getOrElse(false.B)
+  val bscDone = io.BSC_MicroTask_Config.map(c => c.MicroTaskEndValid && c.MicroTaskEndReady).getOrElse(false.B)
+  val computeFinished = computeOwnerValid && Mux(computeOwnerScaled,
+    (computeOwnerSlot.writeCDone || cdcDone) &&
+      (computeOwnerSlot.readADone || adcDone) && (computeOwnerSlot.readBDone || bdcDone) &&
+      (computeOwnerSlot.scaleReadADone || ascDone) && (computeOwnerSlot.scaleReadBDone || bscDone),
+    cdcDone)
+
+  io.ownedScaleTrace.foreach { traces =>
+    Seq((fuASL, scaleA, aslDone), (fuBSL, scaleB, bslDone)).zipWithIndex.foreach {
+      case ((fu, banks, done), side) =>
+        val owner = slots(fu.ownerSlot)
+        val ctrl = owner.entry.ctrl
+        val bankId = if (side == 0) owner.scaleABank else owner.scaleBBank
+        val bank = banks(bankId)
+        val trace = traces(side)
+        trace := 0.U.asTypeOf(new TaskCtrlOwnedScaleTrace)
+        trace.busy := fu.busy && owner.valid
+        trace.complete := done
+        trace.completionPublishes.foreach(_ := !isDynamicCtrl(ctrl) ||
+          (if (side == 0) io.AML_MicroTask_Config.MicroTaskFlags === 0.U
+           else io.BML_MicroTask_Config.MicroTaskFlags === 0.U))
+        trace.pc := ctrl.pc.get
+        trace.coreid := ctrl.coreid.get
+        trace.retireId := ctrl.retireId.get
+        trace.epoch := ctrl.epoch.get
+        trace.regId := decodeLsu(ctrl).ms
+        trace.bankId := bankId
+        trace.generation := bank.generation
+        trace.rows := bank.rows
+        trace.kVectors := bank.kVectors
+        trace.blocks := bank.scaleBlocks
+        trace.rowPitch := bank.scaleBlocks
+        trace.computeType := bank.computeType
+        // valid changes on the owned completion edge, never at reservation.
+        trace.published := bank.valid
+    }
+  }
+
+  io.ASL_MicroTask_Config.foreach(c => when(c.MicroTaskEndValid) {
+    assert(aslOwnerValid, "TaskController: ASL done without valid owner")
+  })
+  io.BSL_MicroTask_Config.foreach(c => when(c.MicroTaskEndValid) {
+    assert(bslOwnerValid, "TaskController: BSL done without valid owner")
+  })
+  io.ASC_MicroTask_Config.foreach(c => when(c.MicroTaskEndValid) {
+    assert(computeOwnerValid && computeOwnerScaled, "TaskController: ASC done without scaled owner")
+  })
+  io.BSC_MicroTask_Config.foreach(c => when(c.MicroTaskEndValid) {
+    assert(computeOwnerValid && computeOwnerScaled, "TaskController: BSC done without scaled owner")
+  })
 
   when(io.AML_MicroTask_Config.MicroTaskEndValid) {
     assert(amlOwnerValid, "TaskController: AML done without valid owner")
@@ -473,9 +696,29 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val deqIsRelease = deqCtrl.isRelease()
 
   val deqLsu = decodeLsu(deqCtrl)
+  val deqMma = decodeMma(deqCtrl)
   val deqArith = decodeArith(deqCtrl)
 
   val deqIsLoad = deqIsLsu && deqLsu.ls === 0.U
+  val deqIsScale = AmuScaleLoad.selected(deqCtrl)
+  val deqConvertFlag = AmuConvertLoad.selected(deqCtrl)
+  val deqConvertMode = AmuConvertLoad.computeType(deqCtrl)
+  val deqConvertModeSupported =
+    (cuteMatrixExtension.enableMxfp4Fp32.B && deqConvertMode === MteComputeType.Mxfp4F32) ||
+      (cuteMatrixExtension.enableMxfp8Fp32.B &&
+        (deqConvertMode === MteComputeType.Mxfp8e4m3F32 || deqConvertMode === MteComputeType.Mxfp8e5m2F32))
+  val deqConvertRows = Mux(deqLsu.isA, deqLsu.row, deqLsu.column)
+  // Invalid transport/static configuration is not a numeric conversion reject.
+  // Do not reinterpret a disabled/malformed converting load as an ordinary MLS.
+  val deqConvertLegal = ExperimentalMxfpConvertLoad.B && cuteMatrixExtension.enableScalingFactor.B &&
+    deqIsLoad && !deqIsScale && !deqLsu.isacc && !deqLsu.transpose && (deqLsu.isA ^ deqLsu.isB) &&
+    deqLsu.widths === Bundles.MSew.e32 && deqConvertModeSupported &&
+    convertKElements(deqCtrl) === 64.U && deqConvertRows =/= 0.U && deqConvertRows <= Tensor_MN.U &&
+    convertKVectors(deqCtrl) <= ReduceGroupSize.U &&
+    deqLsu.ms < ABMatrixRegCount.U && deqCtrl.data(149, 133) === 0.U &&
+    (!deqCtrl.data(AmuConvertLoad.DynamicBit) ||
+      (ExperimentalMxfpDynamicQuant.B && deqConvertMode === MteComputeType.Mxfp4F32 &&
+        deqConvertRows === 8.U && convertKVectors(deqCtrl) === 1.U))
   val deqLoadSelOH = Cat(deqLsu.isacc, deqLsu.isB, deqLsu.isA)
   val deqLoadSelOneHot = PopCount(deqLoadSelOH) === 1.U
   val deqIsMzeroLike = deqIsArith && isMzeroLike(deqArith)
@@ -483,11 +726,59 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   when(deqValid && deqIsLoad) {
     assert(deqLoadSelOneHot, "TaskController: MLS load selector must be onehot among isA/isB/isacc")
   }
+  when(deqValid && deqConvertFlag) {
+    assert(ExperimentalMxfpConvertLoad.B, "TaskController: experimental MX converting load disabled")
+    assert(deqConvertLegal, "TaskController: converting load requires normal F32 A/B, supported MX format and legal K64 shape")
+  }
+  when(deqValid && deqCtrl.isMls() && deqCtrl.data(AmuConvertLoad.DynamicBit)) {
+    assert(deqConvertFlag && deqConvertLegal, "TaskController: malformed/disabled dynamic selector")
+  }
+  when(deqValid && deqIsScale) {
+    assert(cuteMatrixExtension.enableScalingFactor.B && !deqLsu.ls && !deqLsu.isacc &&
+      !deqLsu.transpose && (deqLsu.isA ^ deqLsu.isB),
+      "TaskController: scale load requires enabled scaling and one non-transposed A/B destination")
+    val mode = AmuScaleLoad.computeType(deqCtrl)
+    assert((cuteMatrixExtension.enableMxfp4Fp32.B && mode === MteComputeType.Mxfp4F32) ||
+      (cuteMatrixExtension.enableMxfp8Fp32.B &&
+        (mode === MteComputeType.Mxfp8e4m3F32 || mode === MteComputeType.Mxfp8e5m2F32)),
+      "TaskController: unsupported scale-load format")
+    assert(deqCtrl.data(149, 131) === 0.U && deqLsu.ms < ABMatrixRegCount.U,
+      "TaskController: scale load reserved bits/register index must be valid")
+  }
+  when(deqValid && deqIsMma) {
+    val mode = AmuScaleLoad.mmaComputeType(deqCtrl)
+    assert(deqCtrl.data(149, 57) === 0.U, "TaskController: reserved MMA metadata must be zero")
+    assert(mode === 0.U || isScaledCtrl(deqCtrl), "TaskController: unsupported MMA scale metadata")
+    when(isScaledCtrl(deqCtrl)) {
+      val fp4 = mode === MteComputeType.Mxfp4F32
+      val fp8e4 = mode === MteComputeType.Mxfp8e4m3F32
+      val expectedType = Mux(fp4, "b111".U, Mux(fp8e4, "b100".U, "b000".U))
+      assert(deqMma.isfp && deqMma.types1 === expectedType && deqMma.types2 === expectedType,
+        "TaskController: scale metadata must match MMA data format")
+      assert(Mux(fp4, cuteMatrixExtension.enableMxfp4Fp32.B, cuteMatrixExtension.enableMxfp8Fp32.B),
+        "TaskController: scaled MMA format disabled")
+      val kBytes = computeKFromMsew(deqMma.mtilek, deqMma.types1)
+      assert(kBytes =/= 0.U && kBytes <= Tensor_K.U,
+        "TaskController: scaled MMA K exceeds the data register")
+      assert(deqMma.mtilem =/= 0.U && deqMma.mtilen =/= 0.U &&
+        deqMma.mtilem <= Tensor_MN.U && deqMma.mtilen <= Tensor_MN.U,
+        "TaskController: scaled MMA dimensions exceed the data registers")
+      assert(deqMma.ms1 < ABMatrixRegCount.U && deqMma.ms2 < ABMatrixRegCount.U,
+        "TaskController: scaled MMA register index must be valid")
+    }.otherwise {
+      assert(!(deqMma.isfp && (deqMma.types1 === "b111".U || deqMma.types1 === "b011".U)),
+        "TaskController: FP4 requires explicit supported scale metadata")
+    }
+  }
 
   val deqOpKind = Wire(TaskCtrlOpKind())
   deqOpKind := TaskCtrlOpKind.NopLike
   when(deqIsMma) {
     deqOpKind := TaskCtrlOpKind.Compute
+  }.elsewhen(deqIsScale && deqIsLoad && deqLsu.isA) {
+    deqOpKind := TaskCtrlOpKind.LoadScaleA
+  }.elsewhen(deqIsScale && deqIsLoad && deqLsu.isB) {
+    deqOpKind := TaskCtrlOpKind.LoadScaleB
   }.elsewhen(deqIsLsu && deqLsu.ls === 1.U) {
     deqOpKind := TaskCtrlOpKind.Store
   }.elsewhen(deqIsLoad && deqLoadSelOneHot && deqLsu.isA) {
@@ -508,6 +799,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val completedVec = VecInit(slots.map(s => s.valid && s.completed)).asUInt
   val readAVec = VecInit(slots.map(s => s.valid && s.readADone)).asUInt
   val readBVec = VecInit(slots.map(s => s.valid && s.readBDone)).asUInt
+  val scaleReadAVec = VecInit(slots.map(s => s.valid && s.scaleReadADone)).asUInt
+  val scaleReadBVec = VecInit(slots.map(s => s.valid && s.scaleReadBDone)).asUInt
 
   val readyBySlot = Wire(Vec(WinDepth, Bool()))
   readyBySlot.foreach(_ := false.B)
@@ -516,26 +809,63 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val slotAge = (slotIdx.U + WinDepth.U - winHead)(SlotIdxWidth - 1, 0)
     val inWindow = slotAge < winCount
     val slotCanConsider = inWindow && slot.valid && !slot.issued
+    // Deliberately use the cycle-start ring view, not depOlderMask's
+    // post-retire view: a completed head producer still owns this cycle's enq.
+    // Keep all Compute slots here, including integer Compute as before.
+    val olderFlagProducerPending = (0 until WinDepth).map { j =>
+      val olderAge = (j.U + WinDepth.U - winHead)(SlotIdxWidth - 1, 0)
+      slots(j).valid && olderAge < slotAge &&
+        isFlagProducer(slots(j).opKind, slots(j).entry.ctrl)
+    }.reduce(_ || _)
+    val slotLsu = decodeLsu(slot.entry.ctrl)
+    val slotScaled = isScaledCtrl(slot.entry.ctrl)
+    val slotMode = computeTypeForCtrl(slot.entry.ctrl)
+    val slotDynamic = isDynamicCtrl(slot.entry.ctrl)
+    val aMatches = matchingScaleBanks(scaleA, scaleReaderReg(slot.entry.ctrl, a = true),
+      slot.scaleAGeneration, scaleReaderRows(slot.entry.ctrl, a = true),
+      scaleReaderKVectors(slot.entry.ctrl), scaleBlocks(scaleReaderElements(slot.entry.ctrl)), slotMode)
+    val bMatches = matchingScaleBanks(scaleB, scaleReaderReg(slot.entry.ctrl, a = false),
+      slot.scaleBGeneration, scaleReaderRows(slot.entry.ctrl, a = false),
+      scaleReaderKVectors(slot.entry.ctrl), scaleBlocks(scaleReaderElements(slot.entry.ctrl)), slotMode)
+    val slotScaleReady =
+      (!readsScale(slot.entry.ctrl, a = true) || (aMatches.orR && !scaleAReaderBusy)) &&
+      (!readsScale(slot.entry.ctrl, a = false) || (bMatches.orR && !scaleBReaderBusy)) &&
+      (!slotScaled || (
+        io.ASC_MicroTask_Config.map(_.MicroTaskReady).getOrElse(false.B) &&
+        io.BSC_MicroTask_Config.map(_.MicroTaskReady).getOrElse(false.B)))
 
     val slotDepReady = Mux(
       slotCanConsider,
       ((slot.waitCompleteMask & (~completedVec)(WinDepth - 1, 0)) === 0.U) &&
         ((slot.waitReadAMask & (~readAVec)(WinDepth - 1, 0)) === 0.U) &&
-        ((slot.waitReadBMask & (~readBVec)(WinDepth - 1, 0)) === 0.U),
+        ((slot.waitReadBMask & (~readBVec)(WinDepth - 1, 0)) === 0.U) &&
+        ((slot.waitScaleReadAMask & (~scaleReadAVec)(WinDepth - 1, 0)) === 0.U) &&
+        ((slot.waitScaleReadBMask & (~scaleReadBVec)(WinDepth - 1, 0)) === 0.U),
       false.B
     )
 
     val slotFuReady = Mux(
       slotCanConsider,
       MuxLookup(slot.opKind.asUInt, true.B)(Seq(
-        TaskCtrlOpKind.LoadA.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
-        TaskCtrlOpKind.LoadB.asUInt -> (!fuBML.busy && io.BML_MicroTask_Config.MicroTaskReady),
+        TaskCtrlOpKind.LoadA.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady &&
+          slotScaleReady && (!slotDynamic || (!fuASL.busy &&
+            io.ASL_MicroTask_Config.map(_.MicroTaskReady).getOrElse(false.B) &&
+            reusableScaleBanks(scaleA, slotLsu.ms).orR))),
+        TaskCtrlOpKind.LoadB.asUInt -> (!fuBML.busy && io.BML_MicroTask_Config.MicroTaskReady &&
+          slotScaleReady && (!slotDynamic || (!fuBSL.busy &&
+            io.BSL_MicroTask_Config.map(_.MicroTaskReady).getOrElse(false.B) &&
+            reusableScaleBanks(scaleB, slotLsu.ms).orR))),
+        TaskCtrlOpKind.LoadScaleA.asUInt -> (!fuASL.busy && reusableScaleBanks(scaleA, slotLsu.ms).orR &&
+          io.ASL_MicroTask_Config.map(_.MicroTaskReady).getOrElse(false.B)),
+        TaskCtrlOpKind.LoadScaleB.asUInt -> (!fuBSL.busy && reusableScaleBanks(scaleB, slotLsu.ms).orR &&
+          io.BSL_MicroTask_Config.map(_.MicroTaskReady).getOrElse(false.B)),
         TaskCtrlOpKind.LoadC.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
         TaskCtrlOpKind.ZeroAcc.asUInt -> (!fuCMLLoad.busy && io.CML_MicroTask_Config.LoadMicroTaskReady),
         TaskCtrlOpKind.ZeroTr.asUInt -> (!fuAML.busy && io.AML_MicroTask_Config.MicroTaskReady),
         TaskCtrlOpKind.Store.asUInt -> (!fuCMLStore.busy && io.CML_MicroTask_Config.StoreMicroTaskReady),
-        TaskCtrlOpKind.Compute.asUInt -> (!fuCompute.busy && io.ADC_MicroTask_Config.MicroTaskReady && io.BDC_MicroTask_Config.MicroTaskReady && io.CDC_MicroTask_Config.MicroTaskReady),
-        TaskCtrlOpKind.Release.asUInt -> true.B,
+        TaskCtrlOpKind.Compute.asUInt -> (!fuCompute.busy && slotScaleReady &&
+          io.ADC_MicroTask_Config.MicroTaskReady && io.BDC_MicroTask_Config.MicroTaskReady && io.CDC_MicroTask_Config.MicroTaskReady),
+        TaskCtrlOpKind.Release.asUInt -> (!olderFlagProducerPending && returnQ.io.enq.ready),
         TaskCtrlOpKind.NopLike.asUInt -> true.B
       )),
       false.B
@@ -565,34 +895,151 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   val headDoneByFu =
     (amlDone && fuAML.busy && fuAML.ownerSlot === winHead) ||
     (bmlDone && fuBML.busy && fuBML.ownerSlot === winHead) ||
+    (aslDone && fuASL.busy && fuASL.ownerSlot === winHead) ||
+    (bslDone && fuBSL.busy && fuBSL.ownerSlot === winHead) ||
     (cmlLoadDone && fuCMLLoad.busy && fuCMLLoad.ownerSlot === winHead) ||
     (cmlStoreDone && fuCMLStore.busy && fuCMLStore.ownerSlot === winHead) ||
-    (cdcDone && fuCompute.busy && fuCompute.ownerSlot === winHead)
+    (computeFinished && fuCompute.ownerSlot === winHead)
 
   val headCompletedAfterDone = headSlot.completed || headDoneByFu
-  val retireFire = headSlot.valid && headCompletedAfterDone
+  val retireEligible = headSlot.valid && headCompletedAfterDone
+  val headConvert = isConvertCtrl(headSlot.entry.ctrl)
+  val headReturnsFlags = (headSlot.opKind === TaskCtrlOpKind.Compute &&
+    decodeMma(headSlot.entry.ctrl).isfp) || headConvert
+  val flagReturn = retireEligible && headReturnsFlags
+  val completionFlagsNext = Mux(headConvert && amlDone && fuAML.ownerSlot === winHead,
+    io.AML_MicroTask_Config.MicroTaskFlags,
+    Mux(headConvert && bmlDone && fuBML.ownerSlot === winHead,
+      io.BML_MicroTask_Config.MicroTaskFlags,
+      Mux(cdcDone && fuCompute.ownerSlot === winHead,
+        io.CDC_MicroTask_Config.MicroTaskFlags, headSlot.completionFlags)))
+  val releaseReturn = issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
+  // Explicit single-entry arbitration. The ring-age admission above makes
+  // these mutually exclusive; head-producer priority is also encoded in the mux.
+  assert(!(flagReturn && releaseReturn), "TaskController: two owners of return enqueue")
+  returnQ.io.enq.valid := flagReturn || releaseReturn
+  returnQ.io.enq.bits := 0.U.asTypeOf(returnQ.io.enq.bits)
+  if (EnableDifftest) {
+    val returnOwner = Mux(flagReturn, headSlot.entry.ctrl, issueSlot.entry.ctrl)
+    returnQ.io.enq.bits.tracePc.get := returnOwner.pc.get
+    returnQ.io.enq.bits.traceCoreid.get := returnOwner.coreid.get
+    returnQ.io.enq.bits.traceRetireId.get := returnOwner.retireId.get
+    returnQ.io.enq.bits.traceEpoch.get := returnOwner.epoch.get
+    returnQ.io.enq.bits.traceComputeType.get := Mux(flagReturn,
+      computeTypeForCtrl(headSlot.entry.ctrl), 0.U)
+  }
+  when(flagReturn) {
+    returnQ.io.enq.bits.flagsValid := true.B
+    returnQ.io.enq.bits.flags := completionFlagsNext
+  }.elsewhen(releaseReturn) {
+    val release = issueSlot.entry.ctrl.data.asTypeOf(new AmuReleaseIO)
+    returnQ.io.enq.bits.msyncRd(release.msyncRd) := true.B
+  }
+  val retireFire = retireEligible && (!headReturnsFlags || returnQ.io.enq.ready)
+  when(flagReturn && retireFire) {
+    assert(returnQ.io.enq.fire, "TaskController: flag-producing owner retired without preserving flags")
+  }
+  when(releaseReturn) {
+    assert(returnQ.io.enq.fire, "TaskController: Release issued without preserving return")
+  }
+  val returnWasHeld = RegNext(io.ygjkctrl.mrelease.valid && !io.ygjkctrl.mrelease.ready, false.B)
+  val heldReturn = RegEnable(io.ygjkctrl.mrelease.bits.asUInt,
+    io.ygjkctrl.mrelease.valid && !io.ygjkctrl.mrelease.ready)
+  when(returnWasHeld) {
+    assert(io.ygjkctrl.mrelease.valid && io.ygjkctrl.mrelease.bits.asUInt === heldReturn,
+      "TaskController: held postcommit return changed")
+  }
 
   // Allow retire + enqueue in the same cycle, including full-window reuse of the retired slot
   val windowFull = winCount === WinDepth.U
-  val enqueueCanFire = deqValid && (!windowFull || retireFire)
+  val enqueueCanFire = deqValid && (!deqConvertFlag || deqConvertLegal) && (!windowFull || retireFire)
   decodedFifo.io.deq.ready := enqueueCanFire
   val enqueueFire = decodedFifo.io.deq.fire
 
   val enqueueSlotIdx = Mux(windowFull, winHead, winTail)
   val ownedWork = deqValid || (winCount =/= 0.U)
+  val allFuIdle = !Seq(fuAML, fuBML, fuCMLLoad, fuCompute, fuCMLStore, fuASL, fuBSL)
+    .map(_.busy).reduce(_ || _)
+  val anyEndValid = Seq(
+    io.AML_MicroTask_Config.MicroTaskEndValid,
+    io.BML_MicroTask_Config.MicroTaskEndValid,
+    io.CML_MicroTask_Config.LoadMicroTaskEndValid,
+    io.CML_MicroTask_Config.StoreMicroTaskEndValid,
+    io.ADC_MicroTask_Config.MicroTaskEndValid,
+    io.BDC_MicroTask_Config.MicroTaskEndValid,
+    io.CDC_MicroTask_Config.MicroTaskEndValid,
+    io.CDC_MicroTask_Config.MicroTask_TEComputeEndValid,
+    io.ASL_MicroTask_Config.map(_.MicroTaskEndValid).getOrElse(false.B),
+    io.BSL_MicroTask_Config.map(_.MicroTaskEndValid).getOrElse(false.B),
+    io.ASC_MicroTask_Config.map(_.MicroTaskEndValid).getOrElse(false.B),
+    io.BSC_MicroTask_Config.map(_.MicroTaskEndValid).getOrElse(false.B)
+  ).reduce(_ || _)
+  io.ygjkctrl.resetReady := !io.ygjkctrl.amuCtrl.valid &&
+    !decodedFifo.io.deq.valid && winCount === 0.U && !slots.map(_.valid).reduce(_ || _) &&
+    allFuIdle && !anyEndValid && !scaleA.map(_.inUse).reduce(_ || _) &&
+    !scaleB.map(_.inUse).reduce(_ || _) && io.downstreamIdle &&
+    !returnQ.io.enq.valid && !returnQ.io.deq.valid
+  io.ygjkctrl.minitClearAck := RegNext(io.ygjkctrl.minitClear, false.B)
 
   // ===================== Issue dispatch bridge =====================
   val issueCtrl = issueSlot.entry.ctrl
+  if (EnableDifftest) {
+    Seq(io.AML_MicroTask_Config.retireId.get, io.BML_MicroTask_Config.retireId.get,
+      io.CML_MicroTask_Config.retireId.get, io.CDC_MicroTask_Config.retireId.get)
+      .foreach(_ := issueCtrl.retireId.get)
+    Seq(io.AML_MicroTask_Config.epoch.get, io.BML_MicroTask_Config.epoch.get,
+      io.CML_MicroTask_Config.epoch.get, io.CDC_MicroTask_Config.epoch.get)
+      .foreach(_ := issueCtrl.epoch.get)
+  }
   val issueLsu = decodeLsu(issueCtrl)
   val issueMma = decodeMma(issueCtrl)
   val issueArith = decodeArith(issueCtrl)
+  val issueMode = computeTypeForCtrl(issueCtrl)
+  val allocScaleABank = PriorityEncoder(reusableScaleBanks(scaleA, issueLsu.ms))
+  val allocScaleBBank = PriorityEncoder(reusableScaleBanks(scaleB, issueLsu.ms))
+  val issueScaleABank = PriorityEncoder(matchingScaleBanks(scaleA, scaleReaderReg(issueCtrl, a = true),
+    issueSlot.scaleAGeneration, scaleReaderRows(issueCtrl, a = true),
+    scaleReaderKVectors(issueCtrl), scaleBlocks(scaleReaderElements(issueCtrl)), issueMode))
+  val issueScaleBBank = PriorityEncoder(matchingScaleBanks(scaleB, scaleReaderReg(issueCtrl, a = false),
+    issueSlot.scaleBGeneration, scaleReaderRows(issueCtrl, a = false),
+    scaleReaderKVectors(issueCtrl), scaleBlocks(scaleReaderElements(issueCtrl)), issueMode))
+  // CPU producer MLS contract for BOTH sides: row=logical rows,
+  // column=ceil(original K/32) E8M0 BYTES, widths=e8.
+  val scaleLoadRows = issueLsu.row
+  val scaleLoadBlocks = issueLsu.column
+  val scaleLoadMode = AmuScaleLoad.computeType(issueCtrl)
+  val scalesPerVector = ScaleVecWidth(scaleLoadMode)
+  val scaleLoadK = (scaleLoadBlocks +& (scalesPerVector - 1.U)) / scalesPerVector
+  val scaleLoadRowBytes = scaleLoadBlocks
+  when(issueFire && (issueSlot.opKind === TaskCtrlOpKind.LoadScaleA ||
+      issueSlot.opKind === TaskCtrlOpKind.LoadScaleB)) {
+    assert(issueLsu.widths === Bundles.MSew.e8, "TaskController: MX32 scales are E8M0 bytes")
+    assert(scaleLoadBlocks =/= 0.U && scaleLoadRows =/= 0.U && scaleLoadRows <= Tensor_MN.U,
+      "TaskController: scale-load logical shape must fit the scale register")
+    // The canonical scale reader fetches one beat per M/N group. First stage
+    // Non-power-of-two row pitches are safe here only when the ENTIRE
+    // rectangle fits one beat: later groups must not straddle SRAM entries.
+    val powerOfTwoPitch = (scaleLoadBlocks & (scaleLoadBlocks - 1.U)) === 0.U
+    assert(scaleLoadK <= ReduceGroupSize.U &&
+      (powerOfTwoPitch || scaleLoadRows * scaleLoadBlocks <= outsideDataWidthByte.U) &&
+      scaleLoadRowBytes * Matrix_MN.U <= outsideDataWidthByte.U,
+      "TaskController: scale group must fit one aligned scratchpad beat")
+    val sourceOffset = issueLsu.baseAddr % outsideDataWidthByte.U
+    assert(issueLsu.stride >= scaleLoadRowBytes,
+      "TaskController: scale source stride is shorter than the logical row")
+    assert(issueLsu.stride =/= scaleLoadRowBytes || sourceOffset === 0.U ||
+      sourceOffset +& (scaleLoadRows * scaleLoadBlocks) <= outsideDataWidthByte.U,
+      "TaskController: compact scale buffers must be aligned or fit one containing cacheline")
+  }
 
   private def computeKFromMsew(k: UInt, msew: UInt): UInt = {
     MuxLookup(msew(1, 0), k)(Seq(
       Bundles.MSew.e8 -> k,
       Bundles.MSew.e16 -> (k << 1),
       Bundles.MSew.e32 -> (k << 2),
-      Bundles.MSew.e4 -> (k >> 1)
+      // MMA types use low two bits for width (11=e4); the high bit
+      // distinguishes signedness/format and must not enter this comparison.
+      "b11".U -> ((k +& 1.U) >> 1)
     ))
   }
 
@@ -614,7 +1061,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       is(Bundles.MSew.e8)  { byteCount := dimWide }
       is(Bundles.MSew.e16) { byteCount := (dimWide << 1)(loadByteCountBits - 1, 0) }
       is(Bundles.MSew.e32) { byteCount := (dimWide << 2)(loadByteCountBits - 1, 0) }
-      is(Bundles.MSew.e4)  { byteCount := dimWide >> 1 }
+      is(Bundles.MSew.e4)  { byteCount := (dimWide + 1.U) >> 1 }
     }
     byteCount
   }
@@ -649,6 +1096,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         computeType := MteComputeType.TF32TF32F32
       }.elsewhen(mma.types1 === "b011".U && mma.types2 === "b011".U) {
         computeType := MteComputeType.Nvfp4F32
+      }.elsewhen(mma.types1 === "b111".U && mma.types2 === "b111".U) {
+        computeType := MteComputeType.Mxfp4F32
       }.otherwise {
         computeType := MteComputeType.ComputeTypeUndef
       }
@@ -670,6 +1119,34 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   when(issueFire) {
     switch(issueSlot.opKind) {
+      is(TaskCtrlOpKind.LoadScaleA) {
+        io.ASL_MicroTask_Config.foreach { cfg =>
+          cfg.ApplicationScale_A.ApplicationScale_A_BaseVaddr := issueLsu.baseAddr
+          cfg.ApplicationScale_A.BlockScale_A_BaseVaddr := issueLsu.baseAddr
+          cfg.ApplicationScale_A.computeType := scaleLoadMode
+          cfg.ApplicationScale_A.RowStrideBytes := issueLsu.stride
+          cfg.ApplicationScale_A.ScaleBlocksPerRow := scaleLoadBlocks
+          cfg.MatrixRegTensor_M := scaleLoadRows
+          cfg.MatrixRegTensor_K := scaleLoadK
+          cfg.ScaleBankId := allocScaleABank
+          cfg.Conherent := true.B
+          cfg.MicroTaskValid := true.B
+        }
+      }
+      is(TaskCtrlOpKind.LoadScaleB) {
+        io.BSL_MicroTask_Config.foreach { cfg =>
+          cfg.ApplicationScale_B.ApplicationScale_B_BaseVaddr := issueLsu.baseAddr
+          cfg.ApplicationScale_B.BlockScale_B_BaseVaddr := issueLsu.baseAddr
+          cfg.ApplicationScale_B.computeType := scaleLoadMode
+          cfg.ApplicationScale_B.RowStrideBytes := issueLsu.stride
+          cfg.ApplicationScale_B.ScaleBlocksPerRow := scaleLoadBlocks
+          cfg.MatrixRegTensor_N := scaleLoadRows
+          cfg.MatrixRegTensor_K := scaleLoadK
+          cfg.ScaleBankId := allocScaleBBank
+          cfg.Conherent := true.B
+          cfg.MicroTaskValid := true.B
+        }
+      }
       is(TaskCtrlOpKind.LoadA) {
         val regIdx = issueLsu.ms(1, 0)
         val matrixDim = Mux(issueLsu.transpose, issueLsu.column, issueLsu.row)
@@ -686,10 +1163,28 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.AML_MicroTask_Config.LoadTaskInfo.Is_ZeroLoad := false.B
         io.AML_MicroTask_Config.LoadTaskInfo.Is_RepeatRowLoad := false.B
         io.AML_MicroTask_Config.MatrixRegTensor_M := matrixDim
-        io.AML_MicroTask_Config.MatrixRegTensor_K := kVal
+        io.AML_MicroTask_Config.MatrixRegTensor_K := Mux(isConvertCtrl(issueCtrl), convertKVectors(issueCtrl), kVal)
         io.AML_MicroTask_Config.MatrixRegId := regIdx
         io.AML_MicroTask_Config.Conherent := true.B
         io.AML_MicroTask_Config.Is_Transpose := issueLsu.transpose
+        when(isConvertCtrl(issueCtrl)) {
+          io.AML_MicroTask_Config.ConvertF32ToMx := true.B
+          io.AML_MicroTask_Config.ConvertComputeType := issueMode
+          io.AML_MicroTask_Config.ConvertKElements := reduceDim
+          io.AML_MicroTask_Config.ConvertScaleBankId := Mux(isDynamicCtrl(issueCtrl), allocScaleABank, issueScaleABank)
+          io.AML_MicroTask_Config.ConvertDynamic.foreach(_ := isDynamicCtrl(issueCtrl))
+        }
+        when(isDynamicCtrl(issueCtrl)) {
+          io.ASL_MicroTask_Config.foreach { cfg =>
+            cfg.Generated.foreach(_ := true.B)
+            cfg.ApplicationScale_A.computeType := MteComputeType.Mxfp4F32
+            cfg.ApplicationScale_A.ScaleBlocksPerRow := 2.U
+            cfg.MatrixRegTensor_M := 8.U
+            cfg.MatrixRegTensor_K := 1.U
+            cfg.ScaleBankId := allocScaleABank
+            cfg.MicroTaskValid := true.B
+          }
+        }
         io.AML_MicroTask_Config.MicroTaskValid := true.B
         if (EnableDifftest) {
           io.AML_MicroTask_Config.pc.get := issueCtrl.pc.get
@@ -735,10 +1230,28 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         io.BML_MicroTask_Config.ApplicationTensor_B.TailByteMask := loadTailByteMask(reduceDim, issueLsu.widths)
         io.BML_MicroTask_Config.ApplicationTensor_B.K_Beat_Count := kVal
         io.BML_MicroTask_Config.MatrixRegTensor_N := matrixDim
-        io.BML_MicroTask_Config.MatrixRegTensor_K := kVal
+        io.BML_MicroTask_Config.MatrixRegTensor_K := Mux(isConvertCtrl(issueCtrl), convertKVectors(issueCtrl), kVal)
         io.BML_MicroTask_Config.MatrixRegId := regIdx
         io.BML_MicroTask_Config.Conherent := true.B
         io.BML_MicroTask_Config.Is_Transpose := issueLsu.transpose
+        when(isConvertCtrl(issueCtrl)) {
+          io.BML_MicroTask_Config.ConvertF32ToMx := true.B
+          io.BML_MicroTask_Config.ConvertComputeType := issueMode
+          io.BML_MicroTask_Config.ConvertKElements := reduceDim
+          io.BML_MicroTask_Config.ConvertScaleBankId := Mux(isDynamicCtrl(issueCtrl), allocScaleBBank, issueScaleBBank)
+          io.BML_MicroTask_Config.ConvertDynamic.foreach(_ := isDynamicCtrl(issueCtrl))
+        }
+        when(isDynamicCtrl(issueCtrl)) {
+          io.BSL_MicroTask_Config.foreach { cfg =>
+            cfg.Generated.foreach(_ := true.B)
+            cfg.ApplicationScale_B.computeType := MteComputeType.Mxfp4F32
+            cfg.ApplicationScale_B.ScaleBlocksPerRow := 2.U
+            cfg.MatrixRegTensor_N := 8.U
+            cfg.MatrixRegTensor_K := 1.U
+            cfg.ScaleBankId := allocScaleBBank
+            cfg.MicroTaskValid := true.B
+          }
+        }
         io.BML_MicroTask_Config.MicroTaskValid := true.B
         if (EnableDifftest) {
           io.BML_MicroTask_Config.pc.get := issueCtrl.pc.get
@@ -917,30 +1430,37 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         val mVal = issueMma.mtilem
         val nVal = issueMma.mtilen
         val kVal = computeKFromMsew(issueMma.mtilek, issueMma.types1)
-        val mmaComputeType = decodeMmaComputeType(issueMma)
+        val mmaComputeType = computeTypeForCtrl(issueCtrl)
+        val kVectors = mmaKVectors(issueCtrl)
+        val workingM = Mux(isScaledCtrl(issueCtrl),
+          ((mVal +& (Matrix_MN - 1).U) / Matrix_MN.U) * Matrix_MN.U, mVal)
+        val workingN = Mux(isScaledCtrl(issueCtrl),
+          ((nVal +& (Matrix_MN - 1).U) / Matrix_MN.U) * Matrix_MN.U, nVal)
 
         io.ADC_MicroTask_Config.MicroTaskValid := true.B
         io.BDC_MicroTask_Config.MicroTaskValid := true.B
         io.CDC_MicroTask_Config.MicroTaskValid := true.B
 
         io.ADC_MicroTask_Config.dataType := ElementDataType.DataTypeWidth8
-        io.ADC_MicroTask_Config.MatrixRegTensor_M := mVal
-        io.ADC_MicroTask_Config.MatrixRegTensor_N := nVal
-        io.ADC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U
+        io.ADC_MicroTask_Config.MatrixRegTensor_M := workingM
+        io.ADC_MicroTask_Config.MatrixRegTensor_N := workingN
+        io.ADC_MicroTask_Config.MatrixRegTensor_K := kVectors
         io.ADC_MicroTask_Config.MatrixRegId := aReg
         io.ADC_MicroTask_Config.Is_Transpose := false.B
 
         io.BDC_MicroTask_Config.dataType := ElementDataType.DataTypeWidth8
-        io.BDC_MicroTask_Config.MatrixRegTensor_M := mVal
-        io.BDC_MicroTask_Config.MatrixRegTensor_N := nVal
-        io.BDC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U
+        io.BDC_MicroTask_Config.MatrixRegTensor_M := workingM
+        io.BDC_MicroTask_Config.MatrixRegTensor_N := workingN
+        io.BDC_MicroTask_Config.MatrixRegTensor_K := kVectors
         io.BDC_MicroTask_Config.MatrixRegId := bReg
         io.BDC_MicroTask_Config.Is_Transpose := false.B
 
         io.CDC_MicroTask_Config.ApplicationTensor_C.dataType := ElementDataType.DataTypeWidth32
-        io.CDC_MicroTask_Config.MatrixRegTensor_M := mVal
-        io.CDC_MicroTask_Config.MatrixRegTensor_N := nVal
-        io.CDC_MicroTask_Config.MatrixRegTensor_K := kVal / ReduceWidthByte.U
+        io.CDC_MicroTask_Config.MatrixRegTensor_M := workingM
+        io.CDC_MicroTask_Config.MatrixRegTensor_N := workingN
+        io.CDC_MicroTask_Config.MatrixRegActive_M := mVal
+        io.CDC_MicroTask_Config.MatrixRegActive_N := nVal
+        io.CDC_MicroTask_Config.MatrixRegTensor_K := kVectors
         io.CDC_MicroTask_Config.MatrixRegId := cReg
         io.CDC_MicroTask_Config.Is_Transpose := false.B
         io.CDC_MicroTask_Config.Is_AfterOps_Tile := false.B
@@ -951,6 +1471,30 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
         io.MTE_MicroTask_Config.MicroTaskValid := true.B
         io.MTE_MicroTask_Config.computeType := mmaComputeType
+        when(isScaledCtrl(issueCtrl)) {
+          io.ASC_MicroTask_Config.foreach { cfg =>
+            cfg.MatrixRegTensor_M := mVal
+            cfg.MatrixRegTensor_N := nVal
+            cfg.MatrixRegTensor_K := kVectors
+            cfg.ScaleBlocksPerRow := scaleBlocks(issueMma.mtilek)
+            cfg.KElements := issueMma.mtilek
+            cfg.MatrixRegId := aReg
+            cfg.ScaleBankId := issueScaleABank
+            cfg.computeType := mmaComputeType
+            cfg.MicroTaskValid := true.B
+          }
+          io.BSC_MicroTask_Config.foreach { cfg =>
+            cfg.MatrixRegTensor_M := mVal
+            cfg.MatrixRegTensor_N := nVal
+            cfg.MatrixRegTensor_K := kVectors
+            cfg.ScaleBlocksPerRow := scaleBlocks(issueMma.mtilek)
+            cfg.KElements := issueMma.mtilek
+            cfg.MatrixRegId := bReg
+            cfg.ScaleBankId := issueScaleBBank
+            cfg.computeType := mmaComputeType
+            cfg.MicroTaskValid := true.B
+          }
+        }
 
         computeIssueEvent.eventType := 0.U
         computeIssueEvent.aReg := aReg
@@ -1000,8 +1544,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
       is(TaskCtrlOpKind.Release) {
         val issueRelease = issueCtrl.data.asTypeOf(new AmuReleaseIO)
-        io.ygjkctrl.mrelease.valid := true.B
-        io.ygjkctrl.mrelease.bits.msyncRd(issueRelease.msyncRd) := true.B
 
         releaseIssueEvent.eventType := 0.U
         releaseIssueEvent.msync := issueRelease.msyncRd
@@ -1017,10 +1559,67 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   // ===================== State update: done -> retire -> enqueue -> issue =====================
+  when(aslDone) {
+    val owner = fuASL.ownerSlot
+    val bank = scaleA(slots(owner).scaleABank)
+    assert(bank.occupied && !bank.valid && bank.generation === slots(owner).scaleAGeneration)
+    val success = !dynamicAScaleOwner || io.AML_MicroTask_Config.MicroTaskFlags === 0.U
+    bank.valid := success
+    bank.occupied := success
+    bank.inUse := false.B
+    when(dynamicAScaleOwner) {
+      assert(aOwnersMatch && amlDone, "dynamic A scale End must join its TR End")
+    }
+    slots(owner).completed := true.B
+    fuASL.busy := false.B
+  }
+  when(bslDone) {
+    val owner = fuBSL.ownerSlot
+    val bank = scaleB(slots(owner).scaleBBank)
+    assert(bank.occupied && !bank.valid && bank.generation === slots(owner).scaleBGeneration)
+    val success = !dynamicBScaleOwner || io.BML_MicroTask_Config.MicroTaskFlags === 0.U
+    bank.valid := success
+    bank.occupied := success
+    bank.inUse := false.B
+    when(dynamicBScaleOwner) {
+      assert(bOwnersMatch && bmlDone, "dynamic B scale End must join its TR End")
+    }
+    slots(owner).completed := true.B
+    fuBSL.busy := false.B
+  }
+  when(ascDone) {
+    val bank = scaleA(computeOwnerSlot.scaleABank)
+    assert(bank.occupied && bank.valid && bank.inUse && bank.generation === computeOwnerSlot.scaleAGeneration,
+      "TaskController: ASC must release its exact consumed generation")
+    bank.inUse := false.B
+    slots(fuCompute.ownerSlot).scaleReadADone := true.B
+  }
+  when(bscDone) {
+    val bank = scaleB(computeOwnerSlot.scaleBBank)
+    assert(bank.occupied && bank.valid && bank.inUse && bank.generation === computeOwnerSlot.scaleBGeneration,
+      "TaskController: BSC must release its exact consumed generation")
+    bank.inUse := false.B
+    slots(fuCompute.ownerSlot).scaleReadBDone := true.B
+  }
+  when(computeFinished) {
+    slots(fuCompute.ownerSlot).completed := true.B
+    fuCompute.busy := false.B
+  }
   when(amlDone) {
     val owner = fuAML.ownerSlot
     assert(slots(owner).valid, "TaskController: AML owner slot invalid on done")
     slots(owner).completed := true.B
+    when(isDynamicCtrl(slots(owner).entry.ctrl)) {
+      assert(aOwnersMatch && aslDone, "dynamic AML End must join its SF End")
+      slots(owner).completionFlags := io.AML_MicroTask_Config.MicroTaskFlags
+    }.elsewhen(isConvertCtrl(slots(owner).entry.ctrl)) {
+      val bank = scaleA(slots(owner).scaleABank)
+      assert(bank.occupied && bank.valid && bank.inUse && bank.generation === slots(owner).scaleAGeneration,
+        "TaskController: converting AML must release its exact scale generation")
+      bank.inUse := false.B
+      slots(owner).scaleReadADone := true.B
+      slots(owner).completionFlags := io.AML_MicroTask_Config.MicroTaskFlags
+    }
     fuAML.busy := false.B
   }
 
@@ -1028,6 +1627,17 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val owner = fuBML.ownerSlot
     assert(slots(owner).valid, "TaskController: BML owner slot invalid on done")
     slots(owner).completed := true.B
+    when(isDynamicCtrl(slots(owner).entry.ctrl)) {
+      assert(bOwnersMatch && bslDone, "dynamic BML End must join its SF End")
+      slots(owner).completionFlags := io.BML_MicroTask_Config.MicroTaskFlags
+    }.elsewhen(isConvertCtrl(slots(owner).entry.ctrl)) {
+      val bank = scaleB(slots(owner).scaleBBank)
+      assert(bank.occupied && bank.valid && bank.inUse && bank.generation === slots(owner).scaleBGeneration,
+        "TaskController: converting BML must release its exact scale generation")
+      bank.inUse := false.B
+      slots(owner).scaleReadBDone := true.B
+      slots(owner).completionFlags := io.BML_MicroTask_Config.MicroTaskFlags
+    }
     fuBML.busy := false.B
   }
 
@@ -1094,8 +1704,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   when(cdcDone) {
     val owner = fuCompute.ownerSlot
     assert(slots(owner).valid, "TaskController: CDC owner slot invalid on done")
-    slots(owner).completed := true.B
-    fuCompute.busy := false.B
+    slots(owner).writeCDone := true.B
+    slots(owner).completionFlags := io.CDC_MicroTask_Config.MicroTaskFlags
 
     val slot = slots(owner)
     val mma = decodeMma(slot.entry.ctrl)
@@ -1129,6 +1739,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
         slots(i).waitCompleteMask := slots(i).waitCompleteMask & (~retireOH)(WinDepth - 1, 0)
         slots(i).waitReadAMask := slots(i).waitReadAMask & (~retireOH)(WinDepth - 1, 0)
         slots(i).waitReadBMask := slots(i).waitReadBMask & (~retireOH)(WinDepth - 1, 0)
+        slots(i).waitScaleReadAMask := slots(i).waitScaleReadAMask & (~retireOH)(WinDepth - 1, 0)
+        slots(i).waitScaleReadBMask := slots(i).waitScaleReadBMask & (~retireOH)(WinDepth - 1, 0)
       }
     }
 
@@ -1137,6 +1749,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     slots(winHead).completed := false.B
     slots(winHead).readADone := false.B
     slots(winHead).readBDone := false.B
+    slots(winHead).scaleReadADone := false.B
+    slots(winHead).scaleReadBDone := false.B
+    slots(winHead).writeCDone := false.B
+    slots(winHead).completionFlags := 0.U
+    slots(winHead).waitScaleReadAMask := 0.U
+    slots(winHead).waitScaleReadBMask := 0.U
     slots(winHead).waitCompleteMask := 0.U
     slots(winHead).waitReadAMask := 0.U
     slots(winHead).waitReadBMask := 0.U
@@ -1160,6 +1778,20 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     newSlot.entry := deqEntry
     newSlot.seqId := seqIdAlloc
     newSlot.fifoIdx := 0.U
+    newSlot.scaleAGeneration := latestScaleA(abIdx(scaleReaderReg(deqCtrl, a = true)))
+    newSlot.scaleBGeneration := latestScaleB(abIdx(scaleReaderReg(deqCtrl, a = false)))
+    when(writesScale(deqOpKind, deqCtrl, a = true)) {
+      val next = latestScaleA(abIdx(deqLsu.ms)) + 1.U
+      assert(next =/= 0.U, "TaskController: scale generation exhausted; reset before reuse")
+      latestScaleA(abIdx(deqLsu.ms)) := next
+      newSlot.scaleAGeneration := next
+    }
+    when(writesScale(deqOpKind, deqCtrl, a = false)) {
+      val next = latestScaleB(abIdx(deqLsu.ms)) + 1.U
+      assert(next =/= 0.U, "TaskController: scale generation exhausted; reset before reuse")
+      latestScaleB(abIdx(deqLsu.ms)) := next
+      newSlot.scaleBGeneration := next
+    }
 
     when(
       deqOpKind === TaskCtrlOpKind.LoadA ||
@@ -1189,6 +1821,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val depCompleteBits = Wire(Vec(WinDepth, Bool()))
     val depReadABits = Wire(Vec(WinDepth, Bool()))
     val depReadBBits = Wire(Vec(WinDepth, Bool()))
+    val depScaleReadABits = Wire(Vec(WinDepth, Bool()))
+    val depScaleReadBBits = Wire(Vec(WinDepth, Bool()))
 
     // Build dependencies only against strictly older in-window slots (ring age from head).
     // Age base is post-retire view because state update priority is done -> retire -> enqueue -> issue.
@@ -1242,28 +1876,46 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
       val olderReadsABByComputeA = isReadAOfCompute(older.opKind, olderMma, deqEntry.writeRegs(0))
       val olderReadsABByComputeB = isReadBOfCompute(older.opKind, olderMma, deqEntry.writeRegs(0))
+      val newScaleA = writesScale(deqOpKind, deqCtrl, a = true)
+      val newScaleB = writesScale(deqOpKind, deqCtrl, a = false)
+      val olderScaleA = writesScale(older.opKind, olderCtrl, a = true)
+      val olderScaleB = writesScale(older.opKind, olderCtrl, a = false)
+      val scaleRaw =
+        (readsScale(deqCtrl, a = true) && olderScaleA &&
+          abIdx(olderLsu.ms) === abIdx(scaleReaderReg(deqCtrl, a = true))) ||
+        (readsScale(deqCtrl, a = false) && olderScaleB &&
+          abIdx(olderLsu.ms) === abIdx(scaleReaderReg(deqCtrl, a = false)))
+      val scaleWaw = (newScaleA && olderScaleA || newScaleB && olderScaleB) &&
+        abIdx(olderLsu.ms) === abIdx(deqLsu.ms)
 
       val depCompleteJ = Mux(
         deqOpKind === TaskCtrlOpKind.Release,
-        olderValid && (older.opKind === TaskCtrlOpKind.Store),
+        olderValid && (older.opKind === TaskCtrlOpKind.Store ||
+          isFlagProducer(older.opKind, olderCtrl)),
         olderValid && (
           (olderWritesAB && newReadsAB && olderWriteABHitForNewRead) ||
           (olderWritesC && newReadsC && olderWriteCHitForNewRead) ||
           (olderWritesAB && newWritesAB && olderWriteABHitForNewWrite) ||
           (olderWritesC && newWritesC && olderWriteCHitForNewWrite) ||
           (newWritesAB && olderReadABHit && !olderReadsABByComputeA && !olderReadsABByComputeB) ||
-          (newWritesC && olderReadCHit)
+          (newWritesC && olderReadCHit) || scaleRaw || scaleWaw
         )
       )
 
       depCompleteBits(j) := depCompleteJ
       depReadABits(j) := (deqOpKind =/= TaskCtrlOpKind.Release) && olderValid && newWritesAB && olderReadsABByComputeA
       depReadBBits(j) := (deqOpKind =/= TaskCtrlOpKind.Release) && olderValid && newWritesAB && olderReadsABByComputeB
+      depScaleReadABits(j) := olderValid && newScaleA && readsScale(olderCtrl, a = true) &&
+        abIdx(scaleReaderReg(olderCtrl, a = true)) === abIdx(deqLsu.ms)
+      depScaleReadBBits(j) := olderValid && newScaleB && readsScale(olderCtrl, a = false) &&
+        abIdx(scaleReaderReg(olderCtrl, a = false)) === abIdx(deqLsu.ms)
     }
 
     newSlot.waitCompleteMask := depCompleteBits.asUInt
     newSlot.waitReadAMask := depReadABits.asUInt
     newSlot.waitReadBMask := depReadBBits.asUInt
+    newSlot.waitScaleReadAMask := depScaleReadABits.asUInt
+    newSlot.waitScaleReadBMask := depScaleReadBBits.asUInt
 
     slots(enqueueSlotIdx) := newSlot
   }
@@ -1272,13 +1924,79 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     slots(issueSlotIdx).issued := true.B
 
     switch(issueSlot.opKind) {
+      is(TaskCtrlOpKind.LoadScaleA) {
+        fuASL.busy := true.B
+        fuASL.ownerSlot := issueSlotIdx
+        slots(issueSlotIdx).scaleABank := allocScaleABank
+        val bank = scaleA(allocScaleABank)
+        bank.occupied := true.B
+        bank.valid := false.B
+        bank.inUse := false.B
+        bank.regId := abIdx(issueLsu.ms)
+        bank.generation := issueSlot.scaleAGeneration
+        bank.computeType := scaleLoadMode
+        bank.rows := scaleLoadRows
+        bank.kVectors := scaleLoadK
+        bank.scaleBlocks := scaleLoadBlocks
+      }
+      is(TaskCtrlOpKind.LoadScaleB) {
+        fuBSL.busy := true.B
+        fuBSL.ownerSlot := issueSlotIdx
+        slots(issueSlotIdx).scaleBBank := allocScaleBBank
+        val bank = scaleB(allocScaleBBank)
+        bank.occupied := true.B
+        bank.valid := false.B
+        bank.inUse := false.B
+        bank.regId := abIdx(issueLsu.ms)
+        bank.generation := issueSlot.scaleBGeneration
+        bank.computeType := scaleLoadMode
+        bank.rows := scaleLoadRows
+        bank.kVectors := scaleLoadK
+        bank.scaleBlocks := scaleLoadBlocks
+      }
       is(TaskCtrlOpKind.LoadA) {
         fuAML.busy := true.B
         fuAML.ownerSlot := issueSlotIdx
+        when(isDynamicCtrl(issueCtrl)) {
+          fuASL.busy := true.B
+          fuASL.ownerSlot := issueSlotIdx
+          slots(issueSlotIdx).scaleABank := allocScaleABank
+          val bank = scaleA(allocScaleABank)
+          bank.occupied := true.B
+          bank.valid := false.B
+          bank.inUse := false.B
+          bank.regId := abIdx(issueLsu.ms)
+          bank.generation := issueSlot.scaleAGeneration
+          bank.computeType := MteComputeType.Mxfp4F32
+          bank.rows := 8.U
+          bank.kVectors := 1.U
+          bank.scaleBlocks := 2.U
+        }.elsewhen(isConvertCtrl(issueCtrl)) {
+          slots(issueSlotIdx).scaleABank := issueScaleABank
+          scaleA(issueScaleABank).inUse := true.B
+        }
       }
       is(TaskCtrlOpKind.LoadB) {
         fuBML.busy := true.B
         fuBML.ownerSlot := issueSlotIdx
+        when(isDynamicCtrl(issueCtrl)) {
+          fuBSL.busy := true.B
+          fuBSL.ownerSlot := issueSlotIdx
+          slots(issueSlotIdx).scaleBBank := allocScaleBBank
+          val bank = scaleB(allocScaleBBank)
+          bank.occupied := true.B
+          bank.valid := false.B
+          bank.inUse := false.B
+          bank.regId := abIdx(issueLsu.ms)
+          bank.generation := issueSlot.scaleBGeneration
+          bank.computeType := MteComputeType.Mxfp4F32
+          bank.rows := 8.U
+          bank.kVectors := 1.U
+          bank.scaleBlocks := 2.U
+        }.elsewhen(isConvertCtrl(issueCtrl)) {
+          slots(issueSlotIdx).scaleBBank := issueScaleBBank
+          scaleB(issueScaleBBank).inUse := true.B
+        }
       }
       is(TaskCtrlOpKind.LoadC) {
         fuCMLLoad.busy := true.B
@@ -1295,6 +2013,12 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       is(TaskCtrlOpKind.Compute) {
         fuCompute.busy := true.B
         fuCompute.ownerSlot := issueSlotIdx
+        when(isScaledCtrl(issueCtrl)) {
+          slots(issueSlotIdx).scaleABank := issueScaleABank
+          slots(issueSlotIdx).scaleBBank := issueScaleBBank
+          scaleA(issueScaleABank).inUse := true.B
+          scaleB(issueScaleBBank).inUse := true.B
+        }
       }
       is(TaskCtrlOpKind.Store) {
         fuCMLStore.busy := true.B
@@ -1310,6 +2034,16 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   }
 
   // Pointer and count updates (retire + enqueue)
+  // Last-connect priority over normal generation/ownership updates. No SRAM,
+  // matrix data, FIFO or FU reset: real completion must precede clear.
+  when(io.ygjkctrl.minitClear) {
+    assert(io.ygjkctrl.resetReady, "MINIT clear before all old CUTE work drained")
+    scaleA.foreach(_ := 0.U.asTypeOf(new ScaleBankState))
+    scaleB.foreach(_ := 0.U.asTypeOf(new ScaleBankState))
+    latestScaleA.foreach(_ := 0.U)
+    latestScaleB.foreach(_ := 0.U)
+  }
+
   when(retireFire && !enqueueFire) {
     winHead := (winHead + 1.U)(SlotIdxWidth - 1, 0)
     winCount := winCount - 1.U
@@ -1429,7 +2163,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   // ===================== Release DiffTest alignment =====================
   if (EnableDifftest) {
-    val releaseFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank), delay = 3, dontCare = true)
+    val releaseFinish = DifftestModule(new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits), delay = 3, dontCare = true)
+    releaseFinish.clearScaleTrace()
     val releaseIssueOwnerSlot = issueSlotIdx
     val releaseIssueOwnerEntry = issueSlot.entry
 
@@ -1437,6 +2172,8 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     releaseFinish.index := 4.U
     releaseFinish.valid := issueFire && issueSlot.opKind === TaskCtrlOpKind.Release
     releaseFinish.pc := Mux(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release, releaseIssueOwnerEntry.ctrl.pc.get, 0.U)
+    releaseFinish.retireId := releaseIssueOwnerEntry.ctrl.retireId.get
+    releaseFinish.epoch := releaseIssueOwnerEntry.ctrl.epoch.get
     releaseFinish.bankValid.foreach(_ := false.B)
     releaseFinish.bankAddr.foreach(_ := 0.U)
     releaseFinish.bankMask.foreach(_ := 0.U)
@@ -1446,6 +2183,94 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     when(issueFire && issueSlot.opKind === TaskCtrlOpKind.Release) {
       dontTouch(releaseIssueOwnerSlot)
     }
+  }
+
+  if (EnableDifftest && cuteMatrixExtension.enableScalingFactor) {
+    def describeMma(event: DiffAmuFinishEvent, ctrl: AmuCtrlIO,
+                    slot: IssueWindowSlot, aBank: UInt, bBank: UInt): Unit = {
+      val mma = decodeMma(ctrl)
+      event := 0.U.asTypeOf(event)
+      event.coreid := ctrl.coreid.get
+      event.pc := ctrl.pc.get
+      event.retireId := ctrl.retireId.get
+      event.epoch := ctrl.epoch.get
+      event.computeType := computeTypeForCtrl(ctrl)
+      event.scaleRegA := mma.ms1
+      event.scaleRegB := mma.ms2
+      event.scaleBankA := aBank
+      event.scaleBankB := bBank
+      event.scaleGenA := slot.scaleAGeneration
+      event.scaleGenB := slot.scaleBGeneration
+      event.scaleRowsA := mma.mtilem
+      event.scaleRowsB := mma.mtilen
+      event.scaleKVectorsA := mmaKVectors(ctrl)
+      event.scaleKVectorsB := mmaKVectors(ctrl)
+      event.scaleBlocksA := scaleBlocks(mma.mtilek)
+      event.scaleBlocksB := scaleBlocks(mma.mtilek)
+      event.scaleRowPitchA := scaleBlocks(mma.mtilek)
+      event.scaleRowPitchB := scaleBlocks(mma.mtilek)
+    }
+    val bind = DifftestModule(
+      new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits), delay = 0, dontCare = true)
+    describeMma(bind, issueCtrl, issueSlot, issueScaleABank, issueScaleBBank)
+    bind.index := 8.U
+    bind.kind := AmuFinishKind.MmaBind.U
+    bind.valid := issueFire && issueSlot.opKind === TaskCtrlOpKind.Compute && isScaledCtrl(issueCtrl)
+    bind.scaleValidA := scaleA(issueScaleABank).valid
+    bind.scaleValidB := scaleB(issueScaleBBank).valid
+    val completed = DifftestModule(
+      new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits), delay = 0, dontCare = true)
+    // A reload after reader end can replace bank metadata before CDC ends.
+    // Use the immutable compute slot's selected banks/generations, not live banks.
+    describeMma(completed, computeOwnerSlot.entry.ctrl, computeOwnerSlot,
+      computeOwnerSlot.scaleABank, computeOwnerSlot.scaleBBank)
+    completed.index := 9.U
+    completed.kind := AmuFinishKind.MmaDone.U
+    completed.valid := computeFinished && computeOwnerScaled
+    completed.finish := completed.valid
+    completed.scaleValidA := true.B
+    completed.scaleValidB := true.B
+    completed.flagsValid := completed.valid
+    completed.flagsRaised := Mux(cdcDone, io.CDC_MicroTask_Config.MicroTaskFlags,
+      computeOwnerSlot.completionFlags)
+    io.mmaTrace.get(0) := bind
+    io.mmaTrace.get(1) := completed
+
+    val retired = DifftestModule(
+      new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits), delay = 0, dontCare = true)
+    retired := 0.U.asTypeOf(retired)
+    retired.index := 10.U
+    retired.kind := AmuFinishKind.OrderedRetire.U
+    retired.valid := retireFire && headReturnsFlags &&
+      (isScaledCtrl(headSlot.entry.ctrl) || isConvertCtrl(headSlot.entry.ctrl))
+    retired.finish := retired.valid
+    retired.coreid := headSlot.entry.ctrl.coreid.get
+    retired.pc := headSlot.entry.ctrl.pc.get
+    retired.retireId := headSlot.entry.ctrl.retireId.get
+    retired.epoch := headSlot.entry.ctrl.epoch.get
+    retired.computeType := computeTypeForCtrl(headSlot.entry.ctrl)
+    retired.flagsValid := retired.valid
+    retired.flagsRaised := completionFlagsNext
+
+    val accepted = DifftestModule(
+      new DiffAmuFinishEvent(CMatrixRegNBanks, DiffAmuFinishWordsPerBank, DiffAmuFinishAddrBits), delay = 0, dontCare = true)
+    accepted := 0.U.asTypeOf(accepted)
+    accepted.index := 11.U
+    accepted.kind := AmuFinishKind.ReturnAccepted.U
+    val queued = returnQ.io.deq.bits
+    val queuedScaled = Seq(MteComputeType.Mxfp8e4m3F32, MteComputeType.Mxfp8e5m2F32,
+      MteComputeType.Mxfp4F32).map(queued.traceComputeType.get === _).reduce(_ || _)
+    accepted.valid := returnQ.io.deq.fire && queued.flagsValid && queuedScaled
+    accepted.finish := accepted.valid
+    accepted.coreid := queued.traceCoreid.get
+    accepted.pc := queued.tracePc.get
+    accepted.retireId := queued.traceRetireId.get
+    accepted.epoch := queued.traceEpoch.get
+    accepted.computeType := queued.traceComputeType.get
+    accepted.flagsValid := accepted.valid
+    accepted.flagsRaised := queued.flags
+    io.retirementTrace.get(0) := retired
+    io.retirementTrace.get(1) := accepted
   }
 
   // ===================== ChiselDB log commit =====================
