@@ -68,7 +68,10 @@ class AccMemoryLegacy(implicit p: Parameters) extends CuteModule{
     // Legacy accMemory only uses channel 0 for load/store memory traffic.
     val ReadRequest = io.LoadLocalMMUIO.Request(0)
     val ReadResponse = io.LoadLocalMMUIO.Response(0)
-    val WriteRequest = io.StoreLocalMMUIO.Request(0)
+    val WriteRequest = Wire(Decoupled(new MMURequestIO))
+    WriteRequest.valid := false.B
+    WriteRequest.bits := DontCare
+    val PhysicalWriteRequest = io.StoreLocalMMUIO.Request(0)
     val WriteResponse = io.StoreLocalMMUIO.Response(0)
 
     val CurrentLoadMatrixRegId = RegInit(0.U(AccMatrixRegIdWidth.W))
@@ -835,6 +838,39 @@ class AccMemoryLegacy(implicit p: Parameters) extends CuteModule{
     val Per_MReg_Load_Write_Memory_Time = AccMatrixReg_Total_Bandwidth_Bit/outsideDataWidth
     val FireTimes = RegInit(0.U(log2Ceil(AccMatrixRegNBanks).W))
 
+    val normalFp32Store = !IsStoreTranspose && D_DataType === ElementDataType.DataTypeWidth32
+    // The collector owns an unaligned logical row beat until every nonempty
+    // containing-line fragment has been accepted. Each fragment retains its
+    // own allocated MMU source/ACK in the existing wait table below.
+    require(isPow2(outsideDataWidthByte))
+    val storeLineOffset = WriteRequest.bits.RequestAddr(log2Ceil(outsideDataWidthByte) - 1, 0)
+    val storeWideMask = (WriteRequest.bits.RequestMask.pad(2 * MMUMaskWidth) <<
+      storeLineOffset)(2 * MMUMaskWidth - 1, 0)
+    val storeWideData = (WriteRequest.bits.RequestData.pad(2 * outsideDataWidth) <<
+      (storeLineOffset << 3))(2 * outsideDataWidth - 1, 0)
+    val storeSplitTail = RegInit(false.B)
+    val storeCrossesLine = normalFp32Store && storeWideMask(2 * MMUMaskWidth - 1, MMUMaskWidth).orR
+    // LocalMMU selects a requester before presenting its allocated source.
+    // Do not make request-valid depend on that selection's valid result.
+    PhysicalWriteRequest.valid := WriteRequest.valid
+    when(WriteRequest.valid) {
+        PhysicalWriteRequest.bits := WriteRequest.bits
+        when(normalFp32Store) {
+            PhysicalWriteRequest.bits.RequestAddr :=
+              (WriteRequest.bits.RequestAddr & ~(outsideDataWidthByte - 1).U(MMUAddrWidth.W)) +
+                Mux(storeSplitTail, outsideDataWidthByte.U, 0.U)
+            PhysicalWriteRequest.bits.RequestData := Mux(storeSplitTail,
+              storeWideData(2 * outsideDataWidth - 1, outsideDataWidth),
+              storeWideData(outsideDataWidth - 1, 0))
+            PhysicalWriteRequest.bits.RequestMask := Mux(storeSplitTail,
+              storeWideMask(2 * MMUMaskWidth - 1, MMUMaskWidth),
+              storeWideMask(MMUMaskWidth - 1, 0))
+        }
+    }
+    WriteRequest.ready := PhysicalWriteRequest.ready &&
+      io.StoreLocalMMUIO.ConherentRequsetSourceID.valid &&
+      (!storeCrossesLine || storeSplitTail)
+
     when(Write_Mem_Wait_Table.reduce(_||_)){
         WriteResponse.ready := true.B
     }
@@ -845,10 +881,26 @@ class AccMemoryLegacy(implicit p: Parameters) extends CuteModule{
             printf("[accMemory.Store][%d] Resp.fire sourceId=%x\n", io.DebugInfo.DebugTimeStampe, sourceId)
         }
     }
+    when (PhysicalWriteRequest.fire) {
+        assert(io.StoreLocalMMUIO.ConherentRequsetSourceID.valid,
+          "AccMemoryLegacy physical store accepted without an allocated source")
+        assert(PhysicalWriteRequest.bits.RequestMask.orR, "AccMemoryLegacy empty store fragment")
+        storeSplitTail := storeCrossesLine && !storeSplitTail
+        Write_Mem_Wait_Table(io.StoreLocalMMUIO.ConherentRequsetSourceID.bits) := true.B
+    }
 
     val M_Get_IteratorMax = Mux(IsStoreTranspose, (StoreMatrixRegTensor_M / (Matrix_MN.U * 2.U) + (StoreMatrixRegTensor_M % (Matrix_MN.U * 2.U) =/= 0.U)) * 2.U, (StoreMatrixRegTensor_M / Matrix_MN.U) + ((StoreMatrixRegTensor_M % Matrix_MN.U) =/= 0.U))
+    // Round each row before multiplying by the row count. Keep the constant
+    // division as a bit slice: the production CIRCT emission must not turn
+    // M * floor((rowBytes + beatBytes - 1) / beatBytes) into a narrow
+    // floor(M * (rowBytes + beatBytes - 1) / beatBytes).
+    val normalFp32StoreBeatsPerRow =
+        (StoreMatrixRegTensor_N * D_DataType +& (outsideDataWidthByte - 1).U) >>
+          log2Ceil(outsideDataWidthByte)
     val N_Get_IteratorMax = WireInit(0.U(log2Ceil(AccMatrixRegBankNEntries).W))
-    N_Get_IteratorMax := (StoreMatrixRegTensor_N / Matrix_MN.U)
+    N_Get_IteratorMax := Mux(normalFp32Store,
+        (StoreMatrixRegTensor_N +& (Matrix_MN - 1).U) / Matrix_MN.U,
+        StoreMatrixRegTensor_N / Matrix_MN.U)
     val matrixRegScpAddr = WireInit(0.U(log2Ceil(AccMatrixRegBankNEntries).W))
     matrixRegScpAddr := Current_Load_M_iter * (Tensor_MN / Matrix_MN).U + Current_Load_N_iter
 
@@ -866,6 +918,7 @@ class AccMemoryLegacy(implicit p: Parameters) extends CuteModule{
     val Reorder_ToLLC_Reg_Send_Index = RegInit(0.U(log2Ceil(2).W))// Double buffering.
 
     val Fill_LLC_Iter = RegInit(0.U(log2Ceil(Reorder_ToLLC_GroupSize).W))
+    val Fill_N_Group = RegInit(0.U(log2Ceil(AccMatrixRegBankNEntries).W))
     val Fill_LLC_Max_Iter = Reorder_ToLLC_GroupSize
 
     val Send_LLC_Iter = RegInit(0.U(log2Ceil(Matrix_MN).W))
@@ -878,19 +931,28 @@ class AccMemoryLegacy(implicit p: Parameters) extends CuteModule{
             Reorder_ToLLC_Reg_Valid := 0.U.asTypeOf(Reorder_ToLLC_Reg_Valid)
             Reorder_ToLLC_Reg_Get_Index := 0.U
             Reorder_ToLLC_Reg_Send_Index := 0.U
+            Send_LLC_Iter := 0.U
 
             Fill_LLC_Iter := 0.U
+            Fill_N_Group := 0.U
 
             TotalStoreSize := 0.U
             TotalStoreRequestSize := 0.U
             CurrentStore_BlockTensor_Major_DIM_Iter := 0.U
             CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
+            CurrentStore_BlockTensor_SubMajor_DIM_Iter := 0.U
             FromMatrixRegReadFIFOHead := 0.U
             FromMatrixRegReadFIFOTail := 0.U
-            Max_Load_MReg_Time := StoreMatrixRegTensor_M * StoreMatrixRegTensor_N * D_DataType / AccMatrixReg_Total_Bandwidth.U// Total number of scratchpad read requests.
-            Max_Store_Memory_Time := Mux(IsStoreTranspose, M_Get_IteratorMax * Matrix_MN.U, StoreMatrixRegTensor_M) * StoreMatrixRegTensor_N * D_DataType / outsideDataWidthByte.U// Total number of LLC write requests.
-            // MaxIncStoreScpRequestSize := Mux(IsStoreTranspose, StoreMatrixRegTensor_N, M_Get_IteratorMax * Matrix_MN.U) * Mux(IsStoreTranspose, StoreMatrixRegTensor_M, StoreMatrixRegTensor_N) * D_DataType / AccMatrixReg_Total_Bandwidth.U
-            MaxIncStoreScpRequestSize := M_Get_IteratorMax * Matrix_MN.U * StoreMatrixRegTensor_N * D_DataType / AccMatrixReg_Total_Bandwidth.U
+            Max_Load_MReg_Time := Mux(normalFp32Store,
+                M_Get_IteratorMax * N_Get_IteratorMax,
+                StoreMatrixRegTensor_M * StoreMatrixRegTensor_N * D_DataType / AccMatrixReg_Total_Bandwidth.U)
+            Max_Store_Memory_Time := Mux(normalFp32Store,
+                StoreMatrixRegTensor_M * normalFp32StoreBeatsPerRow,
+                Mux(IsStoreTranspose, M_Get_IteratorMax * Matrix_MN.U, StoreMatrixRegTensor_M) *
+                  StoreMatrixRegTensor_N * D_DataType / outsideDataWidthByte.U)
+            MaxIncStoreScpRequestSize := Mux(normalFp32Store,
+                M_Get_IteratorMax * N_Get_IteratorMax,
+                M_Get_IteratorMax * Matrix_MN.U * StoreMatrixRegTensor_N * D_DataType / AccMatrixReg_Total_Bandwidth.U)
             MaxIncStoreRequestSize := (Mux(IsStoreTranspose, StoreMatrixRegTensor_N, StoreMatrixRegTensor_M) / Matrix_MN.U * Matrix_MN.U) * Mux(IsStoreTranspose, StoreMatrixRegTensor_M, StoreMatrixRegTensor_N) * D_DataType / AccMatrixReg_Total_Bandwidth.U
             Max_Load_Scp_Tail_SubMajor_Iter := Mux(IsStoreTranspose, StoreMatrixRegTensor_N, StoreMatrixRegTensor_M) % Matrix_MN.U
             Current_Load_Scp_Tail_subMajor_Iter := 0.U
@@ -979,8 +1041,15 @@ class AccMemoryLegacy(implicit p: Parameters) extends CuteModule{
                 }
                 // Advance the associated iterators.
                 Fill_LLC_Iter := WrapInc(Fill_LLC_Iter, Fill_LLC_Max_Iter)
+                when(normalFp32Store) {
+                    Fill_N_Group := Fill_N_Group + 1.U
+                    when(Fill_N_Group === N_Get_IteratorMax - 1.U) {
+                        Fill_N_Group := 0.U
+                    }
+                }
                 FromMatrixRegReadFIFOTail := WrapInc(FromMatrixRegReadFIFOTail, AccStorer0ReadFromMatrixRegFIFODepth)
-                when(Fill_LLC_Iter === (Fill_LLC_Max_Iter - 1).U){
+                when(Fill_LLC_Iter === (Fill_LLC_Max_Iter - 1).U ||
+                    (normalFp32Store && Fill_N_Group === N_Get_IteratorMax - 1.U)){
                     Fill_LLC_Iter := 0.U
                     Reorder_ToLLC_Reg_Valid(Reorder_ToLLC_Reg_Get_Index) := true.B
                     Reorder_ToLLC_Reg_Get_Index := WrapInc(Reorder_ToLLC_Reg_Get_Index, 2)
@@ -1021,10 +1090,18 @@ class AccMemoryLegacy(implicit p: Parameters) extends CuteModule{
                 WriteRequest.bits.MatrixTraceTag.zip(StoreTraceTag).foreach { case (to, from) => to := from }
                 WriteRequest.bits.RequestData := Request_Data.asUInt
                 WriteRequest.bits.RequestMask := Fill(MMUMaskWidth, 1.U(1.W))
+                when(normalFp32Store) {
+                    // A partial final bus beat writes only architectural row
+                    // bytes. Zero-filled padding is not permission to store it.
+                    WriteRequest.bits.RequestMask := VecInit((0 until MMUMaskWidth).map { byte =>
+                        CurrentStore_BlockTensor_Reduce_DIM_Iter * D_DataType + byte.U <
+                            StoreMatrixRegTensor_N * D_DataType
+                    }).asUInt
+                }
                 WriteRequest.bits.IsTranspose := false.B
                 WriteRequest.valid := true.B
                 // Advance only after the request fires.
-                when(WriteRequest.fire && io.StoreLocalMMUIO.ConherentRequsetSourceID.valid){
+                when(WriteRequest.fire){
                     Send_LLC_Iter := WrapInc(Send_LLC_Iter, Send_LLC_Max_Iter)
                     // if (YJPAfterOpsDebugEnable)
                     // {
@@ -1058,13 +1135,14 @@ class AccMemoryLegacy(implicit p: Parameters) extends CuteModule{
                     {
                         CurrentStore_BlockTensor_SubMajor_DIM_Iter := 0.U
                         CurrentStore_BlockTensor_Reduce_DIM_Iter := CurrentStore_BlockTensor_Reduce_DIM_Iter + Per_LLC_Store_ReduceDim_Iter
-                        when(CurrentStore_BlockTensor_Reduce_DIM_Iter === Max_BlockTensor_Request_Reduce_DIM - Per_LLC_Store_ReduceDim_Iter){
+                        when(Mux(!normalFp32Store,
+                            CurrentStore_BlockTensor_Reduce_DIM_Iter === Max_BlockTensor_Request_Reduce_DIM - Per_LLC_Store_ReduceDim_Iter,
+                            CurrentStore_BlockTensor_Reduce_DIM_Iter +& Per_LLC_Store_ReduceDim_Iter >= Max_BlockTensor_Request_Reduce_DIM)){
                             CurrentStore_BlockTensor_Reduce_DIM_Iter := 0.U
                             CurrentStore_BlockTensor_Major_DIM_Iter := CurrentStore_BlockTensor_Major_DIM_Iter + Matrix_MN.U
                         }
                     }
 
-                    Write_Mem_Wait_Table(io.StoreLocalMMUIO.ConherentRequsetSourceID.bits) := true.B
                     TotalStoreSize := TotalStoreSize + 1.U
                     // Log the number of completed writebacks.
                     if (YJPAccMemoryDebugEnable)
