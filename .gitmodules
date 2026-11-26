@@ -1,6 +1,7 @@
 [submodule "cute-fpe"]
 	path = cute-fpe
 	url = https://github.com/OpenXiangShan/CUTEFPE.git
+	branch = feat/mxfp4-mainline
 [submodule "rocket-chip"]
 	path = rocket-chip
 	url = https://github.com/OpenXiangShan/rocket-chip.git
@@ -10,3 +11,4 @@
 [submodule "XSAICache"]
 	path = XSAICache
 	url = https://github.com/OpenXiangShan/XSAICache
+	branch = feat/mxfp4-mainline

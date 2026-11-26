@@ -20,6 +20,11 @@ val difftestSourceFiles =
       .filter(os.isFile)
       .filter(_.ext == "scala")
   } else Seq.empty
+// Match the parent XSAI build's existing fudian dependency. NOOP_HOME is
+// the canonical XSAI source-root override; otherwise use the sibling checkout.
+val fudianRoot = sys.env.get("NOOP_HOME")
+  .map(root => os.Path(root) / "fudian")
+  .getOrElse(projectRoot / os.up / "fudian")
 val defaultScalaVersion = "2.13.15"
 def defaultVersions = Map(
   "chisel"        -> ivy"org.chipsalliance::chisel:6.7.0",
@@ -79,6 +84,8 @@ object utility extends SbtModule with HasChisel {
   override def millSourcePath = millOuterCtx.millSourcePath / "utility"
 
   override def moduleDeps = super.moduleDeps ++ Seq(rocketchip)
+
+  override def ivyDeps = super.ivyDeps() ++ Agg(ivy"com.lihaoyi::sourcecode:0.4.2")
 }
 
 object openNCB extends SbtModule with HasChisel {
@@ -87,8 +94,27 @@ object openNCB extends SbtModule with HasChisel {
   override def moduleDeps = super.moduleDeps ++ Seq(rocketchip)
 }
 
+object zhujiangCompat extends SbtModule with HasChisel {
+  override def millSourcePath = millOuterCtx.millSourcePath / "XSAICache" / "ZhuJiang"
+
+  override def moduleDeps = super.moduleDeps ++ Seq(rocketchip, utility)
+
+  override def sources = T.sources {
+    val sourceRoots = Seq(
+      millSourcePath / "src" / "main" / "scala",
+      millSourcePath / "xs-utils" / "src" / "main" / "scala"
+    )
+    sourceRoots.filter(os.isDir).flatMap(os.walk(_))
+      .filter(path => os.isFile(path) && path.ext == "scala")
+      .filterNot(_.last == "XsStage.scala")
+      .map(PathRef(_))
+  }
+}
+
 object XSAICache extends SbtModule with HasChisel with $file.XSAICache.common.XSCacheModule {
   override def millSourcePath = millOuterCtx.millSourcePath / "XSAICache"
+
+  override def moduleDeps = super.moduleDeps ++ Seq(zhujiangCompat)
 
   def openNCBModule: ScalaModule = openNCB
 
@@ -130,16 +156,24 @@ object cuteFpe extends SbtModule with HasChisel {
   }
 
   override def moduleDeps = super.moduleDeps ++ Seq(
-    rocketchip.cde
+    rocketchip.cde,
+    rocketchip.hardfloat
   )
 }
+
+object fudian extends SbtModule with HasChisel {
+  override def millSourcePath = fudianRoot
+}
+
+val cuteBaseSourceNames = Seq("CUTEParameters.scala", "ABBatchSchedule.scala")
 
 object CUTEBase extends SbtModule with HasChisel {
 
   override def millSourcePath = millOuterCtx.millSourcePath
 
   override def sources = T.sources {
-    Seq(PathRef(millSourcePath / "src" / "main" / "scala" / "CUTEParameters.scala"))
+    val sourceRoot = millSourcePath / "src" / "main" / "scala"
+    cuteBaseSourceNames.map(name => PathRef(sourceRoot / name))
   }
 
   override def moduleDeps = super.moduleDeps ++ Seq(
@@ -156,13 +190,14 @@ object CUTE extends SbtModule with HasChisel with $file.common.CUTEModule {
     val sourceRoot = millSourcePath / "src" / "main" / "scala"
     os.walk(sourceRoot)
       .filter(p => os.isFile(p) && p.ext == "scala")
-      .filter(p => p.last != "CUTEParameters.scala")
+      .filterNot(p => cuteBaseSourceNames.contains(p.last))
       .map(PathRef(_))
   }
 
   override def moduleDeps = super.moduleDeps ++ Seq(
     CUTEBase,
-    cuteFpe
+    cuteFpe,
+    fudian
   )
 
   def rocketModule: ScalaModule = rocketchip
