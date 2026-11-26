@@ -38,10 +38,16 @@ class YGJKBuffer extends Bundle with YGJKParameters{
 
 class MreleaseIO(implicit p: Parameters) extends CuteBundle {
   val msyncRd = Vec(CuteMsyncRegs, Bool())
+  val flagsValid = Bool()
+  val flags = UInt(5.W)
 }
 
 class YGJKControl(implicit p: Parameters) extends CuteBundle{
   val reset = Output(Bool())
+  // Synchronous retirement clear; ack is a registered receipt, not a handshake.
+  val minitClear = Output(Bool())
+  val resetReady = Input(Bool())
+  val minitClearAck = Input(Bool())
   val amuCtrl = Decoupled(new AmuCtrlIO)
   val mrelease = Flipped(Decoupled(new MreleaseIO))
 }

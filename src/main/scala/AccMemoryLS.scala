@@ -32,6 +32,7 @@ class AccMemoryLegacy(implicit p: Parameters) extends CuteModule{
         val DebugInfo = Input(new DebugInfoIO)
         val LoadMatrixRegId = Output(UInt(AccMatrixRegIdWidth.W))
         val StoreMatrixRegId = Output(UInt(AccMatrixRegIdWidth.W))
+        val idle = Output(Bool())
     })
 
     io.ConfigInfo.LoadMicroTaskEndValid := false.B
@@ -193,6 +194,7 @@ class AccMemoryLegacy(implicit p: Parameters) extends CuteModule{
     val storeTaskIdle = memorystore_state === s_store_idle
     io.ConfigInfo.LoadMicroTaskReady := loadTaskIdle
     io.ConfigInfo.StoreMicroTaskReady := storeTaskIdle
+    io.idle := loadTaskIdle && storeTaskIdle
 
     when(io.ConfigInfo.LoadMicroTaskValid && io.ConfigInfo.LoadMicroTaskReady){
         CurrentLoadMatrixRegId := io.ConfigInfo.MatrixRegId

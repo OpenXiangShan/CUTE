@@ -40,6 +40,7 @@ class ResponseChannelBridge(
     val omegaBlockedCycles = Output(UInt(64.W))
     val omegaBlockedRespCycles = Output(UInt(64.W))
     val omegaBlockedResponses = Output(UInt(64.W))
+    val idle = Output(Bool())
   })
 
   private def log(msg: => Printable): Unit = {
@@ -150,6 +151,10 @@ class ResponseChannelBridge(
     Module(new Queue(UInt(metaWidth.W), queueDepth, pipe = true))
       .suggestName(s"${nameContext}_bank${bank}_resp_meta_queue")
   }
+
+  io.idle := !io.in.map(_.valid).reduce(_ || _) &&
+    !bankMetaQueues.map(_.io.deq.valid).reduce(_ || _) &&
+    !bankDataQueues.map(_.map(_.io.deq.valid).reduce(_ || _)).getOrElse(false.B)
 
   for (bank <- 0 until bankCount) {
     val metaQueue = bankMetaQueues(bank)

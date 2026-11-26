@@ -358,6 +358,7 @@ trait HasTransposeLoadEngine { this: CuteModule =>
     engine.io.command.valid := config.MicroTaskValid && !busy && config.Is_Transpose
     config.MicroTaskReady := !busy && engine.io.command.ready && normalConfig.MicroTaskReady
     config.MicroTaskEndValid := busy && Mux(transpose, engine.io.done.valid, normalConfig.MicroTaskEndValid)
+    config.MicroTaskFlags := Mux(busy && !transpose, normalConfig.MicroTaskFlags, 0.U)
     engine.io.done.ready := busy && transpose && config.MicroTaskEndReady
     engine.io.writeback.ready := true.B
 
@@ -435,14 +436,15 @@ trait HasTransposeLoadEngine { this: CuteModule =>
       DifftestModule.addCppMacro("CONFIG_DIFF_AMU_AB_REG_SIZE_BYTES", TrMatrixRegSize)
       val pc = RegEnable(config.pc.get, accepted)
       val coreid = RegEnable(config.coreid.get, accepted)
+      val dynamic = config.ConvertDynamic.map(value => RegEnable(value, false.B, accepted)).getOrElse(false.B)
       val events = MatrixRegWriteProbes.genWriteProbes(MatrixRegWriteProbes.abLoadHash, ports = 2)
       for (port <- 0 until 2) {
         val event = events(port)
         event.index := diffIndex.U
         event.pc := pc
         event.coreid := coreid
-        event.finish := (if (port == 0) config.MicroTaskEndValid && config.MicroTaskEndReady else false.B)
-        event.valid := target.WriteRequest.map(_(port).BankAddr.valid).reduce(_ || _) || event.finish
+        event.finish := !dynamic && (if (port == 0) config.MicroTaskEndValid && config.MicroTaskEndReady else false.B)
+        event.valid := !dynamic && (target.WriteRequest.map(_(port).BankAddr.valid).reduce(_ || _) || event.finish)
         val words = event.data.length / TrMatrixRegNBanks
         event.bankValid := VecInit(target.WriteRequest.map(_(port).BankAddr.valid)).asUInt
         for (bank <- 0 until TrMatrixRegNBanks) {

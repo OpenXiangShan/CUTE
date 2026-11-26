@@ -20,9 +20,11 @@ class ADataController(implicit p: Parameters) extends CuteModule{
         val FromMatrixRegIO = Flipped(new TrDataControlMatrixRegIO)
         val ConfigInfo = Flipped(new ADCMicroTaskConfigIO)
         val VectorA = DecoupledIO(UInt((ReduceWidth*Matrix_MN).W))
-        val ComputeGo = Input(Bool())// TE lockstep signal: the next operand can be accepted.
+        val ComputeGo = Input(Bool())//由TE发出的计算同步锁步信号，指可以接收新的数据了
+        val ReadIssueEnable = Input(Bool())
         val DebugInfo = Input(new DebugInfoIO)
         val MatrixRegId = Output(UInt(TrMatrixRegIdWidth.W))
+        val idle = Output(Bool())
         // val CaculateEnd = DecoupledIO(Bool())
         // val TaskEnd = Flipped(DecoupledIO(Bool()))
     })
@@ -126,6 +128,9 @@ class ADataController(implicit p: Parameters) extends CuteModule{
 
     val MatrixRegDataHoldReg = Reg(UInt(MatrixRegData.bits.asUInt.getWidth.W)) // Hold matrix-register data across MTE stalls to avoid rereading it.
     val MatrixRegDataHoldValid = RegInit(false.B) // Hold matrix-register data across MTE stalls to avoid rereading it.
+    io.idle := state === s_idle && calculate_state === s_cal_idle &&
+        !MatrixRegDataHoldValid && !MatrixRegData.valid && !MatrixRegRequestBankAddr.valid &&
+        !io.VectorA.valid && !ConfigInfo.MicroTaskValid && !ConfigInfo.MicroTaskEndValid
 
     // Initialize when the task is active and the compute state machine is in init.
     when(state === s_mm_task){
@@ -149,16 +154,18 @@ class ADataController(implicit p: Parameters) extends CuteModule{
                     printf("[ADataController<%d>]ADataController: M_Iterator is %d, N_Iterator is %d, K_Iterator is %d\n",io.DebugInfo.DebugTimeStampe, M_Iterator, N_Iterator, K_Iterator)
                     printf("[ADataController<%d>]ADataController: M_IteratorMax is %d, N_IteratorMax is %d, K_IteratorMax is %d\n",io.DebugInfo.DebugTimeStampe, M_IteratorMax, N_IteratorMax, K_IteratorMax)
                 }
-                // MTE iterates M, then N, then K; ComputeGo advances the Max_Caculate_Iter operand requests.
+                //MTE循环的最外层是M，然后是N，最后是K,所以这里在同步信号的ComputeGo的协同下，执行Max_Caculate_Iter次取数
                 val next_addr = Wire(UInt(TrMatrixRegBankNEntries.W))
-                next_addr := M_Iterator * K_IteratorMax + K_Iterator
+                // AML reserves the physical K capacity for every row group,
+                // even when this task consumes fewer vectors.
+                next_addr := M_Iterator * ReduceGroupSize.U + K_Iterator
                 MatrixRegRequestBankAddr.bits.foreach(_ := next_addr)
                 
-                // ComputeGo consumes one operand and permits the next read.
-                // The SRAM read takes one cycle; hold its response if computation stalls before it arrives.
-                // When ComputeGo resumes, forward the held operand to TE.
-                when(io.ComputeGo && ARequestVectorCount < Max_Caculate_Iter){
-                    // Calculate the operand read address.
+                //只要ComputeGo有效，就表示一定会有一个数据被消耗，我们可以继续取数
+                //但我们有一个周期的读数延迟，所以如果当前拍不能再继续计算，则我们取得数会在NACK，我们将NACK的数据保存在holdreg中
+                //只要等Computgo有效，就可以继续取数，我们会将NACK的数据输出给TE
+                when(io.ComputeGo && io.ReadIssueEnable && ARequestVectorCount < Max_Caculate_Iter){
+                    //计算取数地址
                     MatrixRegRequestBankAddr.valid := true.B
                     ARequestVectorCount := ARequestVectorCount + 1.U
                     N_Iterator := N_Iterator + 1.U

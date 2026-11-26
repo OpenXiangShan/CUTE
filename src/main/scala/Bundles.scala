@@ -151,6 +151,31 @@ object Bundles {
     }
   }
 
+  // Internal AMU transport extension. Ordinary LSU bits [125:0] are unchanged.
+  // The CPU producer must translate the scale address and explicitly supply
+  // this metadata; an ordinary e4/e8 load never implicitly becomes a scale load.
+  object AmuScaleLoad {
+    val FlagBit = 126
+    val ComputeTypeLo = 127
+    val ComputeTypeHi = 130
+
+    def selected(ctrl: AmuCtrlIO): Bool = ctrl.isMls() && ctrl.data(FlagBit)
+    def computeType(ctrl: AmuCtrlIO): UInt = ctrl.data(ComputeTypeHi, ComputeTypeLo)
+    def mmaComputeType(ctrl: AmuCtrlIO): UInt = ctrl.data(56, 53)
+  }
+
+  // Experimental internal transport extension, with exactly the same low
+  // 126-bit ordinary MLS layout. Its CPU producer must be explicitly gated.
+  object AmuConvertLoad {
+    val FlagBit = 131
+    // Experimental INTERNAL selector; CPU/ISA producers are integrated
+    // separately. This does not allocate a public instruction encoding.
+    val DynamicBit = 132
+    def selected(ctrl: AmuCtrlIO): Bool = ctrl.isMls() && ctrl.data(FlagBit)
+    def dynamic(ctrl: AmuCtrlIO): Bool = selected(ctrl) && ctrl.data(DynamicBit)
+    def computeType(ctrl: AmuCtrlIO): UInt = AmuScaleLoad.computeType(ctrl)
+  }
+
   class AmuReleaseIO(implicit p: Parameters) extends CuteBundle {
     val msyncRd = UInt(CuteMsyncRegIdxWidth.W)
   }
@@ -193,6 +218,8 @@ object Bundles {
 
     val pc = Option.when(EnableDifftest) (UInt(64.W))
     val coreid = Option.when(EnableDifftest) (UInt(8.W))
+    val retireId = Option.when(EnableDifftest) (UInt(64.W))
+    val epoch = Option.when(EnableDifftest) (UInt(64.W))
   }
 
   object AmuCtrlIO {

@@ -641,6 +641,8 @@ class MultiChannelTrLoader(
             TailByteMask := ConfigInfo.Tensor.TailByteMask
             K_Beat_Count := ConfigInfo.Tensor.K_Beat_Count
             assert(!ConfigInfo.Is_Transpose, s"[$label] transpose is disabled in this baseline")
+            assert(!ConfigInfo.ConvertF32ToMx && !ConfigInfo.ConvertF32ToI8 &&
+                !ConfigInfo.ConvertDynamic.getOrElse(false.B), s"[$label] converting loads require legacy TR loaders")
             if (ABBatchScheduleEnable && normalScheduleFullWidth && ABBatchScheduleMode == ABBatchSchedule.Permute) {
                 val completeBatches = ConfigInfo.MatrixRegTensor_M / TrMatrixRegNBanks.U
                 val validCounts = (1 to (Tensor_MN / TrMatrixRegNBanks)).filter(
@@ -681,6 +683,7 @@ class MultiChannelTrLoader(
 
     io.ConfigInfo.MicroTaskEndValid := false.B
     io.ConfigInfo.MicroTaskReady := false.B
+    io.ConfigInfo.MicroTaskFlags := 0.U
     io.MatrixRegId := CurrentMatrixRegId
 
     dontTouch(io)
