@@ -1,6 +1,7 @@
 package cute
 
 import chisel3._
+import chisel3.util.log2Ceil
 import difftest.{DiffAmuWritebackEvent, DiffAmuHashEvent, DifftestBundle, DifftestModule}
 import difftest.common.DifftestWiring
 import difftest.matrix.MatrixWritebackBatch
@@ -84,7 +85,7 @@ object CuteDifftest {
     ports: Int
   )(implicit p: Parameters): Vec[DiffAmuWritebackEvent] = {
     val module = Module(new MatrixHash(banks, bankBytes, regBytes, rowBytes, ports))
-    val writes = Wire(Vec(ports, new DiffAmuWritebackEvent(banks, bankBytes / 8)))
+    val writes = Wire(chiselTypeOf(module.io.in))
     module.io.in := writes
     // Combine concurrent writes in the accelerator domain, then transport
     // only the instruction's compact completion event across the clock boundary.
@@ -113,13 +114,14 @@ object MatrixRegWriteProbes {
   )(implicit p: Parameters) {
     private val probes = Seq(aLoad, bLoad, cLoad, mma)
     val writebackWordsPerBank: Int = maxWritebackWordsPerBank(probes)
+    val writebackBankAddrBits: Int = maxWritebackBankAddrBits(probes)
     val writebackHasMask: Boolean = Seq(aLoad, bLoad, cLoad).exists(probe => !probe.useHash)
 
     def parameters(description: MatrixRegWriteProbe): Parameters = {
       require(probes.contains(description), "Matrix write probe must belong to this configuration")
       if (!p(CuteParamsKey).EnableDifftest) p
       else {
-        val params = ProbeParams(description, writebackWordsPerBank, writebackHasMask)
+        val params = ProbeParams(description, writebackWordsPerBank, writebackBankAddrBits, writebackHasMask)
         // Forward queries directly: XSAI may supply a frozen Parameters cache.
         Parameters((_, _, _) => {
           case ProbeParamsKey => params
@@ -132,6 +134,7 @@ object MatrixRegWriteProbes {
   private case class ProbeParams(
     description: MatrixRegWriteProbe,
     writebackWordsPerBank: Int,
+    writebackBankAddrBits: Int,
     writebackHasMask: Boolean
   ) {
     def genWriteProbes(ports: Int)(implicit p: Parameters): Seq[DiffAmuWritebackEvent] = {
@@ -144,13 +147,16 @@ object MatrixRegWriteProbes {
         Seq.fill(ports) {
           val banks = description.banks(params)
           if (writebackHasMask) {
-            CuteDifftest(new DiffAmuWritebackEvent(banks, writebackWordsPerBank), dontCare = true)
+            CuteDifftest(new DiffAmuWritebackEvent(banks, writebackWordsPerBank,
+              bankAddrBits = writebackBankAddrBits), dontCare = true)
           } else {
             // Keep the local write probe masked; compact only the transported event.
-            val writes = Wire(new DiffAmuWritebackEvent(banks, writebackWordsPerBank))
+            val writes = Wire(new DiffAmuWritebackEvent(banks, writebackWordsPerBank,
+              bankAddrBits = writebackBankAddrBits))
             writes := DontCare
             writes.valid := false.B
-            val event = Wire(new DiffAmuWritebackEvent(banks, writebackWordsPerBank, hasMask = false))
+            val event = Wire(new DiffAmuWritebackEvent(banks, writebackWordsPerBank,
+              hasMask = false, bankAddrBits = writebackBankAddrBits))
             event.elements.foreach { case (name, field) => field := writes.elements(name) }
             if (ports == 1 && params.DifftestAsyncClockName.isEmpty) {
               val (block, finish) = MatrixWritebackBatch(event)
@@ -177,7 +183,9 @@ object MatrixRegWriteProbes {
     require(p(CuteParamsKey).EnableDifftest, "Matrix write probes require DiffTest")
     val params = p.lift(ProbeParamsKey).getOrElse {
       // A standalone producer derives its width from its own description.
-      ProbeParams(default, maxWritebackWordsPerBank(Seq(default)), writebackHasMask = true)
+      val probes = Seq(default)
+      ProbeParams(default, maxWritebackWordsPerBank(probes), maxWritebackBankAddrBits(probes),
+        writebackHasMask = true)
     }
     params.genWriteProbes(ports)
   }
@@ -193,6 +201,21 @@ object MatrixRegWriteProbes {
       require(widths.forall(bits => bits > 0 && bits % wordBits == 0),
         s"Writeback bank width must be positive and $wordBits-bit aligned")
       (widths :+ 0).max / wordBits
+    }
+  }
+
+  private def maxWritebackBankAddrBits(probes: Seq[MatrixRegWriteProbe])(implicit p: Parameters): Int = {
+    val params = p(CuteParamsKey)
+    if (!params.EnableDifftest) 8
+    else {
+      val widths = probes.filterNot(_.useHash).map { probe =>
+        val bytesPerEntry = probe.banks(params) * probe.bankBytes(params)
+        val regBytes = probe.regBytes(params)
+        require(bytesPerEntry > 0 && regBytes >= bytesPerEntry && regBytes % bytesPerEntry == 0,
+          "Matrix register bytes must fill a whole number of bank entries")
+        log2Ceil(regBytes / bytesPerEntry)
+      }
+      (widths :+ 8).max
     }
   }
 

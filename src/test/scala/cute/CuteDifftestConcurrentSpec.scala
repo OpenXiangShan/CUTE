@@ -25,22 +25,28 @@ class CuteDifftestConcurrentHarness(async: Boolean) extends Module {
   }
 }
 
-class CuteDifftestMaskHarness(rawLoad: Int, async: Boolean) extends Module {
+class CuteDifftestMaskHarness(rawLoad: Int, async: Boolean, tensorMN: Int) extends Module {
+  private val clockTag = s"writeback_mask_test_${tensorMN}_$rawLoad"
   implicit val p: Parameters = new Config((_, _, _) => {
     case CuteParamsKey => CuteParams.baseParams.copy(
+      Tensor_MN = tensorMN,
       EnableDifftest = true,
-      DifftestAsyncClockName = Option.when(async)(s"writeback_mask_test_$rawLoad"))
+      DifftestAsyncClockName = Option.when(async)(clockTag))
   })
-  if (async) CuteDifftest.publishSinkClock(s"writeback_mask_test_$rawLoad", clock, reset.asBool)
+  if (async) CuteDifftest.publishSinkClock(clockTag, clock, reset.asBool)
   val probes = MatrixRegWriteProbes.Params(
     aLoad = if (rawLoad == 1 || rawLoad == 4) MatrixRegWriteProbes.abLoadNoHash else MatrixRegWriteProbes.abLoadHash,
     bLoad = if (rawLoad == 2 || rawLoad == 4) MatrixRegWriteProbes.abLoadNoHash else MatrixRegWriteProbes.abLoadHash,
     cLoad = if (rawLoad == 3 || rawLoad == 4) MatrixRegWriteProbes.cLoadNoHash else MatrixRegWriteProbes.cLoadHash
   )
   assert(probes.writebackHasMask == (rawLoad != 0))
-  val writes = MatrixRegWriteProbes.genWriteProbes(MatrixRegWriteProbes.mma)(probes.parameters(probes.mma))
-  assert(writes.head.bankMask.nonEmpty, "Local write probes must retain their masks")
-  writes.head := 0.U.asTypeOf(writes.head)
+  val rawLoads = Seq(probes.aLoad, probes.bLoad, probes.cLoad).filterNot(_.useHash)
+  for (probe <- rawLoads :+ probes.mma) {
+    val writes = MatrixRegWriteProbes.genWriteProbes(probe)(probes.parameters(probe)).head
+    assert(writes.bankMask.nonEmpty, "Local write probes must retain their masks")
+    assert(writes.bankAddr.head.getWidth == probes.writebackBankAddrBits)
+    writes := 0.U.asTypeOf(writes)
+  }
 }
 
 class CuteDifftestConcurrentSpec extends AnyFlatSpec {
@@ -54,23 +60,30 @@ class CuteDifftestConcurrentSpec extends AnyFlatSpec {
     }
   }
 
-  for (async <- Seq(false, true); rawLoad <- 0 to 4) {
-    it should s"select one global mask layout with rawLoad=$rawLoad and async=$async" in {
+  for (async <- Seq(false, true); rawLoad <- 0 to 4; (tensorMN, addrBits) <- Seq(64 -> 8, 128 -> 10)) {
+    it should s"select one writeback layout with MN=$tensorMN, rawLoad=$rawLoad and async=$async" in {
       val previous = DifftestModule.get_current_interfaces().size
-      ChiselStage.emitCHIRRTL(new CuteDifftestMaskHarness(rawLoad, async))
+      ChiselStage.emitCHIRRTL(new CuteDifftestMaskHarness(rawLoad, async, tensorMN))
       val events = DifftestModule.get_current_interfaces().drop(previous).map(_._1)
       val writeback = events.collect { case event: DiffAmuWritebackEvent => event }
-      assert(writeback.size == 1)
+      assert(writeback.size == (if (rawLoad == 0) 1 else if (rawLoad == 4) 4 else 2))
       val blocks = events.collect { case event: DiffAmuWritebackBlock => event }
       assert(blocks.size == (if (rawLoad == 0 && !async) 1 else 0))
-      val event = writeback.head
-      assert(event.bankValid.getWidth == event.nBanks)
-      assert(!event.toCppDeclaration(packed = true, aligned = false).contains("bankValid["))
-      assert(event.bankMask.isDefined == (rawLoad != 0))
-      assert(event.elements.contains("bankMask") == (rawLoad != 0))
-      val replay = BundleProfile.fromBundle(event, 0).toBundle.asInstanceOf[DiffAmuWritebackEvent]
-      assert(replay.hasMask == event.hasMask)
-      assert(replay.getWidth == event.getWidth)
+      for (event <- writeback) {
+        assert(event.bankValid.getWidth == event.nBanks)
+        assert(!event.toCppDeclaration(packed = true, aligned = false).contains("bankValid["))
+        assert(event.bankMask.isDefined == (rawLoad != 0))
+        assert(event.elements.contains("bankMask") == (rawLoad != 0))
+        assert(event.bankAddr.head.getWidth == addrBits)
+        val replay = BundleProfile.fromBundle(event, 0).toBundle.asInstanceOf[DiffAmuWritebackEvent]
+        assert(replay.hasMask == event.hasMask)
+        assert(replay.getWidth == event.getWidth)
+      }
+      for (block <- blocks) {
+        assert(block.bankAddr.head.getWidth == addrBits)
+        val replay = BundleProfile.fromBundle(block, 0).toBundle.asInstanceOf[DiffAmuWritebackBlock]
+        assert(replay.getWidth == block.getWidth)
+      }
     }
   }
 }
