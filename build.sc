@@ -9,11 +9,20 @@ import $file.`rocket-chip`.hardfloat.common
 import $file.XSAICache.common
 
 val projectRoot = os.Path(sys.env("MILL_WORKSPACE_ROOT"))
+val xsaiRoot = sys.env.get("NOOP_HOME").map(root => os.Path(root))
 val localDifftestRoot = projectRoot / "difftest"
 val siblingDifftestRoot = projectRoot / os.up / "difftest"
-val difftestRoot = Seq(localDifftestRoot, siblingDifftestRoot)
-  .find(path => os.exists(path / "src" / "main" / "scala"))
-  .getOrElse(localDifftestRoot)
+val difftestRoot = xsaiRoot match {
+  case Some(root) =>
+    val path = root / "difftest"
+    require(os.isDir(path / "src" / "main" / "scala"),
+      s"NOOP_HOME points to $root; initialize its Difftest submodule before compiling CUTE")
+    path
+  case None =>
+    Seq(localDifftestRoot, siblingDifftestRoot)
+      .find(path => os.exists(path / "src" / "main" / "scala"))
+      .getOrElse(localDifftestRoot)
+}
 val difftestSourceFiles =
   if (os.exists(difftestRoot / "src" / "main" / "scala")) {
     os.walk(difftestRoot / "src" / "main" / "scala")
@@ -22,8 +31,8 @@ val difftestSourceFiles =
   } else Seq.empty
 // Match the parent XSAI build's existing fudian dependency. NOOP_HOME is
 // the canonical XSAI source-root override; otherwise use the sibling checkout.
-val fudianRoot = sys.env.get("NOOP_HOME")
-  .map(root => os.Path(root) / "fudian")
+val fudianRoot = xsaiRoot
+  .map(root => root / "fudian")
   .getOrElse(projectRoot / os.up / "fudian")
 val defaultScalaVersion = "2.13.15"
 def defaultVersions = Map(
