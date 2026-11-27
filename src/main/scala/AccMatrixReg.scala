@@ -6,6 +6,16 @@ import chisel3.util._
 import org.chipsalliance.cde.config._
 import utility.sram.SRAMTemplate
 
+// Bit zero selects the SRAM. Swapping adjacent columns on odd block rows
+// leaves the set unchanged and makes horizontal and vertical neighbors disjoint.
+object AccBlockLayout {
+    def swapColumn(row: UInt, col: UInt): UInt = col ^ row(0)
+    def remap(addr: UInt, columns: Int): UInt = {
+        require(isPow2(columns))
+        if (columns == 1) addr else addr ^ (addr >> log2Ceil(columns))(0)
+    }
+}
+
 class AccMatrixRegIO(implicit p: Parameters) extends CuteBundle {
     val FromDataController = new AccDataControlMatrixRegIO
     val FromMemoryLoader = new AccMemoryMatrixRegIO
@@ -36,24 +46,6 @@ class AccMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
         "AccMatrixReg: data controller and memory loader writes cannot be active together"
     )
 
-    val readRequestPerBankAddr = WireInit(VecInit(Seq.fill(AccMatrixRegNBanks)(0.U(log2Ceil(AccMatrixRegBankNEntries).W))))
-    val readRequestPerBankValid = WireInit(VecInit(Seq.fill(AccMatrixRegNBanks)(false.B)))
-    val readRequestResponseValid = RegInit(VecInit(Seq.fill(AccMatrixRegNBanks)(false.B)))
-
-    for (bank <- 0 until AccMatrixRegNBanks) {
-        readRequestPerBankAddr(bank) := Mux(
-            decodeRequest.IsReadFromDataController,
-            io.MatrixRegIO.FromDataController.ReadBankAddr(bank).bits,
-            io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr(bank).bits
-        )
-        readRequestPerBankValid(bank) := Mux(
-            decodeRequest.IsReadFromDataController,
-            io.MatrixRegIO.FromDataController.ReadBankAddr(bank).valid,
-            io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.BankAddr(bank).valid
-        )
-        readRequestResponseValid(bank) := readRequestPerBankValid(bank)
-    }
-
     val sramBanks = (0 until AccMatrixRegNBanks).map { bankIdx =>
         val bankDepthHalf = (AccMatrixRegBankNEntries + 1) / 2
         val evenBank = Module(new SRAMTemplate(
@@ -77,25 +69,35 @@ class AccMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
             suffix = Some("cute_cmat")
         )).suggestName("CUTE-Acc-MatrixReg-Odd-SRAM")
 
-        val readAddr = readRequestPerBankAddr(bankIdx)
-        val readValid = readRequestPerBankValid(bankIdx)
-        val readParity = readAddr(0)
-        val readIdx = readAddr >> 1
-        val s1ReadParity = RegNext(readParity)
-
-        io.MatrixRegIO.FromDataController.ReadResponseData(bankIdx).bits :=
-            Mux(s1ReadParity, oddBank.io.r.resp.data.asUInt, evenBank.io.r.resp.data.asUInt)
-        io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bankIdx).bits :=
-            Mux(s1ReadParity, oddBank.io.r.resp.data.asUInt, evenBank.io.r.resp.data.asUInt)
-        io.MatrixRegIO.FromDataController.ReadResponseData(bankIdx).valid :=
-            decodePreRequest.IsReadFromDataController && readRequestResponseValid(bankIdx)
-        io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg.ReadResponseData(bankIdx).valid :=
-            decodePreRequest.IsReadFromMemoryLoader && readRequestResponseValid(bankIdx)
-
-        evenBank.io.r.req.valid := readValid && !readParity
-        evenBank.io.r.req.bits.setIdx := readIdx
-        oddBank.io.r.req.valid := readValid && readParity
-        oddBank.io.r.req.bits.setIdx := readIdx
+        val dc = io.MatrixRegIO.FromDataController
+        val store = io.MatrixRegIO.FromMemoryLoader.ReadRequestToMatrixReg
+        val readAddr = Seq(
+            Mux(decodeRequest.IsReadFromDataController, dc.ReadBankAddr(bankIdx).bits, store.BankAddr(bankIdx)(0).bits),
+            store.BankAddr(bankIdx)(1).bits
+        )
+        val readValid = Seq(
+            (decodeRequest.IsReadFromDataController && dc.ReadBankAddr(bankIdx).valid) ||
+                (decodeRequest.IsReadFromMemoryLoader && store.BankAddr(bankIdx)(0).valid),
+            decodeRequest.IsReadFromMemoryLoader && store.BankAddr(bankIdx)(1).valid
+        )
+        val memories = Seq(evenBank, oddBank)
+        for ((mem, parity) <- memories.zipWithIndex) {
+            val select = readAddr.indices.map(i => readValid(i) && readAddr(i)(0) === parity.U)
+            assert(PopCount(select) <= 1.U, "ACC read slots must select different SRAMs")
+            mem.io.r.req.valid := select.reduce(_ || _)
+            mem.io.r.req.bits.setIdx := Mux(select(0), readAddr(0), readAddr(1)) >> 1
+        }
+        for (slot <- readAddr.indices) {
+            val odd = RegNext(readAddr(slot)(0))
+            val data = Mux(odd, oddBank.io.r.resp.data.asUInt, evenBank.io.r.resp.data.asUInt)
+            val valid = RegNext(readValid(slot), false.B)
+            store.ReadResponseData(bankIdx)(slot).bits := data
+            store.ReadResponseData(bankIdx)(slot).valid := valid && decodePreRequest.IsReadFromMemoryLoader
+            if (slot == 0) {
+                dc.ReadResponseData(bankIdx).valid := valid && decodePreRequest.IsReadFromDataController
+                dc.ReadResponseData(bankIdx).bits := data
+            }
+        }
 
         val dcWriteAddr = io.MatrixRegIO.FromDataController.WriteBankAddr(bankIdx).bits
         val dcWriteData = io.MatrixRegIO.FromDataController.WriteRequestData(bankIdx).bits
@@ -113,18 +115,6 @@ class AccMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
             loaderLaneValid(lane) := decodeRequest.IsWriteFromMemoryLoader && valids.andR
             assert(valids === 0.U || valids.andR, "AccMatrixReg: loader lane valids must agree")
         }
-        when(loaderLaneValid(1)) {
-            assert(loaderLaneValid(0), "AccMatrixReg: loader lane 1 requires lane 0")
-            assert(
-                loaderWrites(1).BankAddr.bits === loaderWrites(0).BankAddr.bits + 1.U,
-                "AccMatrixReg: loader pair addresses must be consecutive"
-            )
-            assert(
-                loaderWrites(1).BankAddr.bits(0) =/= loaderWrites(0).BankAddr.bits(0),
-                "AccMatrixReg: loader pair must target opposite parity banks"
-            )
-        }
-
         val loaderEvenSelect = VecInit((0 until 2).map { lane =>
             loaderLaneValid(lane) && !loaderWrites(lane).BankAddr.bits(0)
         })
@@ -165,9 +155,9 @@ class AccMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
         oddBank.io.w.req.bits.waymask.get := oddWriteMask
         oddBank.io.w.req.bits.data := oddWriteData.asTypeOf(Vec(AccMatrixRegEntryByteSize, UInt(8.W)))
 
-        assert(!(readValid && !readParity && evenWriteValid),
+        assert(!(evenBank.io.r.req.valid && evenWriteValid),
             "AccMatrixReg: even single-port SRAM read/write conflict")
-        assert(!(readValid && readParity && oddWriteValid),
+        assert(!(oddBank.io.r.req.valid && oddWriteValid),
             "AccMatrixReg: odd single-port SRAM read/write conflict")
 
         (evenBank, oddBank)

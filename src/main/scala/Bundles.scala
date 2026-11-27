@@ -73,9 +73,7 @@ object Bundles {
   object Mtilex {
     def apply(): UInt = UInt(width.W)
 
-    // TODO: use a correct width
-    // The mlwidth is just a placeholder
-    def width = 9
+    def width = MatrixTileDim.width
   }
 
   class AmuMmaIO extends Bundle {
@@ -210,45 +208,6 @@ object Bundles {
 object CutePerfEventCounts {
   val Backend = 9
   val Mem = 12
-}
-
-class TrStoreCommand(implicit p: Parameters) extends CuteBundle {
-  val regId = UInt(TrMatrixRegIdWidth.W)
-  val base = UInt(MMUAddrWidth.W)
-  val stride = UInt(MMUAddrWidth.W)
-  val rows = Bundles.Mtilex()
-  val columns = Bundles.Mtilex()
-  val widths = UInt(3.W)
-  val transpose = Bool()
-  val pc = Option.when(EnableDifftest)(UInt(64.W))
-  val coreid = Option.when(EnableDifftest)(UInt(8.W))
-}
-
-class TrStoreIO(implicit p: Parameters) extends CuteBundle {
-  val command = Flipped(Decoupled(new TrStoreCommand))
-  val done = Decoupled(Bool())
-  val read = Flipped(new TrStoreMatrixRegReadIO)
-  val memory = Flipped(new LocalMMUIO)
-  val regId = Output(UInt(TrMatrixRegIdWidth.W))
-}
-
-class TrStoreControlIO(implicit p: Parameters) extends CuteBundle {
-  val command = Decoupled(new TrStoreCommand)
-  val done = Flipped(Decoupled(Bool()))
-}
-
-class TrStoreMatrixRegReadIO(implicit p: Parameters) extends CuteBundle {
-  val readLanes = outsideDataWidthByte / TrMatrixRegEntryByteSize
-  require(readLanes == 1 || readLanes == 2)
-
-  val BankAddr = Flipped(DecoupledIO(Vec(
-    TrMatrixRegNBanks,
-    Vec(readLanes, UInt(log2Ceil(TrMatrixRegBankNEntries).W))
-  )))
-  val Data = Valid(Vec(
-    TrMatrixRegNBanks,
-    Vec(readLanes, UInt(TrMatrixRegEntryBitSize.W))
-  ))
 }
 
 class TaskControllerPerfProbe(implicit p: Parameters) extends CuteBundle {

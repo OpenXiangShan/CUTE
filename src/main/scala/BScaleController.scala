@@ -108,9 +108,6 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
     val MatrixRegDataHoldValid = RegInit(false.B) // Hold matrix-register data across MTE stalls to avoid rereading it.
 
     val bit_index = RegInit(VecInit(Seq.fill(Matrix_MN)(0.U(log2Ceil(MatrixRegMaxTensorDimBitSize * ScaleWidth).W))))
-    for (i <- 0 until Matrix_MN){
-        bit_index(i) := ((i * ReduceGroupSize).U + K_Iterator) * (ScaleVecWidth(computeType) * 8.U)
-    }
 
     // Initialize when the task is active and the compute state machine is in init.
     when(state === s_mm_task){
@@ -135,9 +132,10 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
             //     printf("[BDataController<%d>]BDataController: M_IteratorMax is %d, N_IteratorMax is %d, K_IteratorMax is %d\n",io.DebugInfo.DebugTimeStampe, M_IteratorMax, N_IteratorMax, K_IteratorMax)
             // }
             // MTE iterates M, then N, then K; ComputeGo advances the Max_Caculate_Iter operand requests.
+            val logicalColumn = AccBlockLayout.swapColumn(M_Iterator, N_Iterator)
             val next_addr = Wire(UInt(TrMatrixRegBankNEntries.W))
-            next_addr := (N_Iterator * Matrix_MN.U * K_IteratorMax) * ScaleVecWidth(computeType) * 8.U / outsideDataWidth.U 
-            sliceid := ((N_Iterator * Matrix_MN.U * K_IteratorMax) * ScaleVecWidth(computeType) * 8.U / (ScaleWidth * ReduceGroupSize).U) % ABScaleNSlices.U
+            val bitOffset = logicalColumn * Matrix_MN.U * K_IteratorMax * ScaleVecWidth(computeType) * 8.U
+            next_addr := bitOffset / outsideDataWidth.U
             MatrixRegRequestBankAddr.bits := next_addr
             
             // ComputeGo consumes one operand and permits the next read.
@@ -145,6 +143,11 @@ class BScaleController(implicit p: Parameters) extends CuteModule{
             // When ComputeGo resumes, forward the held operand to TE.
             when(io.ComputeGo && BRequestVectorCount < Max_Caculate_Iter){
                 // Calculate the operand read address.
+                // Keep the slice paired with the held SRAM response across ComputeGo stalls.
+                for (i <- 0 until Matrix_MN) {
+                    bit_index(i) := ((i * ReduceGroupSize).U + K_Iterator) * (ScaleVecWidth(computeType) * 8.U)
+                }
+                sliceid := bitOffset / (ScaleWidth * ReduceGroupSize).U % ABScaleNSlices.U
                 MatrixRegRequestBankAddr.valid := true.B
                 BRequestVectorCount := BRequestVectorCount + 1.U
                 N_Iterator := N_Iterator + 1.U

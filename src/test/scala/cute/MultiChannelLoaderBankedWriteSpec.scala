@@ -202,8 +202,8 @@ class MultiChannelLoaderBankedWriteSpec extends AnyFlatSpec with ChiselScalatest
       dut.io.ToMatrixRegIO.LoadReadWriteResponse.poke(0.U)
       dut.io.ToMatrixRegIO.StoreReadWriteResponse.poke(0.U)
       for (bank <- 0 until dut.AccMatrixRegNBanks) {
-        dut.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).valid.poke(false.B)
-        dut.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).bits.poke(0.U)
+        dut.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).foreach(_.valid.poke(false.B))
+        dut.io.ToMatrixRegIO.ReadRequestToMatrixReg.ReadResponseData(bank).foreach(_.bits.poke(0.U))
       }
       dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
       dut.io.ConfigInfo.ApplicationTensor_C.ApplicationTensor_C_BaseVaddr.poke(0.U)
