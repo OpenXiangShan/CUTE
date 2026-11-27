@@ -25,7 +25,7 @@ class TrMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
     for (bank <- 0 until TrMatrixRegNBanks) {
         for (lane <- 0 until 2) {
             val write = memoryLoaderWrites(bank)(lane)
-            val valids = Cat(write.BankAddr.valid, write.Data.valid, write.ByteMask.valid)
+            val valids = Cat(write.BankAddr.valid, write.Data.valid, write.NibbleMask.valid)
             laneValid(bank)(lane) := valids.andR
             assert(valids === 0.U || valids.andR, "TrMatrixReg: loader lane valids must agree")
         }
@@ -60,9 +60,9 @@ class TrMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
     val sramBanks = (0 until TrMatrixRegNBanks).map { bankIdx =>
         val bankDepthHalf = (TrMatrixRegBankNEntries + 1) / 2
         val evenBank = Module(new SRAMTemplate(
-            gen = UInt(8.W),
+            gen = UInt(4.W),
             set = bankDepthHalf,
-            way = TrMatrixRegEntryByteSize,
+            way = 2 * TrMatrixRegEntryByteSize,
             singlePort = true,
             latency = 1,
             hasMbist = false,
@@ -70,9 +70,9 @@ class TrMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
             suffix = Some("cute_abmat")
         )).suggestName("CUTE-TR-MatrixReg-Even-SRAM")
         val oddBank = Module(new SRAMTemplate(
-            gen = UInt(8.W),
+            gen = UInt(4.W),
             set = bankDepthHalf,
-            way = TrMatrixRegEntryByteSize,
+            way = 2 * TrMatrixRegEntryByteSize,
             singlePort = true,
             latency = 1,
             hasMbist = false,
@@ -103,8 +103,10 @@ class TrMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
         }
         val storeEvenAddr = Mux1H(storeEvenSelect, storeReadAddrs)
         val storeOddAddr = Mux1H(storeOddSelect, storeReadAddrs)
-        // A paired request always covers opposite parity SRAMs.
-        val s1StoreParity = RegNext(storeReadAddrs(0)(0))
+        // Bind the physical bank and the responding TR to the accepted read.
+        // An idle TR contributes zero to the shared store data bus.
+        val returnEvenFirst = RegNext(storeReadGo && !storeReadAddrs(0)(0), false.B)
+        val returnOddFirst = RegNext(storeReadGo && storeReadAddrs(0)(0), false.B)
 
         evenBank.io.r.req.valid :=
             (computeReadGo && !readParity) || (storeReadGo && storeEvenSelect.asUInt.orR)
@@ -126,8 +128,10 @@ class TrMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
         val readData = Mux(s1ReadParity, oddReadData, evenReadData)
         dataControllerData(bankIdx) := readData
         for (lane <- 0 until io.MatrixRegIO.FromStore.readLanes) {
-            io.MatrixRegIO.FromStore.Data.bits(bankIdx)(lane) :=
-                Mux(if (lane == 0) s1StoreParity else !s1StoreParity, oddReadData, evenReadData)
+            val (fromEven, fromOdd) =
+                if (lane == 0) (returnEvenFirst, returnOddFirst) else (returnOddFirst, returnEvenFirst)
+            io.MatrixRegIO.FromStore.Data.bits(bankIdx)(lane) := Mux1H(
+                Seq(fromEven -> evenReadData, fromOdd -> oddReadData))
         }
 
         val evenSelect = VecInit((0 until 2).map { lane =>
@@ -144,13 +148,13 @@ class TrMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
 
         evenBank.io.w.req.valid := evenSelect.asUInt.orR
         evenBank.io.w.req.bits.setIdx := evenWrite.BankAddr.bits >> 1
-        evenBank.io.w.req.bits.waymask.get := evenWrite.ByteMask.bits
-        evenBank.io.w.req.bits.data := evenWrite.Data.bits.asTypeOf(Vec(TrMatrixRegEntryByteSize, UInt(8.W)))
+        evenBank.io.w.req.bits.waymask.get := evenWrite.NibbleMask.bits
+        evenBank.io.w.req.bits.data := evenWrite.Data.bits.asTypeOf(Vec(2 * TrMatrixRegEntryByteSize, UInt(4.W)))
 
         oddBank.io.w.req.valid := oddSelect.asUInt.orR
         oddBank.io.w.req.bits.setIdx := oddWrite.BankAddr.bits >> 1
-        oddBank.io.w.req.bits.waymask.get := oddWrite.ByteMask.bits
-        oddBank.io.w.req.bits.data := oddWrite.Data.bits.asTypeOf(Vec(TrMatrixRegEntryByteSize, UInt(8.W)))
+        oddBank.io.w.req.bits.waymask.get := oddWrite.NibbleMask.bits
+        oddBank.io.w.req.bits.data := oddWrite.Data.bits.asTypeOf(Vec(2 * TrMatrixRegEntryByteSize, UInt(4.W)))
 
         if (YJPDebugEnable) {
             when(RegNext(computeReadGo)) {
@@ -171,7 +175,7 @@ class TrMatrixReg(scp_id: Int)(implicit p: Parameters) extends CuteModule {
                         lane.U,
                         memoryLoaderWrites(bankIdx)(lane).BankAddr.bits,
                         memoryLoaderWrites(bankIdx)(lane).Data.bits,
-                        memoryLoaderWrites(bankIdx)(lane).ByteMask.bits
+                        memoryLoaderWrites(bankIdx)(lane).NibbleMask.bits
                     )
                 }
             }

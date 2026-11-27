@@ -368,6 +368,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val waitReadBMask = UInt(WinDepth.W)
     val opKind = TaskCtrlOpKind()
     val entry = new DecodedAmuCtrlEntry
+    val trLoadBeats = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val trTailBytes = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+    val trOddTail = Bool()
     val seqId = UInt(SeqIdWidth.W)
     val fifoIdx = UInt(4.W)
   }
@@ -573,10 +576,14 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     readyBySlot(slotIdx) := slotCanConsider && slotDepReady && slotFuReady
   }
 
-  val readyByAge = VecInit(readyBySlot.rotate(winHead))
-  val normalIssueFound = readyByAge.asUInt.orR
-  val issueAgeOH = PriorityEncoderOH(readyByAge)
-  val issueSlotOH = VecInit(issueAgeOH.rotateRight(winHead))
+  // Circular oldest-first priority: search from the head to the end, then wrap.
+  // Both fixed-priority searches run in parallel on physical slot indices.
+  val readyFromHead = VecInit(readyBySlot.zipWithIndex.map { case (ready, i) =>
+    ready && winHead <= i.U
+  }).asUInt
+  val normalIssueFound = readyBySlot.asUInt.orR
+  val issueSlotOH = Mux(readyFromHead.orR, PriorityEncoderOH(readyFromHead),
+    PriorityEncoderOH(readyBySlot.asUInt))
   val releaseHoldValid = RegInit(false.B)
   val releaseHoldSlotIdx = RegInit(0.U(SlotIdxWidth.W))
   val issueSlotIdx = WireInit(0.U(SlotIdxWidth.W))
@@ -661,7 +668,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       is(Bundles.MSew.e8)  { byteCount := dimWide }
       is(Bundles.MSew.e16) { byteCount := (dimWide << 1)(loadByteCountBits - 1, 0) }
       is(Bundles.MSew.e32) { byteCount := (dimWide << 2)(loadByteCountBits - 1, 0) }
-      is(Bundles.MSew.e4)  { byteCount := dimWide >> 1 }
+      is(Bundles.MSew.e4)  { byteCount := (dimWide +& 1.U) >> 1 }
     }
     byteCount
   }
@@ -795,24 +802,38 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     }
   }
 
+  // The command handshake gates consumption. Route geometry independently of FU readiness.
+  val trSwapDims = issueLsu.isB ^ issueLsu.transpose
+  for (cfg <- Seq(io.trLoader0Config, io.trLoader1Config)) {
+    cfg.Tensor.baseVaddr := issueLsu.baseAddr
+    cfg.Tensor.stride := issueLsu.stride
+    cfg.Tensor.widths := issueLsu.widths
+    cfg.Tensor.rowElements := Mux(trSwapDims, issueLsu.row, issueLsu.column)
+    cfg.MatrixRegTensor_M := Mux(trSwapDims, issueLsu.column, issueLsu.row)
+    cfg.MatrixRegTensor_K := issueSlot.trLoadBeats
+    cfg.Tensor.K_Beat_Count := issueSlot.trLoadBeats
+    cfg.Tensor.TailByteMask := issueSlot.trTailBytes
+    cfg.Tensor.HasTail := issueSlot.trTailBytes.orR
+    cfg.Tensor.oddE4Tail := issueSlot.trOddTail
+  }
+
+  // The descriptor is consumed only on command.fire. Keep FU readiness off
+  // the data bus, as on the TR load descriptor above.
+  io.trStorer0.command.bits.regId := issueLsu.ms(1, 0)
+  io.trStorer0.command.bits.base := issueLsu.baseAddr
+  io.trStorer0.command.bits.stride := issueLsu.stride
+  // Both A and B stores use trStorer0. B packets are K/N; TR images are N/K.
+  io.trStorer0.command.bits.rows := Mux(issueLsu.isB, issueLsu.column, issueLsu.row)
+  io.trStorer0.command.bits.columns := Mux(issueLsu.isB, issueLsu.row, issueLsu.column)
+  io.trStorer0.command.bits.widths := issueLsu.widths
+  io.trStorer0.command.bits.transpose := issueLsu.transpose
+
   when(issueFire) {
     switch(issueSlot.opKind) {
       is(TaskCtrlOpKind.LoadA, TaskCtrlOpKind.LoadB) {
         val isB = issueSlot.opKind === TaskCtrlOpKind.LoadB
-        // Geometry is architectural; execution unit selection must not swap A/B meaning.
-        val matrixDim = Mux(isB ^ issueLsu.transpose, issueLsu.column, issueLsu.row)
-        val reduceDim = Mux(isB ^ issueLsu.transpose, issueLsu.row, issueLsu.column)
-        val beatCount = loadBeatCount(reduceDim, issueLsu.widths)
         for ((cfg, unit) <- Seq(io.trLoader0Config, io.trLoader1Config).zipWithIndex) {
-          cfg.Tensor.baseVaddr := issueLsu.baseAddr
-          cfg.Tensor.stride := issueLsu.stride
-          cfg.Tensor.dataType := loadDataType(issueLsu.widths)
-          cfg.Tensor.HasTail := loadHasTail(reduceDim, issueLsu.widths)
-          cfg.Tensor.TailByteMask := loadTailByteMask(reduceDim, issueLsu.widths)
-          cfg.Tensor.K_Beat_Count := beatCount
           cfg.LoadTaskInfo.Is_FullLoad := true.B
-          cfg.MatrixRegTensor_M := matrixDim
-          cfg.MatrixRegTensor_K := beatCount
           cfg.MatrixRegId := issueLsu.ms(1, 0)
           cfg.PrefetchTaskId.foreach(_ := issueSlot.seqId)
           cfg.PrefetchStream.foreach(_ := Mux(isB, MatrixPrefetchStream.b, MatrixPrefetchStream.a))
@@ -942,7 +963,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       is(TaskCtrlOpKind.ZeroTr) {
         val regIdx = issueArith.md(1, 0)
 
-        io.trLoader0Config.Tensor.dataType := ElementDataType.DataTypeWidth8
+        io.trLoader0Config.Tensor.widths := Bundles.MSew.e8
         io.trLoader0Config.MatrixRegTensor_M := cuteParams.Tensor_MN.U
         io.trLoader0Config.MatrixRegTensor_K := cuteParams.Tensor_K.U / ReduceWidthByte.U
         io.trLoader0Config.MatrixRegId := regIdx
@@ -1090,14 +1111,6 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
           // Both store backends accept only while idle and return to idle on
           // done.fire, exactly when this FU tracker releases its owner.
           assert(command.ready, "TaskController: idle TR store tracker requires a ready backend")
-          command.bits.regId := regIdx
-          command.bits.base := issueLsu.baseAddr
-          command.bits.stride := issueLsu.stride
-          // Both A and B stores use trStorer0. B packets are K/N; TR images are N/K.
-          command.bits.rows := Mux(issueLsu.isB, issueLsu.column, issueLsu.row)
-          command.bits.columns := Mux(issueLsu.isB, issueLsu.row, issueLsu.column)
-          command.bits.widths := issueLsu.widths
-          command.bits.transpose := issueLsu.transpose
           command.bits.pc.zip(issueCtrl.pc).foreach { case (to, from) => to := from }
           command.bits.coreid.zip(issueCtrl.coreid).foreach { case (to, from) => to := from }
         }
@@ -1274,6 +1287,21 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     newSlot.waitReadBMask := 0.U
     newSlot.opKind := deqOpKind
     newSlot.entry := deqEntry
+    // A beat has a power-of-two number of elements at every supported EEW.
+    // Derive both counts from the same unrounded element length before issue.
+    val trRowElements = Mux(deqLsu.isB ^ deqLsu.transpose, deqLsu.row, deqLsu.column)
+    val trFullBeats = TrElementWidth.select(deqLsu.widths) { bits =>
+      trRowElements >> log2Ceil(outsideDataWidthByte * 8 / bits)
+    }
+    val nibbleOffsetBits = log2Ceil(outsideDataWidthByte * 2)
+    val trTailNibbles = TrElementWidth.select(deqLsu.widths) { bits =>
+      (trRowElements.pad(nibbleOffsetBits) << log2Ceil(bits / 4))(nibbleOffsetBits - 1, 0)
+    }
+    when(deqIsLoad && !deqLsu.isacc) {
+      newSlot.trLoadBeats := trFullBeats +& trTailNibbles.orR
+      newSlot.trOddTail := trTailNibbles(0)
+      newSlot.trTailBytes := (trTailNibbles >> 1) +& trTailNibbles(0)
+    }
     newSlot.seqId := seqIdAlloc
     newSlot.fifoIdx := 0.U
 

@@ -26,8 +26,8 @@ object LoaderBankedWriteTestUtils {
       write.BankAddr.bits.poke(0.U)
       write.Data.valid.poke(false.B)
       write.Data.bits.poke(0.U)
-      write.ByteMask.valid.poke(false.B)
-      write.ByteMask.bits.poke(0.U)
+      write.NibbleMask.valid.poke(false.B)
+      write.NibbleMask.bits.poke(0.U)
     }
   }
 

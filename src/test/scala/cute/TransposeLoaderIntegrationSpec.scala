@@ -133,19 +133,21 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
           }
           // Alternate mlat/mlbt and ordinary A/B commands, including register
           // reuse and partial source beats. All e16/e32 element bytes differ.
-          for (lg <- 0 to 2; trans <- Seq(true, false); isB <- Seq(false, true)) {
-            val e = 1 << lg
-            val rows = if (trans) 9 else 11
-            val cols = if (trans) (if (banks == 8) 127 else 63) else 13
+          for (lg <- 0 to 3; trans <- Seq(true, false); isB <- Seq(false, true)) {
+            val nibbles = if (lg == 3) 1 else 2 << lg
+            val rows = if (trans && lg == 3 && banks == 4) 128 else if (trans) 9 else 11
+            val cols = if (trans) (if (banks == 8) 127 else 63) else if (lg == 3) 127 else 13
             val blockLoader1 = !trans && lg == 1
             dut.io.blockLoader1.poke(blockLoader1.B)
             val host = if (trans || blockLoader1) 0 else 1
             val reg = if (isB) 3 else 2
             def value(r: Int, colByte: Int): Int = (r * 37 + colByte * 17 + (if (isB) 71 else 9)) & 255
-            val expected = (for (r <- 0 until rows; c <- 0 until cols; by <- 0 until e) yield {
+            val expected = (for (r <- 0 until rows; c <- 0 until cols; i <- 0 until nibbles) yield {
               val destRow = if (trans) c else r
-              val destByte = (if (trans) r else c) * e + by
-              ((destRow % banks, (destRow / banks) * 2 + destByte / 32, destByte % 32), value(r, c * e + by))
+              val dest = (if (trans) r else c) * nibbles + i
+              val src = c * nibbles + i
+              val element = (value(r, src / 2) >> (4 * (src % 2))) & 15
+              ((destRow % banks, (destRow / banks) * 2 + dest / 64, dest % 64), element)
             }).toMap
             val got = mutable.Map.empty[(Int, Int, Int), Int]
             val pending = Array.fill(2)(mutable.ArrayBuffer.empty[Response])
@@ -167,7 +169,7 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
             cmd.column.poke((if (isB == trans) cols else rows).U)
             // Normal A expects (row, column); transposed A expects the
             // destination shape (source column, source row). B reverses it.
-            cmd.widths.poke(lg.U)
+            cmd.widths.poke((if (lg == 3) 7 else lg).U)
             while (!completed && cycle < 4000) {
               dut.io.command.valid.poke((!sent).B)
               for (h <- 0 until 2) {
@@ -216,12 +218,12 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
                       assert(h == host)
                       dut.io.targetId(h).expect(reg.U)
                       val address = write.BankAddr.bits.peek().litValue.toInt
-                      val mask = write.ByteMask.bits.peek().litValue
+                      val mask = write.NibbleMask.bits.peek().litValue
                       val data = write.Data.bits.peek().litValue
-                      for (by <- 0 until 32 if mask.testBit(by)) {
+                      for (by <- 0 until 64 if mask.testBit(by)) {
                         val key = (lane, address, by)
                         assert(!got.contains(key), s"duplicate byte $key")
-                        got(key) = ((data >> (8 * by)) & 255).toInt
+                        got(key) = ((data >> (4 * by)) & 15).toInt
                       }
                     }
                   }
@@ -232,7 +234,7 @@ class TransposeLoaderIntegrationSpec extends AnyFlatSpec with ChiselScalatestTes
             }
             assert(completed && dispatched, s"task timeout mode=$mode transpose=$trans B=$isB")
             assert(pending.forall(_.isEmpty) && offered.flatten.forall(_.isEmpty))
-            assert(got.toMap == expected, s"data mismatch mode=$mode e${8 * e} transpose=$trans B=$isB: ${got.size}/${expected.size}")
+            assert(got.toMap == expected, s"data mismatch mode=$mode e${4 * nibbles} transpose=$trans B=$isB: ${got.size}/${expected.size}")
             dut.io.command.valid.poke(false.B)
             for (h <- 0 until 2; lane <- 0 until banks) dut.io.memory(h).Response(lane).valid.poke(false.B)
             dut.clock.step(4)

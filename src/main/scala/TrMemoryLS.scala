@@ -7,6 +7,34 @@ import difftest._
 import org.chipsalliance.cde.config._
 import xscache.coupledL2.prefetch.{MatrixPrefetchStream, MatrixPrefetchTagCodec}
 
+/** TR element geometry. Shifts and slices for each legal EEW are fixed at elaboration. */
+object TrElementWidth {
+    def formats = Seq(Bundles.MSew.e4 -> 4, Bundles.MSew.e8 -> 8,
+        Bundles.MSew.e16 -> 16, Bundles.MSew.e32 -> 32)
+
+    def select(widths: UInt)(value: Int => UInt): UInt =
+        Mux1H(formats.map { case (sew, bits) => (widths === sew) -> value(bits) })
+
+    def rowBytes(elements: UInt, widths: UInt): UInt =
+        select(widths)(bits => if (bits < 8) (elements +& 1.U) >> 1 else elements << log2Ceil(bits / 8))
+}
+
+object TrWriteMask {
+    def probe(event: DiffAmuWritebackEvent, bank: Int, mask: UInt): Unit = {
+        val bytes = mask.getWidth / 2
+        val low = VecInit((0 until bytes).map(i => mask(2 * i))).asUInt
+        val high = VecInit((0 until bytes).map(i => mask(2 * i + 1))).asUInt
+        event.bankMask.get(bank) := low
+        event.halfMask.get(bank) := low ^ high
+    }
+
+    // In a packed odd-length row the last covered byte has only a low nibble.
+    def tail(byteMask: UInt, odd: Bool, bytes: Int): UInt = {
+        val high = Mux(odd, byteMask >> 1, byteMask)
+        Cat((0 until bytes).reverse.map(i => Cat(high(i), byteMask(i))))
+    }
+}
+
 // Legacy TR loaders.
 // Loader 0 retains its row-first traversal; loader 1 retains its reduce-first traversal.
 
@@ -28,7 +56,7 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
     io.ToMatrixRegIO.active := false.B
     io.ToMatrixRegIO.WriteRequest := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequest)
     io.ToMatrixRegIO.WriteRequest.foreach(_.foreach { write =>
-        write.ByteMask.bits := Fill(TrMatrixRegEntryByteSize, true.B)
+        write.NibbleMask.bits := Fill(2 * TrMatrixRegEntryByteSize, true.B)
     })
 
     // Initialize all LocalMMUIO channels; the legacy trLoader0 only drives channel 0.
@@ -77,7 +105,7 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
         difftestAmuFinish.bankValid := VecInit(io.ToMatrixRegIO.BankAddr.map(_.valid)).asUInt
         for (i <- 0 until TrMatrixRegNBanks) {
           difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.BankAddr(i).bits
-          difftestAmuFinish.bankMask.get(i) := io.ToMatrixRegIO.ByteMask(i).bits
+          TrWriteMask.probe(difftestAmuFinish, i, io.ToMatrixRegIO.NibbleMask(i).bits)
           for (w <- 0 until eventWordsPerBank) {
             if (w < abMRegWordsPerBank) {
               val lo = w * 64
@@ -99,7 +127,7 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
         for (i <- 0 until TrMatrixRegNBanks) {
           val write = io.ToMatrixRegIO.WriteRequest(i)(1)
           difftestAmuFinishLane1.bankAddr(i) := write.BankAddr.bits
-          difftestAmuFinishLane1.bankMask.get(i) := write.ByteMask.bits
+          TrWriteMask.probe(difftestAmuFinishLane1, i, write.NibbleMask.bits)
           for (w <- 0 until eventWordsPerBank) {
             if (w < abMRegWordsPerBank) {
               difftestAmuFinishLane1.data(i * eventWordsPerBank + w) := write.Data.bits(w * 64 + 63, w * 64)
@@ -114,7 +142,11 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
     val ConfigInfo = io.ConfigInfo
     val Tensor_Block_BaseAddr = Reg(UInt(MMUAddrWidth.W))
     val stride = RegInit(0.U(MMUAddrWidth.W))
+    val requestAddr = Reg(UInt(MMUAddrWidth.W))
+    val beatBase = Reg(UInt(MMUAddrWidth.W))
+    val groupBase = Reg(UInt(MMUAddrWidth.W))
     val HasTail = RegInit(false.B)
+    val oddE4Tail = RegInit(false.B)
     val TailByteMask = RegInit(0.U(log2Ceil(outsideDataWidthByte + 1).W))
     val K_Beat_Count = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
@@ -154,6 +186,9 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
     val Bank_Fill_Search_FIFO_Empty = WireInit(VecInit(Seq.fill(TrMatrixRegNBanks)(true.B)))
 
     for(i <- 0 until TrMatrixRegNBanks){
+        // The ring reserves its head slot even when full. Only advancing head
+        // on an accepted response makes this candidate visible to the reader.
+        Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Head(i)) := MReg_Fill_Table_Insert_Index
         Bank_Fill_Search_FIFO_Full(i) := Bank_Fill_Search_FIFO_Tail(i) === WrapInc(Bank_Fill_Search_FIFO_Head(i), TrLoader0ReadFromMemoryFIFODepth)
         Bank_Fill_Search_FIFO_Empty(i) := Bank_Fill_Search_FIFO_Head(i) === Bank_Fill_Search_FIFO_Tail(i)
     }
@@ -168,6 +203,7 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
             Tensor_Block_BaseAddr := ConfigInfo.Tensor.baseVaddr
             stride := ConfigInfo.Tensor.stride
             HasTail := ConfigInfo.Tensor.HasTail
+            oddE4Tail := ConfigInfo.Tensor.oddE4Tail
             TailByteMask := ConfigInfo.Tensor.TailByteMask
             K_Beat_Count := ConfigInfo.Tensor.K_Beat_Count
             Is_ZeroLoad := ConfigInfo.LoadTaskInfo.Is_ZeroLoad
@@ -188,6 +224,9 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
     switch(memoryload_state) {
         is(s_load_init) {
             memoryload_state := s_load_working
+            requestAddr := Tensor_Block_BaseAddr
+            beatBase := Tensor_Block_BaseAddr
+            groupBase := Tensor_Block_BaseAddr
             TotalLoadSize := 0.U
             TotalRequestSize := 0.U
             CurrentLoaded_BlockTensor_M_Iter := 0.U
@@ -211,8 +250,8 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
                     io.ToMatrixRegIO.BankAddr(i).valid := true.B
                     io.ToMatrixRegIO.Data(i).bits := 0.U
                     io.ToMatrixRegIO.Data(i).valid := true.B
-                    io.ToMatrixRegIO.ByteMask(i).bits := Fill(TrMatrixRegEntryByteSize, true.B)
-                    io.ToMatrixRegIO.ByteMask(i).valid := true.B
+                    io.ToMatrixRegIO.NibbleMask(i).bits := Fill(2 * TrMatrixRegEntryByteSize, true.B)
+                    io.ToMatrixRegIO.NibbleMask(i).valid := true.B
                 }
                 TotalLoadSize := TotalLoadSize + 1.U
                 if (YJPTrLoader0DebugEnable) printf("[trLoader0<%d>]ZeroLoad, TotalLoadSize: %d\n", io.DebugInfo.DebugTimeStampe, TotalLoadSize)
@@ -225,6 +264,7 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
             when(Is_FullLoad){
                 // Convert the one-hot value to a prefix mask by subtracting one.
                 val tailTaskMask = UIntToOH(TailByteMask, outsideDataWidthByte + 1).asUInt - 1.U(outsideDataWidthByte.W)
+                val nibbleMask = TrWriteMask.tail(tailTaskMask, oddE4Tail, outsideDataWidthByte)
                 val fullTaskMask = Fill(outsideDataWidthByte, true.B)
                 val RequestBeatIsTail = HasTail && (CurrentLoaded_BlockTensor_K_Iter === (K_Beat_Count - 1.U))
 
@@ -236,7 +276,7 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
                 val RequestMatrixRegBankId = NormalRequestMatrixRegBankId
                 val RequestMatrixRegAddr = NormalRequestMatrixRegAddr
 
-                Request.bits.RequestAddr := Tensor_Block_BaseAddr + RequestMatrixRegMIndex * stride + (CurrentLoaded_BlockTensor_K_Iter << log2Ceil(outsideDataWidthByte))
+                Request.bits.RequestAddr := requestAddr
                 val sourceId = Mux(Conherent, io.LocalMMUIO.ConherentRequsetSourceID, io.LocalMMUIO.nonConherentRequsetSourceID)
                 Request.bits.RequestConherent := Conherent
                 Request.bits.RequestSourceID := sourceId.bits
@@ -266,15 +306,24 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
                           Request_M_Iter_Time, Request.bits.RequestAddr, RequestMatrixRegBankId, RequestMatrixRegAddr, sourceId.bits, RequestBeatIsTail)
                     }
 
+                    // Within a beat visit consecutive rows; restart at the group's base for its next beat.
+                    val nextBeatBase = beatBase + outsideDataWidthByte.U
+                    val nextGroupBase = groupBase + (stride << log2Ceil(Matrix_MN))
+                    requestAddr := requestAddr + stride
                     Request_M_Iter_Time := Request_M_Iter_Time + 1.U
-                        when(Request_M_Iter_Time === (Matrix_MN - 1).U || (CurrentLoaded_BlockTensor_M_Iter + Request_M_Iter_Time) === MatrixRegTensor_M - 1.U){
-                            Request_M_Iter_Time := 0.U
-                            CurrentLoaded_BlockTensor_K_Iter := CurrentLoaded_BlockTensor_K_Iter + 1.U
-                            when(CurrentLoaded_BlockTensor_K_Iter + 1.U === K_Beat_Count){
-                                CurrentLoaded_BlockTensor_K_Iter := 0.U
-                                CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_MN.U
-                            }
+                    when(Request_M_Iter_Time === (Matrix_MN - 1).U || RequestMatrixRegMIndex === MatrixRegTensor_M - 1.U) {
+                        Request_M_Iter_Time := 0.U
+                        CurrentLoaded_BlockTensor_K_Iter := CurrentLoaded_BlockTensor_K_Iter + 1.U
+                        requestAddr := nextBeatBase
+                        beatBase := nextBeatBase
+                        when(CurrentLoaded_BlockTensor_K_Iter + 1.U === K_Beat_Count) {
+                            CurrentLoaded_BlockTensor_K_Iter := 0.U
+                            CurrentLoaded_BlockTensor_M_Iter := CurrentLoaded_BlockTensor_M_Iter + Matrix_MN.U
+                            groupBase := nextGroupBase
+                            beatBase := nextGroupBase
+                            requestAddr := nextGroupBase
                         }
+                    }
                     when(TotalRequestSize =/= MaxRequestIter){
                         TotalRequestSize := TotalRequestSize + 1.U
                     }
@@ -309,7 +358,6 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
                         MReg_Fill_Table_MReg_Addr(MReg_Fill_Table_Insert_Index) := MatrixRegAddr
                         MReg_Fill_Table_Time(MReg_Fill_Table_Insert_Index) := MAX_Fill_Times.U
                         MReg_Fill_Table_IsTail(MReg_Fill_Table_Insert_Index) := MatrixRegSearch.MatrixRegisTail
-                        Bank_Fill_Search_FIFO(MatrixRegBankId)(FIFOIndex) := MReg_Fill_Table_Insert_Index
                         Bank_Fill_Search_FIFO_Head(MatrixRegBankId) := WrapInc(Bank_Fill_Search_FIFO_Head(MatrixRegBankId), TrLoader0ReadFromMemoryFIFODepth)
                     if (YJPTrLoader0DebugEnable){
                         printf("[trLoader0<%d>]Response, Data:%x, BankId:%d, RegAddr:%d\n", io.DebugInfo.DebugTimeStampe, ResponseData, MatrixRegBankId, MatrixRegAddr)
@@ -319,7 +367,7 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
                 val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(TrMatrixRegNBanks)(0.U(2.W))))
                     // Generic per-slot tail mask derived from tailTaskMask.
                     val tailByteMaskPerSlot = VecInit((0 until MAX_Fill_Times).map { j =>
-                        tailTaskMask((j + 1) * TrMatrixRegEntryByteSize - 1, j * TrMatrixRegEntryByteSize)
+                        nibbleMask((j + 1) * 2 * TrMatrixRegEntryByteSize - 1, j * 2 * TrMatrixRegEntryByteSize)
                     })
                     for (i <- 0 until TrMatrixRegNBanks){
                         when(Bank_Fill_Search_FIFO_Empty(i) === false.B){
@@ -339,12 +387,12 @@ class TrLoader0Legacy(emitDifftest: Boolean = true)(implicit p: Parameters) exte
                                 write.BankAddr.valid := laneValid
                                 write.Data.bits := FIFOData(laneSlot)
                                 write.Data.valid := laneValid
-                                write.ByteMask.bits := Mux(currentIsTail, tailByteMaskPerSlot(laneSlot), Fill(TrMatrixRegEntryByteSize, true.B))
-                                write.ByteMask.valid := laneValid
+                                write.NibbleMask.bits := Mux(currentIsTail, tailByteMaskPerSlot(laneSlot), Fill(2 * TrMatrixRegEntryByteSize, true.B))
+                                write.NibbleMask.valid := laneValid
 
                             }
                             if (YJPTrLoader0DebugEnable) {
-                                printf("[TrLoader0_MRegWriteHandshake<%d>] bank:%d, RegAddr:%x, WriteAddr:%x, Data:%x, ByteMask:%x, Time:%d\n", io.DebugInfo.DebugTimeStampe, i.U, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), io.ToMatrixRegIO.BankAddr(i).bits, io.ToMatrixRegIO.Data(i).bits, io.ToMatrixRegIO.ByteMask(i).bits, MReg_Fill_Table_Time(CurrentFIFOIndex))
+                                printf("[TrLoader0_MRegWriteHandshake<%d>] bank:%d, RegAddr:%x, WriteAddr:%x, Data:%x, ByteMask:%x, Time:%d\n", io.DebugInfo.DebugTimeStampe, i.U, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), io.ToMatrixRegIO.BankAddr(i).bits, io.ToMatrixRegIO.Data(i).bits, io.ToMatrixRegIO.NibbleMask(i).bits, MReg_Fill_Table_Time(CurrentFIFOIndex))
                             }
                             MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - rowsThisCycle
                             when(MReg_Fill_Table_Time(CurrentFIFOIndex) <= 2.U){
@@ -412,7 +460,7 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
     io.ToMatrixRegIO.active := false.B
     io.ToMatrixRegIO.WriteRequest := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequest)
     io.ToMatrixRegIO.WriteRequest.foreach(_.foreach { write =>
-        write.ByteMask.bits := Fill(TrMatrixRegEntryByteSize, true.B)
+        write.NibbleMask.bits := Fill(2 * TrMatrixRegEntryByteSize, true.B)
     })
 
     // Initialize all channels, but legacy trLoader1 only uses channel 0
@@ -450,7 +498,7 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
         difftestAmuFinish.bankValid := VecInit(io.ToMatrixRegIO.BankAddr.map(_.valid)).asUInt
         for (i <- 0 until TrMatrixRegNBanks) {
           difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.BankAddr(i).bits
-          difftestAmuFinish.bankMask.get(i) := io.ToMatrixRegIO.ByteMask(i).bits
+          TrWriteMask.probe(difftestAmuFinish, i, io.ToMatrixRegIO.NibbleMask(i).bits)
           for (w <- 0 until eventWordsPerBank) {
             if (w < abMRegWordsPerBank) {
               val lo = w * 64
@@ -472,7 +520,7 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
         for (i <- 0 until TrMatrixRegNBanks) {
           val write = io.ToMatrixRegIO.WriteRequest(i)(1)
           difftestAmuFinishLane1.bankAddr(i) := write.BankAddr.bits
-          difftestAmuFinishLane1.bankMask.get(i) := write.ByteMask.bits
+          TrWriteMask.probe(difftestAmuFinishLane1, i, write.NibbleMask.bits)
           for (w <- 0 until eventWordsPerBank) {
             if (w < abMRegWordsPerBank) {
               difftestAmuFinishLane1.data(i * eventWordsPerBank + w) := write.Data.bits(w * 64 + 63, w * 64)
@@ -497,6 +545,7 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
     val MatrixRegTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val HasTail = RegInit(false.B)
+    val oddE4Tail = RegInit(false.B)
     val TailByteMask = RegInit(0.U(log2Ceil(outsideDataWidthByte + 1).W))
     val K_Beat_Count = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Tensor_BaseAddr = RegInit(0.U(MMUAddrWidth.W))
@@ -536,6 +585,7 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
             Conherent := io.ConfigInfo.Conherent
             assert(!io.ConfigInfo.Is_Transpose, "trLoader1 transpose is disabled; use the standalone transpose engine")
             HasTail := io.ConfigInfo.Tensor.HasTail
+            oddE4Tail := io.ConfigInfo.Tensor.oddE4Tail
             TailByteMask := io.ConfigInfo.Tensor.TailByteMask
             K_Beat_Count := io.ConfigInfo.Tensor.K_Beat_Count
             stride := io.ConfigInfo.Tensor.stride // Address increment between normalized register rows.
@@ -599,6 +649,9 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
     val Have_Bank_Fill = Bank_Fill_Valid.reduce(_ || _)//True when any bank has a pending writeback.
 
     for(i <- 0 until TrMatrixRegNBanks){
+        // The ring reserves its head slot even when full. Only advancing head
+        // on an accepted response makes this candidate visible to the reader.
+        Bank_Fill_Search_FIFO(i)(Bank_Fill_Search_FIFO_Head(i)) := MReg_Fill_Table_Insert_Index
         Bank_Fill_Search_FIFO_Full(i) := Bank_Fill_Search_FIFO_Tail(i) === WrapInc(Bank_Fill_Search_FIFO_Head(i), TrLoader1ReadFromMemoryFIFODepth)//FIFO is full.
         Bank_Fill_Search_FIFO_Empty(i) := Bank_Fill_Search_FIFO_Head(i) === Bank_Fill_Search_FIFO_Tail(i)//No pending write for this bank.
     }
@@ -627,6 +680,7 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
 
             //Convert the one-hot value to a prefix mask by subtracting one.
             val tailTaskMask = UIntToOH(TailByteMask, outsideDataWidthByte + 1).asUInt - 1.U(outsideDataWidthByte.W)
+            val nibbleMask = TrWriteMask.tail(tailTaskMask, oddE4Tail, outsideDataWidthByte)
             val fullTaskMask = Fill(outsideDataWidthByte, true.B)
             val RequestBeatIsTail = HasTail && (CurrentLoaded_BlockTensor_K_Iter === (K_Beat_Count - 1.U))
 
@@ -676,18 +730,17 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
                     TotalRequestSize := TotalRequestSize + 1.U
                 }
             }
-            val current_fill_fifo_full = WireInit(false.B)
-            when(Response.valid)
-            {
-                val sourceId = Response.bits.ReseponseSourceID
-                val MatrixRegBankId = SoureceIdSearchTable(sourceId).asTypeOf(new TrLoader1SourceId).MatrixRegBankId
-                current_fill_fifo_full := Bank_Fill_Search_FIFO_Full(MatrixRegBankId)
-            }
             //Handle memory responses.
             //A CAM maps request source IDs to MatrixReg addresses and banks.
             //Use the response source ID to find the fill-table entry to update.
             val normalRespReady = if (TrLoadNeedsFillTable) {
-                MReg_Fill_Table_Not_Full && (current_fill_fifo_full === false.B)
+                // Bank tags and FIFO pointers are local registers. Resolve backpressure for
+                // each outstanding ID before selecting with the memory arbiter's late ID.
+                val blockedBySource = VecInit(SoureceIdSearchTable.map { entry =>
+                    val bank = entry.asTypeOf(new TrLoader1SourceId).MatrixRegBankId
+                    Bank_Fill_Search_FIFO_Full(bank)
+                })
+                MReg_Fill_Table_Not_Full && (!Response.valid || !blockedBySource(Response.bits.ReseponseSourceID))
             } else {
                 true.B
             }
@@ -717,8 +770,8 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
                                 io.ToMatrixRegIO.Data(i).bits := ResponseData(TrMatrixRegEntryBitSize - 1, 0)
                                 io.ToMatrixRegIO.BankAddr(i).valid := true.B
                                 io.ToMatrixRegIO.Data(i).valid := true.B
-                                io.ToMatrixRegIO.ByteMask(i).bits := Mux(searchEntry.MatrixRegisTail, tailTaskMask(TrMatrixRegEntryByteSize - 1, 0), Fill(TrMatrixRegEntryByteSize, true.B))
-                                io.ToMatrixRegIO.ByteMask(i).valid := true.B
+                                io.ToMatrixRegIO.NibbleMask(i).bits := Mux(searchEntry.MatrixRegisTail, nibbleMask(2 * TrMatrixRegEntryByteSize - 1, 0), Fill(2 * TrMatrixRegEntryByteSize, true.B))
+                                io.ToMatrixRegIO.NibbleMask(i).valid := true.B
                             }
                         }
                     }
@@ -728,7 +781,6 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
                     MReg_Fill_Table_Time(MReg_Fill_Table_Insert_Index) := MAX_Fill_Times.U
                     MReg_Fill_Table_IsTail(MReg_Fill_Table_Insert_Index) := searchEntry.MatrixRegisTail
 
-                    Bank_Fill_Search_FIFO(MatrixRegBankId)(FIFOIndex) := MReg_Fill_Table_Insert_Index
                     Bank_Fill_Search_FIFO_Head(MatrixRegBankId) := WrapInc(Bank_Fill_Search_FIFO_Head(MatrixRegBankId), TrLoader1ReadFromMemoryFIFODepth)
                 //A FIFO may be needed if this path can stall; full-throughput double buffering is expected to avoid stalls.
                 //A direct MatrixReg-to-memory path could reduce latency but creates a long combinational path.
@@ -763,7 +815,7 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
                             FIFOData := MReg_Fill_Table(CurrentFIFOIndex).asTypeOf(FIFOData)
                             // Generic tail mask: split the outside-data tail mask into entry-sized slots
                             val tailMaskSlots = VecInit((0 until MAX_Fill_Times).map { j =>
-                                tailTaskMask((j + 1) * TrMatrixRegEntryByteSize - 1, j * TrMatrixRegEntryByteSize)
+                                nibbleMask((j + 1) * 2 * TrMatrixRegEntryByteSize - 1, j * 2 * TrMatrixRegEntryByteSize)
                             })
                             for (lane <- 0 until 2) {
                                 val laneValid = MReg_Fill_Table_Time(CurrentFIFOIndex) > lane.U
@@ -774,12 +826,12 @@ class TrLoader1Legacy(implicit p: Parameters) extends CuteModule{
                                 write.BankAddr.valid := laneValid
                                 write.Data.bits := FIFOData(laneSlot)
                                 write.Data.valid := laneValid
-                                write.ByteMask.bits := Mux(currentIsTail, tailMaskSlots(laneSlot), Fill(TrMatrixRegEntryByteSize, true.B))
-                                write.ByteMask.valid := laneValid
+                                write.NibbleMask.bits := Mux(currentIsTail, tailMaskSlots(laneSlot), Fill(2 * TrMatrixRegEntryByteSize, true.B))
+                                write.NibbleMask.valid := laneValid
 
                             }
                             if (YJPTrLoader1DebugEnable) {
-                                printf("[TrLoader1_MRegWriteHandshake<%d>] bankid: %d, CurrentFIFOIndex: %d, ScartchPadAddr: %x, BankAddr: %x, Data: %x, ByteMask: %x\n", io.DebugInfo.DebugTimeStampe,i.U, CurrentFIFOIndex, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), MatrixRegWriteRequest.BankAddr(i).bits, MatrixRegWriteRequest.Data(i).bits, MatrixRegWriteRequest.ByteMask(i).bits)
+                                printf("[TrLoader1_MRegWriteHandshake<%d>] bankid: %d, CurrentFIFOIndex: %d, ScartchPadAddr: %x, BankAddr: %x, Data: %x, ByteMask: %x\n", io.DebugInfo.DebugTimeStampe,i.U, CurrentFIFOIndex, MReg_Fill_Table_MReg_Addr(CurrentFIFOIndex), MatrixRegWriteRequest.BankAddr(i).bits, MatrixRegWriteRequest.Data(i).bits, MatrixRegWriteRequest.NibbleMask(i).bits)
                             }
 
                             MReg_Fill_Table_Time(CurrentFIFOIndex) := MReg_Fill_Table_Time(CurrentFIFOIndex) - rowsThisCycle
@@ -853,7 +905,6 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
     override protected def storeByteOffset: UInt = CurrentStore_Byte_Offset
     override protected def storePhase: UInt = CurrentStore_Phase
     override protected def storePhaseCount: UInt = Store_Phase_Count
-    override protected def storeElementLgBytes: UInt = Store_Element_LgBytes
     override protected def storeReadLaneCount: Int = StoreReadLaneCount
     override protected def storeTransposeDataBuffer: Vec[Vec[Vec[UInt]]] = Store_Data_Buffer
     require(outsideDataWidthByte == 64)
@@ -883,25 +934,21 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
     protected val TotalStoreRequestSize = RegInit(0.U(log2Ceil(StoreMaxRequests + 1).W))
     protected val TotalStoreResponseSize = RegInit(0.U(log2Ceil(StoreMaxRequests + 1).W))
     private val StoreLineAddrWidth = MMUAddrWidth - 6
-    private val Store_Row_Line_Addr = Reg(UInt(StoreLineAddrWidth.W))
-    private val Store_Output_Line_Addr = Reg(UInt(StoreLineAddrWidth.W))
-    private val Store_Entry_Line_Stride = Reg(UInt(StoreLineAddrWidth.W))
     private val Store_Line_Stride = StoreCommand.stride(MMUAddrWidth - 1, 6)
 
-    protected val Store_Element_LgBytes = StoreCommand.widths(1, 0)
-    private def storeRowBytes(command: TrStoreCommand): UInt =
-        Mux(command.widths === Bundles.MSew.e4, command.columns >> 1,
-            command.columns.pad(MatrixRegMaxTensorDimBitSize + 2) << command.widths(1, 0))
+    private def storeRowBytes(command: TrStoreCommand): UInt = TrElementWidth.rowBytes(command.columns, command.widths)
+    private val storeEntryElements = TrElementWidth.select(StoreCommand.widths)(bits => (TrMatrixRegEntryBitSize / bits).U)
+    private val storeAddresses = storeLineAddresses(Store_Line_Stride, Store_Output_Context, storeEntryElements)
     protected val Store_Memory_Row_Count = Mux(StoreCommand.transpose, StoreCommand.columns, StoreCommand.rows)
     protected val Store_Memory_Row_Byte_Count = Mux(StoreCommand.transpose,
-        StoreCommand.rows.pad(MatrixRegMaxTensorDimBitSize + 2) << Store_Element_LgBytes,
+        TrElementWidth.rowBytes(StoreCommand.rows, StoreCommand.widths),
         storeRowBytes(StoreCommand))
     protected val Store_Active_Lanes = VecInit((0 until StoreReadLaneCount).map { context =>
         VecInit((0 until TrMatrixRegNBanks).map { lane =>
             CurrentStore_Row_Iter + lane.U +
                 (if (StoreReadLaneCount == 1) 0.U else
                     (if (context == 0) 0.U else
-                        (TrMatrixRegEntryByteSize.U >> Store_Element_LgBytes))) < Store_Memory_Row_Count
+                        storeEntryElements)) < Store_Memory_Row_Count
         }).asUInt
     })
 
@@ -915,13 +962,11 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
         val newCommand = io.command.bits
         val nonempty = newCommand.rows =/= 0.U && newCommand.columns =/= 0.U
         val bytes = Mux(newCommand.transpose,
-            newCommand.rows.pad(MatrixRegMaxTensorDimBitSize + 2) << newCommand.widths(1, 0),
+            TrElementWidth.rowBytes(newCommand.rows, newCommand.widths),
             storeRowBytes(newCommand))
         val rows = Mux(newCommand.transpose, newCommand.columns, newCommand.rows)
         assert(newCommand.widths <= Bundles.MSew.e32 || newCommand.widths === Bundles.MSew.e4,
             "TR store supports raw e4/e8/e16/e32")
-        assert(!newCommand.transpose || newCommand.widths <= Bundles.MSew.e32,
-            "TR transpose store supports only e8/e16/e32")
         assert(newCommand.rows <= Tensor_MN.U && storeRowBytes(newCommand) <= Tensor_K.U,
             "TR store exceeds the architectural register geometry")
         when (nonempty) {
@@ -932,7 +977,7 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
             assert(bytes(5, 0) === 0.U && bytes =/= 0.U,
                 "TR store requires each effective row to contain a multiple of 64 bytes; partial stores are not implemented")
             when (newCommand.widths === Bundles.MSew.e4) {
-                assert(!newCommand.columns(0), "TR store does not support a partial e4 byte")
+                assert(!Mux(newCommand.transpose, newCommand.rows(0), newCommand.columns(0)), "TR store does not support a partial e4 byte")
             }
             when (rows > 1.U) {
                 assert(newCommand.stride(5, 0) === 0.U,
@@ -943,7 +988,6 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
             }
         }
         StoreCommand := newCommand
-        Store_Row_Line_Addr := newCommand.base(MMUAddrWidth - 1, 6)
         CurrentStore_Row_Iter := 0.U
         CurrentStore_Byte_Offset := 0.U
         CurrentStore_Phase := 0.U
@@ -953,14 +997,6 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
         TotalStoreResponseSize := 0.U
         Store_Pending_Lanes := 0.U
         memorystore_state := Mux(nonempty, s_store_read, s_store_end)
-    }
-
-    // The command is already latched throughout this state. Prepare the second
-    // transpose context before capture/send without extending the dispatch cone.
-    when (memorystore_state === s_store_read) {
-        Store_Entry_Line_Stride := MuxLookup(Store_Element_LgBytes, 0.U)(
-            (0 to 2).map { lg => lg.U ->
-                (Store_Line_Stride << (log2Ceil(TrMatrixRegEntryByteSize) - lg)) })
     }
 
     io.read.BankAddr.valid := memorystore_state === s_store_read
@@ -974,8 +1010,6 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
     }
 
     when (io.read.BankAddr.fire) {
-        // Use the existing SRAM read cycle to prepare the output line base.
-        Store_Output_Line_Addr := Store_Row_Line_Addr + (CurrentStore_Byte_Offset >> 6)
         memorystore_state := s_store_capture
     }
     when (memorystore_state === s_store_capture) {
@@ -1003,32 +1037,15 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
         }
     }
 
-    private def nextStoreRowIter: UInt = {
-        val nextRow = CurrentStore_Row_Iter + TrMatrixRegNBanks.U
-        if (StoreReadLaneCount == 2) {
-            val entryRows = TrMatrixRegEntryByteSize.U >> Store_Element_LgBytes
-            // entryRows is a power of two for every supported element width.
-            Mux(StoreCommand.transpose && (nextRow & (entryRows - 1.U)) === 0.U,
-                nextRow + entryRows,
-                nextRow)
-        } else {
-            nextRow
-        }
-    }
-
     private def finishStoreRowGroup(): Unit = {
         Store_Output_Context := 0.U
         Store_Pending_Lanes := 0.U
         when (CurrentStore_Byte_Offset +& 64.U === Store_Memory_Row_Byte_Count) {
             CurrentStore_Byte_Offset := 0.U
-            CurrentStore_Row_Iter := nextStoreRowIter
-            val skipEntry = StoreCommand.transpose &&
-                nextStoreRowIter =/= CurrentStore_Row_Iter + TrMatrixRegNBanks.U
-            Store_Row_Line_Addr := Store_Row_Line_Addr +
-                (Store_Line_Stride << log2Ceil(TrMatrixRegNBanks)) +
-                Mux(skipEntry, Store_Entry_Line_Stride, 0.U)
+            CurrentStore_Row_Iter := storeAddresses.nextRow
+            storeAddresses.advanceGroup := true.B
             memorystore_state := Mux(
-                nextStoreRowIter >= Store_Memory_Row_Count,
+                storeAddresses.nextRow >= Store_Memory_Row_Count,
                 s_store_drain,
                 s_store_read
             )
@@ -1043,7 +1060,6 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
         if (StoreReadLaneCount == 2) {
             when (StoreCommand.transpose && Store_Output_Context === 0.U) {
                 Store_Output_Context := 1.U
-                Store_Output_Line_Addr := Store_Output_Line_Addr + Store_Entry_Line_Stride
                 Store_Pending_Lanes := Store_Active_Lanes(1)
             }.otherwise {
                 finishStoreRowGroup()
@@ -1079,7 +1095,7 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
         request.bits := 0.U.asTypeOf(request.bits)
         // Multirow strides and every active line are aligned; a single row only
         // uses lane zero, so its unconstrained stride never contributes.
-        val lineAddress = Store_Output_Line_Addr + lane.U * Store_Line_Stride
+        val lineAddress = storeAddresses.outputBase + lane.U * Store_Line_Stride
         request.bits.RequestAddr := Cat(lineAddress(StoreLineAddrWidth - 1, 0), 0.U(6.W))
         val outputData = if (StoreReadLaneCount == 1) Store_Data_Buffer(0)(lane)
             else Store_Data_Buffer(Store_Output_Context)(lane)
@@ -1136,9 +1152,9 @@ class TrStorerLegacy(implicit p: Parameters) extends CuteModule with CUTEImplPar
 class TransposeLoadCommand(implicit p: Parameters) extends CuteBundle {
   val base = UInt(MMUAddrWidth.W)
   val stride = UInt(MMUAddrWidth.W)
-  val rows = UInt(MatrixRegMaxTensorDimBitSize.W)
-  val columns = UInt(MatrixRegMaxTensorDimBitSize.W)
-  val elementLgBytes = UInt(2.W) // e8/e16/e32 = 0/1/2
+  val rows = UInt((MatrixRegMaxTensorDimBitSize max log2Ceil(2 * Tensor_K + 1)).W)
+  val columns = UInt((MatrixRegMaxTensorDimBitSize max log2Ceil(2 * Tensor_K + 1)).W)
+  val widths = Bundles.MSew()
 }
 
 class TransposeReadRequest(implicit p: Parameters) extends CuteBundle {
@@ -1156,7 +1172,7 @@ class TransposeReadResponse(implicit p: Parameters) extends CuteBundle {
 class TransposeWriteback(implicit p: Parameters) extends CuteBundle {
   val address = Vec(TrMatrixRegNBanks, UInt(log2Ceil(TrMatrixRegBankNEntries).W))
   val data = Vec(TrMatrixRegNBanks, UInt(TrMatrixRegEntryBitSize.W))
-  val mask = Vec(TrMatrixRegNBanks, UInt(TrMatrixRegEntryByteSize.W))
+  val mask = Vec(TrMatrixRegNBanks, UInt((2 * TrMatrixRegEntryByteSize).W))
   val last = Bool()
 }
 
@@ -1187,7 +1203,9 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
 
   private val banks = TrMatrixRegNBanks
   private val entryBytes = TrMatrixRegEntryByteSize
-  private val dimBits = MatrixRegMaxTensorDimBitSize
+  private val dimBits = io.command.bits.rows.getWidth
+  private val lineShift = log2Ceil(outsideDataWidthByte)
+  private val lineBits = MMUAddrWidth - lineShift
   private val command = Reg(new TransposeLoadCommand)
   private val active = RegInit(false.B)
   private val done = RegInit(false.B)
@@ -1196,17 +1214,18 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
   private val issued = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(8)(false.B)))))
   private val received = RegInit(VecInit(Seq.fill(2)(VecInit(Seq.fill(8)(false.B)))))
   private val storage = Seq.fill(2)(Seq.fill(8)(Reg(UInt(512.W))))
-  private val slotBase = Reg(Vec(2, UInt(MMUAddrWidth.W)))
+  private val slotBaseLine = Reg(Vec(2, UInt(lineBits.W)))
   private val slotRow = Reg(Vec(2, UInt(dimBits.W)))
   private val slotColumn = Reg(Vec(2, UInt(dimBits.W)))
   private val slotLast = Reg(Vec(2, Bool()))
-  private val rowOffset = Reg(Vec(8, UInt(MMUAddrWidth.W)))
+  private val rowOffsetLines = Reg(Vec(8, UInt(lineBits.W)))
   private val allocateSlot = RegInit(false.B)
   private val issueSlot = RegInit(false.B)
   private val drainSlot = RegInit(false.B)
   private val nextRow = Reg(UInt(dimBits.W))
   private val nextColumn = Reg(UInt(dimBits.W))
-  private val nextRowBase = Reg(UInt(MMUAddrWidth.W))
+  private val nextRowBaseLine = Reg(UInt(lineBits.W))
+  private val nextColumnBeat = Reg(UInt((dimBits - log2Ceil(512 / 32) max 1).W))
   private val allAllocated = RegInit(false.B)
   private val phase = RegInit(0.U(6.W))
   private val releasingSlot = WireDefault(false.B)
@@ -1228,11 +1247,11 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
       stage1 := stage0
       for (b <- 0 until banks) {
         stage1.data(b) := MuxLookup(stage0Offset, 0.U)(
-          (0 until entryBytes by 8).map(offset => offset.U ->
+          (0 until entryBytes by 4).map(offset => offset.U ->
             (stage0.data(b) << (8 * offset))(TrMatrixRegEntryBitSize - 1, 0)))
         stage1.mask(b) := MuxLookup(stage0Offset, 0.U)(
-          (0 until entryBytes by 8).map(offset => offset.U ->
-            (stage0.mask(b) << offset)(entryBytes - 1, 0)))
+          (0 until entryBytes by 4).map(offset => offset.U ->
+            (stage0.mask(b) << (2 * offset))(2 * entryBytes - 1, 0)))
       }
     }
   }
@@ -1243,10 +1262,10 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
   io.done.bits := true.B
   io.busy := active || done
   when(io.done.fire) { done := false.B }
+  when(io.command.ready) { nextRowBaseLine := io.command.bits.base >> lineShift }
   when(io.command.fire) {
     val cmd = io.command.bits
-    assert(cmd.elementLgBytes <= 2.U, "transpose supports only e8/e16/e32")
-    assert((cmd.rows << cmd.elementLgBytes) <= Tensor_K.U)
+    assert(cmd.rows <= TrElementWidth.select(cmd.widths)(bits => (8 * Tensor_K / bits).U))
     assert(cmd.columns <= Tensor_MN.U)
     assert(cmd.base(5, 0) === 0.U, "transpose has the ordinary-load alignment contract")
     when(cmd.rows > 1.U) { assert(cmd.stride(5, 0) === 0.U) }
@@ -1255,16 +1274,26 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
     done := cmd.rows === 0.U || cmd.columns === 0.U
     nextRow := 0.U
     nextColumn := 0.U
-    nextRowBase := cmd.base
+    nextColumnBeat := 0.U
     allAllocated := false.B
     allocateSlot := false.B
     issueSlot := false.B
     drainSlot := false.B
     phase := 0.U
-    for (r <- 0 until 8) { rowOffset(r) := cmd.stride * r.U }
   }
 
-  private val columnsPerBeat = 64.U(7.W) >> command.elementLgBytes
+  // The first allocation precedes every request. Calculate offsets from the latched stride
+  // on this edge, in cache lines; a legal single-row command uses only offset zero.
+  private val strideLines = command.stride >> lineShift
+  private val threeStrides = strideLines + (strideLines << 1)
+  private val offsets = Seq(0.U(lineBits.W), strideLines, strideLines << 1, threeStrides,
+    strideLines << 2, strideLines + (strideLines << 2), threeStrides << 1, (strideLines << 3) - strideLines)
+  private val prepareOffsets = RegNext(io.command.fire, false.B)
+  when(prepareOffsets) { rowOffsetLines := VecInit(offsets.map(_(lineBits - 1, 0))) }
+
+  private def byteOffset(index: UInt): UInt =
+    TrElementWidth.select(command.widths)(bits => (index << log2Ceil(bits)) >> 3)
+  private val columnsPerBeat = TrElementWidth.select(command.widths)(bits => (512 / bits).U)
   private val lastColumns = nextColumn +& columnsPerBeat >= command.columns
   private val allocating = active && !allAllocated &&
     (!occupied(allocateSlot) || (releasingSlot && allocateSlot === drainSlot))
@@ -1272,7 +1301,7 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
   // in stage 0; the earliest new response writes on a later edge.
   when(allocating) {
     occupied(allocateSlot) := true.B
-    slotBase(allocateSlot) := nextRowBase + (nextColumn << command.elementLgBytes)
+    slotBaseLine(allocateSlot) := nextRowBaseLine + nextColumnBeat
     slotRow(allocateSlot) := nextRow
     slotColumn(allocateSlot) := nextColumn
     slotLast(allocateSlot) := lastColumns && nextRow +& 8.U >= command.rows
@@ -1284,9 +1313,13 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
     when(lastColumns) {
       nextColumn := 0.U
       nextRow := nextRow + 8.U
-      nextRowBase := nextRowBase + (command.stride << 3)
+      nextRowBaseLine := nextRowBaseLine + (strideLines << 3)
+      nextColumnBeat := 0.U
       when(nextRow +& 8.U >= command.rows) { allAllocated := true.B }
-    }.otherwise { nextColumn := nextColumn + columnsPerBeat }
+    }.otherwise {
+      nextColumn := nextColumn + columnsPerBeat
+      nextColumnBeat := nextColumnBeat + 1.U
+    }
     allocateSlot := !allocateSlot
   }
 
@@ -1300,7 +1333,7 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
     val row = Mux1H(UIntToOH(chosen, rows.size), rows.map(_.U(3.W)))
     val req = io.request(lane)
     req.valid := active && occupied(issueSlot) && candidates.asUInt.orR
-    req.bits.address := slotBase(issueSlot) + rowOffset(row)
+    req.bits.address := Cat(slotBaseLine(issueSlot) + rowOffsetLines(row), 0.U(lineShift.W))
     req.bits.slot := issueSlot
     req.bits.row := row
     for (r <- rows) {
@@ -1349,21 +1382,20 @@ class TransposeLoadEngine(memoryPorts: Int)(implicit p: Parameters) extends Cute
   when(readSlot) {
     stage0Valid := true.B
     stage0.last := slotLast(drainSlot) && lastPhase
-    stage0Offset := (slotRow(drainSlot) << command.elementLgBytes)(log2Ceil(entryBytes) - 1, 0)
+    stage0Offset := byteOffset(slotRow(drainSlot))(log2Ceil(entryBytes) - 1, 0)
     for (b <- 0 until banks) {
       stage0.address(b) := ((column + b.U) >> log2Ceil(banks)) * ReduceGroupSize.U +
-        ((slotRow(drainSlot) << command.elementLgBytes) >> log2Ceil(entryBytes))
-      val fragments = (0 to 2).map { lg =>
-        val e = 1 << lg
-        val rowSegments = selectedRows.map(_.asTypeOf(Vec(64 / (banks * e), UInt((banks * e * 8).W))))
+        (byteOffset(slotRow(drainSlot)) >> log2Ceil(entryBytes))
+      val fragments = TrElementWidth.formats.map { case (sew, bits) =>
+        val rowSegments = selectedRows.map(_.asTypeOf(Vec(512 / (banks * bits), UInt((banks * bits).W))))
         val rowBytes = rowSegments.map(v => v(phase(log2Ceil(v.length) - 1, 0)))
-        val data = Cat(rowBytes.reverse.map(x => x((b + 1) * e * 8 - 1, b * e * 8)))
-        val mask = VecInit((0 until 8 * e).map(i =>
-          expected(drainSlot)(i / e) && column +& b.U < command.columns)).asUInt
-        (lg.U, data.pad(TrMatrixRegEntryBitSize), mask.pad(entryBytes))
+        val data = Cat(rowBytes.reverse.map(x => x((b + 1) * bits - 1, b * bits)))
+        val mask = VecInit((0 until 8 * bits / 4).map(i =>
+          expected(drainSlot)(i / (bits / 4)) && column +& b.U < command.columns)).asUInt
+        (sew, data.pad(TrMatrixRegEntryBitSize), mask.pad(2 * entryBytes))
       }
-      stage0.data(b) := MuxLookup(command.elementLgBytes, 0.U)(fragments.map(x => x._1 -> x._2))
-      stage0.mask(b) := MuxLookup(command.elementLgBytes, 0.U)(fragments.map(x => x._1 -> x._3))
+      stage0.data(b) := MuxLookup(command.widths, 0.U)(fragments.map(x => x._1 -> x._2))
+      stage0.mask(b) := MuxLookup(command.widths, 0.U)(fragments.map(x => x._1 -> x._3))
     }
     when(lastPhase) {
       when(!(allocating && allocateSlot === drainSlot)) { occupied(drainSlot) := false.B }
@@ -1402,17 +1434,11 @@ trait HasTransposeLoadEngine { this: CuteModule =>
     normalMemory.nonConherentRequsetSourceID := memory.nonConherentRequsetSourceID
 
     val app = config.Tensor
-    val lgBytes = MuxLookup(app.dataType, 0.U(2.W))(Seq(
-      ElementDataType.DataTypeWidth8 -> 0.U,
-      ElementDataType.DataTypeWidth16 -> 1.U,
-      ElementDataType.DataTypeWidth32 -> 2.U))
-    val fullBytes = app.K_Beat_Count << 6
-    val rowBytes = Mux(app.HasTail, fullBytes - 64.U + app.TailByteMask, fullBytes)
     engine.io.command.bits.base := app.baseVaddr
     engine.io.command.bits.stride := app.stride
     engine.io.command.bits.rows := config.MatrixRegTensor_M
-    engine.io.command.bits.columns := rowBytes >> lgBytes
-    engine.io.command.bits.elementLgBytes := lgBytes
+    engine.io.command.bits.columns := app.rowElements
+    engine.io.command.bits.widths := app.widths
     engine.io.command.valid := config.MicroTaskValid && !busy && config.Is_Transpose
     config.MicroTaskReady := !busy && engine.io.command.ready && normalConfig.MicroTaskReady
     config.MicroTaskEndValid := busy && Mux(transpose, engine.io.done.valid, normalConfig.MicroTaskEndValid)
@@ -1425,9 +1451,8 @@ trait HasTransposeLoadEngine { this: CuteModule =>
       regId := config.MatrixRegId
       coherent := config.Conherent
       when(config.Is_Transpose) {
-        assert(app.dataType === ElementDataType.DataTypeWidth8 ||
-          app.dataType === ElementDataType.DataTypeWidth16 ||
-          app.dataType === ElementDataType.DataTypeWidth32, "e4 transpose is not implemented")
+        assert(TrElementWidth.formats.map { case (sew, _) => app.widths === sew }.reduce(_ || _),
+          "unsupported TR transpose element width")
       }
     }
     when(config.MicroTaskEndValid && config.MicroTaskEndReady) { busy := false.B }
@@ -1483,8 +1508,8 @@ trait HasTransposeLoadEngine { this: CuteModule =>
         target.BankAddr(bank).bits := engine.io.writeback.bits.address(bank)
         target.Data(bank).valid := valid
         target.Data(bank).bits := engine.io.writeback.bits.data(bank)
-        target.ByteMask(bank).valid := valid
-        target.ByteMask(bank).bits := engine.io.writeback.bits.mask(bank)
+        target.NibbleMask(bank).valid := valid
+        target.NibbleMask(bank).bits := engine.io.writeback.bits.mask(bank)
       }
     }
 
@@ -1506,7 +1531,7 @@ trait HasTransposeLoadEngine { this: CuteModule =>
         for (bank <- 0 until TrMatrixRegNBanks) {
           val write = target.WriteRequest(bank)(port)
           event.bankAddr(bank) := write.BankAddr.bits
-          event.bankMask.get(bank) := write.ByteMask.bits
+          TrWriteMask.probe(event, bank, write.NibbleMask.bits)
           for (word <- 0 until words) {
             event.data(bank * words + word) := (if (word < TrMatrixRegEntryBitSize / 64)
               write.Data.bits(word * 64 + 63, word * 64) else 0.U)
@@ -1529,59 +1554,97 @@ trait TrStoreTransposeTarget { this: CuteModule =>
   protected def storeByteOffset: UInt
   protected def storePhase: UInt
   protected def storePhaseCount: UInt
-  protected def storeElementLgBytes: UInt
   protected def storeReadLaneCount: Int
   protected def storeTransposeDataBuffer: Vec[Vec[Vec[UInt]]]
 }
 
 /** Shared transpose-specific TR store address and data mapping. */
 trait HasTransposeStoreEngine extends CUTEImplParameters { this: TrStoreTransposeTarget =>
+  protected case class StoreLineAddresses(outputBase: UInt, nextRow: UInt, advanceGroup: Bool)
+
+  protected def storeLineAddresses(stride: UInt, context: UInt, entryRows: UInt): StoreLineAddresses = {
+    val lineWidth = MMUAddrWidth - 6
+    val rowBase = Reg(UInt(lineWidth.W))
+    val advanceGroup = WireDefault(false.B)
+    val read = storeIo.read.BankAddr.fire
+    val capture = storeState === storeCaptureState && storeIo.read.Data.valid
+    val ctx0Base = RegEnable(rowBase + (storeByteOffset >> 6), read)
+    val nextRow = storeRowIter + TrMatrixRegNBanks.U
+    val groupStep = stride << log2Ceil(TrMatrixRegNBanks)
+    // Prepare the ordinary group increment during read. A paired transpose
+    // may skip the next entry, which is already emitted by context 1.
+    val groupBase = RegEnable((rowBase + groupStep)(lineWidth - 1, 0), read)
+    val (outputBase, rowAfterGroup, nextGroupBase) = if (storeReadLaneCount == 2) {
+      val skipEntry = storeCommand.transpose && (nextRow & (entryRows - 1.U)) === 0.U
+      val entryStep = RegEnable(TrElementWidth.select(storeCommand.widths) { bits =>
+        (stride << log2Ceil(TrMatrixRegEntryBitSize / bits))(lineWidth - 1, 0)
+      }, read)
+      val ctx1Base = RegEnable(ctx0Base + entryStep, capture)
+      val groupAfterPair = RegEnable(groupBase + Mux(skipEntry, entryStep, 0.U), capture)
+      (Mux(context === 0.U, ctx0Base, ctx1Base), Mux(skipEntry, nextRow + entryRows, nextRow), groupAfterPair)
+    } else {
+      (ctx0Base, nextRow, groupBase)
+    }
+    when (storeIo.command.ready) {
+      rowBase := storeIo.command.bits.base(MMUAddrWidth - 1, 6)
+    }.elsewhen (advanceGroup) {
+      rowBase := nextGroupBase
+    }
+    StoreLineAddresses(outputBase, rowAfterGroup, advanceGroup)
+  }
+
   protected def transposeStoreDatapath(): Unit = {
+    val banks = TrMatrixRegNBanks
+    val entryBits = TrMatrixRegEntryBitSize
+    val widths = storeCommand.widths
+    val readFire = storeIo.read.BankAddr.fire
+    val groupRow = storeRowIter >> log2Ceil(banks)
+
     when (storeCommand.transpose) {
-      storePhaseCount := (64 / TrMatrixRegNBanks).U >> storeElementLgBytes
-      for (bank <- 0 until TrMatrixRegNBanks;
-           lane <- 0 until storeReadLaneCount) {
-        val registerRow = (storeByteOffset >> storeElementLgBytes) +
-          storePhase * TrMatrixRegNBanks.U + bank.U
-        storeIo.read.BankAddr.bits(bank)(lane) :=
-          (registerRow / TrMatrixRegNBanks.U) * ReduceGroupSize.U +
-            ((storeRowIter << storeElementLgBytes) / TrMatrixRegEntryByteSize.U) + lane.U
+      storePhaseCount := TrElementWidth.select(widths)(bits => (512 / (banks * bits)).U)
+      val firstRow = TrElementWidth.select(widths)(bits => (storeByteOffset << 3) >> log2Ceil(bits))
+      val rowGroup = (firstRow >> log2Ceil(banks)) +& storePhase
+      val entry = TrElementWidth.select(widths)(bits => storeRowIter >> log2Ceil(entryBits / bits))
+      for (bank <- 0 until banks; context <- 0 until storeReadLaneCount) {
+        storeIo.read.BankAddr.bits(bank)(context) := rowGroup * ReduceGroupSize.U + entry + context.U
       }
     }
-    // Prepare small one-hot controls during the accepted SRAM read. The capture
-    // cycle only selects fixed byte positions; it never adds a dynamic byte index.
-    val capturePhases = (0 to 2).map { lg =>
-      (0 until 64 / (TrMatrixRegNBanks * (1 << lg))).map { step =>
-        RegEnable(storeCommand.transpose && storeElementLgBytes === lg.U && storePhase === step.U,
-          storeIo.read.BankAddr.fire)
+
+    // Each read returns one element per bank for each destination row. Select
+    // its group once, then broadcast the bank-ordered fragment to the line.
+    val groups = TrElementWidth.formats.map { case (sew, bits) =>
+      val count = entryBits / (banks * bits)
+      val selected = (0 until count).map { g =>
+        val inGroup = if (count == 1) true.B else groupRow(log2Ceil(count) - 1, 0) === g.U
+        RegEnable(widths === sew && inGroup, readFire)
       }
+      (bits, selected)
     }
-    val captureGroups = (0 to 2).map { lg =>
-      val groupCount = TrMatrixRegEntryByteSize / (TrMatrixRegNBanks * (1 << lg))
-      (0 until groupCount).map { group =>
-        val byteOffset = (storeRowIter << lg)(log2Ceil(TrMatrixRegEntryByteSize) - 1, 0)
-        RegEnable(byteOffset === (group * TrMatrixRegNBanks * (1 << lg)).U,
-          storeIo.read.BankAddr.fire)
+    // Gate only the destination fragment. Phase never selects the source data.
+    val fragmentBytes = banks * 4 / 8
+    val enables = (0 until 64 by fragmentBytes).map { offset =>
+      val hits = TrElementWidth.formats.map { case (sew, bits) =>
+        widths === sew && storePhase === (8 * offset / (banks * bits)).U
       }
+      RegEnable(hits.reduce(_ || _), readFire)
     }
-    when (storeState === storeCaptureState && storeIo.read.Data.valid && storeCommand.transpose) {
-      for (context <- 0 until storeReadLaneCount;
-           lane <- 0 until TrMatrixRegNBanks;
-           outputByte <- 0 until 64) {
-        val choices = (0 to 2).flatMap { lg =>
-          val elementBytes = 1 << lg
-          val step = outputByte / (TrMatrixRegNBanks * elementBytes)
-          val bank = (outputByte / elementBytes) % TrMatrixRegNBanks
-          val byte = outputByte % elementBytes
-          val sourceBytes = storeIo.read.Data.bits(bank)(context).asTypeOf(
-            Vec(TrMatrixRegEntryByteSize, UInt(8.W)))
-          captureGroups(lg).zipWithIndex.map { case (groupSelected, group) =>
-            val select = capturePhases(lg)(step) && groupSelected
-            select -> sourceBytes(group * TrMatrixRegNBanks * elementBytes + lane * elementBytes + byte)
-          }
+    for (context <- 0 until storeReadLaneCount; lane <- 0 until banks) {
+      val lines = groups.map { case (bits, selected) =>
+        val elements = (0 until banks).map { bank =>
+          val word = storeIo.read.Data.bits(bank)(context)
+          selected.zipWithIndex.map { case (sel, group) =>
+            val lo = (group * banks + lane) * bits
+            Mux(sel, word(lo + bits - 1, lo), 0.U(bits.W))
+          }.reduce(_ | _)
         }
-        when (VecInit(choices.map(_._1)).asUInt.orR) {
-          storeTransposeDataBuffer(context)(lane)(outputByte) := Mux1H(choices)
+        Fill(512 / (banks * bits), Cat(elements.reverse))
+      }
+      val line = lines.reduce(_ | _)
+      when (storeState === storeCaptureState && storeIo.read.Data.valid && storeCommand.transpose) {
+        for (byte <- 0 until 64) {
+          when (enables(byte / fragmentBytes)) {
+            storeTransposeDataBuffer(context)(lane)(byte) := line(8 * byte + 7, 8 * byte)
+          }
         }
       }
     }

@@ -24,29 +24,28 @@ class TrMatrixRegReadPortRouter(implicit p: Parameters) extends CuteModule {
         val registers = Flipped(Vec(TrMatrixRegCount, new TrDataControlMatrixRegIO))
     })
 
-    io.clients.foreach { client =>
-        client.BankAddr.ready := false.B
-        client.Data.valid := false.B
-        client.Data.bits := 0.U.asTypeOf(client.Data.bits)
+    val selected = io.clients.zip(io.regIds).map { case (client, id) =>
+        VecInit((0 until TrMatrixRegCount).map(r => client.BankAddr.valid && id === r.U))
     }
     for (regIdx <- 0 until TrMatrixRegCount) {
         val registerPort = io.registers(regIdx)
-        val selected = VecInit((0 until 2).map { clientIdx =>
-            io.clients(clientIdx).BankAddr.valid && io.regIds(clientIdx) === regIdx.U
-        })
-        assert(PopCount(selected) <= 1.U,
+        val readers = selected.map(_(regIdx))
+        assert(PopCount(readers) <= 1.U,
             "TR MatrixReg has one read port; readers must be excluded by task scheduling")
-        registerPort.BankAddr.valid := selected.asUInt.orR
-        registerPort.BankAddr.bits := Mux1H(selected, io.clients.map(_.BankAddr.bits))
-        for (clientIdx <- 0 until 2) {
-            when (selected(clientIdx)) {
-                io.clients(clientIdx).BankAddr.ready := registerPort.BankAddr.ready
-            }
-            val owner = RegNext(selected(clientIdx) && registerPort.BankAddr.fire, false.B)
+        registerPort.BankAddr.valid := readers.reduce(_ || _)
+        registerPort.BankAddr.bits := Mux1H(readers, io.clients.map(_.BankAddr.bits))
+    }
+    for ((client, requests) <- io.clients.zip(selected)) {
+        val accepted = VecInit(requests.zip(io.registers).map { case (request, port) =>
+            request && port.BankAddr.ready
+        })
+        client.BankAddr.ready := accepted.asUInt.orR
+        val owners = RegNext(accepted, 0.U.asTypeOf(accepted))
+        client.Data.valid := owners.asUInt.orR
+        client.Data.bits := Mux1H(owners, io.registers.map(_.Data.bits))
+        for ((owner, port) <- owners.zip(io.registers)) {
             when (owner) {
-                io.clients(clientIdx).Data := registerPort.Data
-                assert(registerPort.Data.valid,
-                    "TR MatrixReg read response must return after one cycle")
+                assert(port.Data.valid, "TR MatrixReg read response must return after one cycle")
             }
         }
     }
@@ -817,8 +816,8 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
                 write.BankAddr.bits := DontCare
                 write.Data.valid := false.B
                 write.Data.bits := DontCare
-                write.ByteMask.valid := false.B
-                write.ByteMask.bits := Fill(TrMatrixRegEntryByteSize, true.B)
+                write.NibbleMask.valid := false.B
+                write.NibbleMask.bits := Fill(2 * TrMatrixRegEntryByteSize, true.B)
             }
         }
     }
@@ -863,8 +862,10 @@ class CUTEV2TopImp(outer: LazyCUTEV2Top) extends LazyModuleImp(outer) with CUTEI
 
     val trStorePorts = TrMatrixRegs.map(_.io.MatrixRegIO.FromStore)
     val trStoreSelect = VecInit((0 until TrMatrixRegCount).map(r => trStorer0.io.regId === r.U))
-    trStorer0.io.read.BankAddr.ready := Mux1H(trStoreSelect, trStorePorts.map(_.BankAddr.ready))
-    trStorer0.io.read.Data := Mux1H(trStoreSelect, trStorePorts.map(_.Data))
+    trStorer0.io.read.BankAddr.ready := trStorePorts.map(_.BankAddr.ready).reduce(_ || _)
+    trStorer0.io.read.Data.valid := trStorePorts.map(_.Data.valid).reduce(_ || _)
+    trStorer0.io.read.Data.bits := trStorePorts.map(_.Data.bits.asUInt).reduce(_ | _)
+        .asTypeOf(trStorer0.io.read.Data.bits)
     for (r <- 0 until TrMatrixRegCount) {
         trStorePorts(r).BankAddr.valid := trStoreSelect(r) && trStorer0.io.read.BankAddr.valid
         trStorePorts(r).BankAddr.bits := trStorer0.io.read.BankAddr.bits
