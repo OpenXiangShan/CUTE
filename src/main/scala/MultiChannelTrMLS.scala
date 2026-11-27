@@ -44,12 +44,8 @@ class MultiChannelTrStorer(
     private val TotalStoreRequestSize = RegInit(0.U(log2Ceil(StoreMaxRequests + 1).W))
     private val TotalStoreResponseSize = RegInit(0.U(log2Ceil(StoreMaxRequests + 1).W))
     private val StoreLineAddrWidth = MMUAddrWidth - 6
-    private val Store_Row_Line_Addr = Reg(UInt(StoreLineAddrWidth.W))
-    private val Store_Output_Line_Addr = Reg(UInt(StoreLineAddrWidth.W))
-    private val Store_Entry_Line_Stride = Reg(UInt(StoreLineAddrWidth.W))
     private val Store_Line_Stride = StoreCommand.stride(MMUAddrWidth - 1, 6)
 
-    private val Store_Element_LgBytes = StoreCommand.widths(1, 0)
 
     override protected def storeIo: TrStoreIO = io
     override protected def storeCommand: TrStoreCommand = StoreCommand
@@ -59,22 +55,21 @@ class MultiChannelTrStorer(
     override protected def storeByteOffset: UInt = CurrentStore_Byte_Offset
     override protected def storePhase: UInt = CurrentStore_Phase
     override protected def storePhaseCount: UInt = Store_Phase_Count
-    override protected def storeElementLgBytes: UInt = Store_Element_LgBytes
     override protected def storeReadLaneCount: Int = StoreReadLaneCount
     override protected def storeTransposeDataBuffer: Vec[Vec[Vec[UInt]]] = Store_Data_Buffer
 
-    private def storeRowBytes(command: TrStoreCommand): UInt =
-        Mux(command.widths === Bundles.MSew.e4, command.columns >> 1,
-            command.columns.pad(MatrixRegMaxTensorDimBitSize + 2) << command.widths(1, 0))
+    private def storeRowBytes(command: TrStoreCommand): UInt = TrElementWidth.rowBytes(command.columns, command.widths)
+    private val storeEntryElements = TrElementWidth.select(StoreCommand.widths)(bits => (TrMatrixRegEntryBitSize / bits).U)
+    private val storeAddresses = storeLineAddresses(Store_Line_Stride, Store_Output_Context, storeEntryElements)
     private val Store_Memory_Row_Count = Mux(StoreCommand.transpose, StoreCommand.columns, StoreCommand.rows)
     private val Store_Memory_Row_Byte_Count = Mux(StoreCommand.transpose,
-        StoreCommand.rows.pad(MatrixRegMaxTensorDimBitSize + 2) << Store_Element_LgBytes,
+        TrElementWidth.rowBytes(StoreCommand.rows, StoreCommand.widths),
         storeRowBytes(StoreCommand))
     private val Store_Active_Lanes = VecInit((0 until StoreReadLaneCount).map { context =>
         VecInit((0 until TrMatrixRegNBanks).map { lane =>
             CurrentStore_Row_Iter + lane.U +
                 (if (context == 0) 0.U else
-                    (TrMatrixRegEntryByteSize.U >> Store_Element_LgBytes)) < Store_Memory_Row_Count
+                    storeEntryElements) < Store_Memory_Row_Count
         }).asUInt
     })
 
@@ -88,13 +83,11 @@ class MultiChannelTrStorer(
         val newCommand = io.command.bits
         val nonempty = newCommand.rows =/= 0.U && newCommand.columns =/= 0.U
         val bytes = Mux(newCommand.transpose,
-            newCommand.rows.pad(MatrixRegMaxTensorDimBitSize + 2) << newCommand.widths(1, 0),
+            TrElementWidth.rowBytes(newCommand.rows, newCommand.widths),
             storeRowBytes(newCommand))
         val rows = Mux(newCommand.transpose, newCommand.columns, newCommand.rows)
         assert(newCommand.widths <= Bundles.MSew.e32 || newCommand.widths === Bundles.MSew.e4,
             "TR store supports raw e4/e8/e16/e32")
-        assert(!newCommand.transpose || newCommand.widths <= Bundles.MSew.e32,
-            "TR transpose store supports only e8/e16/e32")
         assert(newCommand.rows <= Tensor_MN.U && storeRowBytes(newCommand) <= Tensor_K.U,
             "TR store exceeds the architectural register geometry")
         when(nonempty) {
@@ -103,7 +96,7 @@ class MultiChannelTrStorer(
             assert(bytes(5, 0) === 0.U && bytes =/= 0.U,
                 "TR store requires each effective row to contain a multiple of 64 bytes; partial stores are not implemented")
             when(newCommand.widths === Bundles.MSew.e4) {
-                assert(!newCommand.columns(0), "TR store does not support a partial e4 byte")
+                assert(!Mux(newCommand.transpose, newCommand.rows(0), newCommand.columns(0)), "TR store does not support a partial e4 byte")
             }
             when(rows > 1.U) {
                 assert(newCommand.stride(5, 0) === 0.U,
@@ -114,7 +107,6 @@ class MultiChannelTrStorer(
             }
         }
         StoreCommand := newCommand
-        Store_Row_Line_Addr := newCommand.base(MMUAddrWidth - 1, 6)
         CurrentStore_Row_Iter := 0.U
         CurrentStore_Byte_Offset := 0.U
         CurrentStore_Phase := 0.U
@@ -124,14 +116,6 @@ class MultiChannelTrStorer(
         TotalStoreResponseSize := 0.U
         Store_Pending_Lanes := 0.U
         memorystore_state := Mux(nonempty, s_store_read, s_store_end)
-    }
-
-    // The command is already latched throughout this state. Prepare the second
-    // transpose context before capture/send without extending the dispatch cone.
-    when (memorystore_state === s_store_read) {
-        Store_Entry_Line_Stride := MuxLookup(Store_Element_LgBytes, 0.U)(
-            (0 to 2).map { lg => lg.U ->
-                (Store_Line_Stride << (log2Ceil(TrMatrixRegEntryByteSize) - lg)) })
     }
 
     io.read.BankAddr.valid := memorystore_state === s_store_read
@@ -144,8 +128,6 @@ class MultiChannelTrStorer(
         }
     }
     when(io.read.BankAddr.fire) {
-        // Use the existing SRAM read cycle to prepare the output line base.
-        Store_Output_Line_Addr := Store_Row_Line_Addr + (CurrentStore_Byte_Offset >> 6)
         memorystore_state := s_store_capture
     }
     when(memorystore_state === s_store_capture) {
@@ -171,32 +153,15 @@ class MultiChannelTrStorer(
         }
     }
 
-    private def nextStoreRowIter: UInt = {
-        val nextRow = CurrentStore_Row_Iter + TrMatrixRegNBanks.U
-        if (StoreReadLaneCount == 2) {
-            val entryRows = TrMatrixRegEntryByteSize.U >> Store_Element_LgBytes
-            // entryRows is a power of two for every supported element width.
-            Mux(StoreCommand.transpose && (nextRow & (entryRows - 1.U)) === 0.U,
-                nextRow + entryRows,
-                nextRow)
-        } else {
-            nextRow
-        }
-    }
-
     private def finishStoreRowGroup(): Unit = {
         Store_Output_Context := 0.U
         Store_Pending_Lanes := 0.U
         when(CurrentStore_Byte_Offset +& 64.U === Store_Memory_Row_Byte_Count) {
             CurrentStore_Byte_Offset := 0.U
-            CurrentStore_Row_Iter := nextStoreRowIter
-            val skipEntry = StoreCommand.transpose &&
-                nextStoreRowIter =/= CurrentStore_Row_Iter + TrMatrixRegNBanks.U
-            Store_Row_Line_Addr := Store_Row_Line_Addr +
-                (Store_Line_Stride << log2Ceil(TrMatrixRegNBanks)) +
-                Mux(skipEntry, Store_Entry_Line_Stride, 0.U)
+            CurrentStore_Row_Iter := storeAddresses.nextRow
+            storeAddresses.advanceGroup := true.B
             memorystore_state := Mux(
-                nextStoreRowIter >= Store_Memory_Row_Count,
+                storeAddresses.nextRow >= Store_Memory_Row_Count,
                 s_store_drain,
                 s_store_read
             )
@@ -211,7 +176,6 @@ class MultiChannelTrStorer(
         if (StoreReadLaneCount == 2) {
             when(StoreCommand.transpose && Store_Output_Context === 0.U) {
                 Store_Output_Context := 1.U
-                Store_Output_Line_Addr := Store_Output_Line_Addr + Store_Entry_Line_Stride
                 Store_Pending_Lanes := Store_Active_Lanes(1)
             }.otherwise {
                 finishStoreRowGroup()
@@ -248,7 +212,7 @@ class MultiChannelTrStorer(
         request.bits := 0.U.asTypeOf(request.bits)
         // Multirow strides and every active line are aligned; a single row only
         // uses lane zero, so its unconstrained stride never contributes.
-        val lineAddress = Store_Output_Line_Addr + lane.U * Store_Line_Stride
+        val lineAddress = storeAddresses.outputBase + lane.U * Store_Line_Stride
         request.bits.RequestAddr := Cat(lineAddress(StoreLineAddrWidth - 1, 0), 0.U(6.W))
         val outputData = if (StoreReadLaneCount == 1) Store_Data_Buffer(0)(lane)
             else Store_Data_Buffer(Store_Output_Context)(lane)
@@ -335,6 +299,7 @@ class MultiChannelTrLoader(
     val Stride = RegInit(0.U((MMUAddrWidth).W))
 
     val HasTail = RegInit(false.B)
+    val oddE4Tail = RegInit(false.B)
     val TailByteMask = RegInit(0.U(log2Ceil(outsideDataWidthByte + 1).W))
     val K_Beat_Count = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
@@ -427,8 +392,8 @@ class MultiChannelTrLoader(
                     write.BankAddr.valid := laneValid
                     write.Data.bits := slices(laneSlice)
                     write.Data.valid := laneValid
-                    write.ByteMask.valid := laneValid
-                    write.ByteMask.bits := Mux(isTail, tailMask(laneSlice), Fill(TrMatrixRegEntryByteSize, true.B))
+                    write.NibbleMask.valid := laneValid
+                    write.NibbleMask.bits := Mux(isTail, tailMask(laneSlice), Fill(2 * TrMatrixRegEntryByteSize, true.B))
 
                 }
                 rowsWritten := rowsThisCycle
@@ -493,8 +458,9 @@ class MultiChannelTrLoader(
         val Current_Fill_MReg_Time = WireInit(VecInit(Seq.fill(TrMatrixRegNBanks)(0.U(2.W))))
 
         val tailTaskMask = UIntToOH(TailByteMask, outsideDataWidthByte + 1).asUInt - 1.U(outsideDataWidthByte.W)
+        val nibbleMask = TrWriteMask.tail(tailTaskMask, oddE4Tail, outsideDataWidthByte)
         val tailByteMaskPerSlot = VecInit((0 until MAX_Fill_Times).map { j =>
-            tailTaskMask((j + 1) * TrMatrixRegEntryByteSize - 1, j * TrMatrixRegEntryByteSize)
+            nibbleMask((j + 1) * 2 * TrMatrixRegEntryByteSize - 1, j * 2 * TrMatrixRegEntryByteSize)
         })
 
         def stepNormalQueueRequests(): Unit = {
@@ -588,8 +554,8 @@ class MultiChannelTrLoader(
                 io.ToMatrixRegIO.BankAddr(i).valid := true.B
                 io.ToMatrixRegIO.Data(i).bits := 0.U
                 io.ToMatrixRegIO.Data(i).valid := true.B
-                io.ToMatrixRegIO.ByteMask(i).bits := Fill(TrMatrixRegEntryByteSize, true.B)
-                io.ToMatrixRegIO.ByteMask(i).valid := true.B
+                io.ToMatrixRegIO.NibbleMask(i).bits := Fill(2 * TrMatrixRegEntryByteSize, true.B)
+                io.ToMatrixRegIO.NibbleMask(i).valid := true.B
             }
             TotalLoadSize := TotalLoadSize + 1.U
             if (YJPTrLoader0DebugEnable) log(cf"ZeroLoad TotalLoadSize=$TotalLoadSize")
@@ -638,6 +604,7 @@ class MultiChannelTrLoader(
             Stride := ConfigInfo.Tensor.stride
 
             HasTail := ConfigInfo.Tensor.HasTail
+            oddE4Tail := ConfigInfo.Tensor.oddE4Tail
             TailByteMask := ConfigInfo.Tensor.TailByteMask
             K_Beat_Count := ConfigInfo.Tensor.K_Beat_Count
             assert(!ConfigInfo.Is_Transpose, s"[$label] transpose is disabled in this baseline")
@@ -664,7 +631,7 @@ class MultiChannelTrLoader(
     io.ToMatrixRegIO.active := false.B
     io.ToMatrixRegIO.WriteRequest := 0.U.asTypeOf(io.ToMatrixRegIO.WriteRequest)
     io.ToMatrixRegIO.WriteRequest.foreach(_.foreach { write =>
-        write.ByteMask.bits := Fill(TrMatrixRegEntryByteSize, true.B)
+        write.NibbleMask.bits := Fill(2 * TrMatrixRegEntryByteSize, true.B)
     })
 
     for (i <- 0 until TrMatrixRegNBanks) {
@@ -713,7 +680,7 @@ class MultiChannelTrLoader(
         difftestAmuFinish.bankValid := VecInit(io.ToMatrixRegIO.BankAddr.map(_.valid)).asUInt
         for (i <- 0 until TrMatrixRegNBanks) {
           difftestAmuFinish.bankAddr(i) := io.ToMatrixRegIO.BankAddr(i).bits
-          difftestAmuFinish.bankMask.get(i) := io.ToMatrixRegIO.ByteMask(i).bits
+          TrWriteMask.probe(difftestAmuFinish, i, io.ToMatrixRegIO.NibbleMask(i).bits)
           for (w <- 0 until eventWordsPerBank) {
             if (w < abMRegWordsPerBank) {
               val lo = w * 64
@@ -735,7 +702,7 @@ class MultiChannelTrLoader(
         for (i <- 0 until TrMatrixRegNBanks) {
           val write = io.ToMatrixRegIO.WriteRequest(i)(1)
           difftestAmuFinishLane1.bankAddr(i) := write.BankAddr.bits
-          difftestAmuFinishLane1.bankMask.get(i) := write.ByteMask.bits
+          TrWriteMask.probe(difftestAmuFinishLane1, i, write.NibbleMask.bits)
           for (w <- 0 until eventWordsPerBank) {
             if (w < abMRegWordsPerBank) {
               difftestAmuFinishLane1.data(i * eventWordsPerBank + w) := write.Data.bits(w * 64 + 63, w * 64)

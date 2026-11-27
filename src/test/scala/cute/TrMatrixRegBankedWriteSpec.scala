@@ -27,8 +27,8 @@ class TrMatrixRegBankedWriteSpec extends AnyFlatSpec with ChiselScalatestTester 
         write.BankAddr.bits.poke(addr.U)
         write.Data.valid.poke(true.B)
         write.Data.bits.poke(data.U)
-        write.ByteMask.valid.poke(true.B)
-        write.ByteMask.bits.poke(mask.U)
+        write.NibbleMask.valid.poke(true.B)
+        write.NibbleMask.bits.poke(mask.U)
     }
     dut.clock.step()
     clearABLoader(dut)
@@ -75,7 +75,7 @@ class TrMatrixRegBankedWriteSpec extends AnyFlatSpec with ChiselScalatestTester 
       dut.io.MatrixRegIO.FromStore.BankAddr.ready.expect(false.B)
       dut.io.MatrixRegIO.FromStore.Data.valid.expect(false.B)
 
-      val fullMask = (BigInt(1) << dut.TrMatrixRegEntryByteSize) - 1
+      val fullMask = (BigInt(1) << (2 * dut.TrMatrixRegEntryByteSize)) - 1
       val data2 = BigInt("22" * dut.TrMatrixRegEntryByteSize, 16)
       val data3 = BigInt("33" * dut.TrMatrixRegEntryByteSize, 16)
       val data4 = BigInt("44" * dut.TrMatrixRegEntryByteSize, 16)
@@ -103,16 +103,16 @@ class TrMatrixRegBankedWriteSpec extends AnyFlatSpec with ChiselScalatestTester 
         write.BankAddr.bits.poke((6 + lane).U)
         write.Data.valid.poke(true.B)
         write.Data.bits.poke(newData.U)
-        write.ByteMask.valid.poke(true.B)
-        write.ByteMask.bits.poke((if (lane == 0) BigInt(1) else fullMask).U)
+        write.NibbleMask.valid.poke(true.B)
+        write.NibbleMask.bits.poke((if (lane == 0) BigInt(1) else BigInt(2)).U)
       }
       dut.io.MatrixRegIO.FromDataController.BankAddr.ready.expect(false.B)
       dut.clock.step()
       clearABLoader(dut)
       clearABRead(dut)
 
-      assert(readRow(dut, 6) == ((oldData & ~BigInt(0xff)) | BigInt(0xaa)))
-      assert(readRow(dut, 7) == newData)
+      assert(readRow(dut, 6) == ((oldData & ~BigInt(0x0f)) | BigInt(0x0a)))
+      assert(readRow(dut, 7) == ((oldData & ~BigInt(0xf0)) | BigInt(0xa0)))
 
       // A pending paired store read must wait for loader writes to release both SRAMs.
       dut.io.MatrixRegIO.FromStore.BankAddr.bits.foreach { bank =>
@@ -127,8 +127,8 @@ class TrMatrixRegBankedWriteSpec extends AnyFlatSpec with ChiselScalatestTester 
         write.BankAddr.bits.poke((12 + lane).U)
         write.Data.valid.poke(true.B)
         write.Data.bits.poke(newData.U)
-        write.ByteMask.valid.poke(true.B)
-        write.ByteMask.bits.poke(fullMask.U)
+        write.NibbleMask.valid.poke(true.B)
+        write.NibbleMask.bits.poke(fullMask.U)
       }
       dut.io.MatrixRegIO.FromStore.BankAddr.ready.expect(false.B)
       dut.clock.step()
@@ -152,8 +152,8 @@ class TrMatrixRegBankedWriteSpec extends AnyFlatSpec with ChiselScalatestTester 
         write.BankAddr.bits.poke(addr.U)
         write.Data.valid.poke(true.B)
         write.Data.bits.poke(newData.U)
-        write.ByteMask.valid.poke(true.B)
-        write.ByteMask.bits.poke(fullMask.U)
+        write.NibbleMask.valid.poke(true.B)
+        write.NibbleMask.bits.poke(fullMask.U)
       }
       assertThrows[Exception](dut.clock.step())
     }

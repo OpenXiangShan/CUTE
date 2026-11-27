@@ -121,7 +121,7 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
       baseAddress.U)
     config.Tensor.stride.poke(
       rowStride.U)
-    config.Tensor.dataType.poke(0.U)
+    config.Tensor.widths.poke(Bundles.MSew.e8)
     config.Tensor.HasTail.poke(false.B)
     config.Tensor.TailByteMask.poke(0.U)
     config.Tensor.K_Beat_Count.poke(kBeatCount.U)
@@ -484,7 +484,7 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
       ABPerfectBatchTestUtils.BaseAddress.U)
     config.Tensor.stride.poke(
       ABPerfectBatchTestUtils.RowStride.U)
-    config.Tensor.dataType.poke(0.U)
+    config.Tensor.widths.poke(Bundles.MSew.e8)
     config.Tensor.HasTail.poke(false.B)
     config.Tensor.TailByteMask.poke(0.U)
     config.Tensor.K_Beat_Count.poke(ABPerfectBatchTestUtils.KBeatCount.U)
@@ -526,7 +526,7 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
         var cycles = 0
         var completed = false
         val sourceAddrWidth = log2Ceil(dut.TrMatrixRegBankNEntries)
-        val fullMask = (BigInt(1) << dut.TrMatrixRegEntryByteSize) - 1
+        val fullMask = (BigInt(1) << (2 * dut.TrMatrixRegEntryByteSize)) - 1
         dut.clock.setTimeout(1000)
 
         while (!completed && cycles < 200) {
@@ -589,8 +589,8 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
           } {
             val write = dut.io.ToMatrixRegIO.WriteRequest(bank)(lane)
             if (write.BankAddr.valid.peek().litToBoolean) {
-              write.ByteMask.valid.expect(true.B)
-              write.ByteMask.bits.expect(fullMask.U)
+              write.NibbleMask.valid.expect(true.B)
+              write.NibbleMask.bits.expect(fullMask.U)
               writebacks += ((bank, write.BankAddr.bits.peek().litValue))
             }
           }
@@ -693,9 +693,9 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
           } {
             val write = dut.io.ToMatrixRegIO.WriteRequest(bank)(lane)
             if (write.BankAddr.valid.peek().litToBoolean) {
-              write.ByteMask.valid.expect(true.B)
+              write.NibbleMask.valid.expect(true.B)
               writebacks += ((bank, write.BankAddr.bits.peek().litValue,
-                write.ByteMask.bits.peek().litValue))
+                write.NibbleMask.bits.peek().litValue))
             }
           }
           val firedBanks = (0 until dut.TrMatrixRegNBanks).filter { bank =>
@@ -710,8 +710,8 @@ class MultiChannelTRLoadPerfectBatchSpec extends AnyFlatSpec with ChiselScalates
         assert(completed, s"seeded tail task did not complete after $cycles cycles")
         assert(pending.forall(_.isEmpty), "not every reordered response was accepted")
 
-        val fullMask = (BigInt(1) << dut.TrMatrixRegEntryByteSize) - 1
-        val tailSecondMask = (BigInt(1) << 8) - 1
+        val fullMask = (BigInt(1) << (2 * dut.TrMatrixRegEntryByteSize)) - 1
+        val tailSecondMask = (BigInt(1) << 16) - 1
         val expectedWritebacks = requests.flatMap { case (bank, _, source) =>
           val regAddr = source & ((BigInt(1) << sourceAddrWidth) - 1)
           val isTail = ((source >> tailBitOffset) & 1) == 1

@@ -179,7 +179,9 @@ object MatrixRegWriteProbes {
       // A standalone producer derives its width from its own description.
       ProbeParams(default, maxWritebackWordsPerBank(Seq(default)), writebackHasMask = true)
     }
-    params.genWriteProbes(ports)
+    val writes = params.genWriteProbes(ports)
+    writes.foreach(_.halfMask.foreach(_.foreach(_ := 0.U)))
+    writes
   }
 
   private def maxWritebackWordsPerBank(probes: Seq[MatrixRegWriteProbe])(implicit p: Parameters): Int = {

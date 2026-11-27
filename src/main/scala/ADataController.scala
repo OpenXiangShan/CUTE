@@ -113,8 +113,10 @@ class ADataController(implicit p: Parameters) extends CuteModule{
     val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_MN.U)// Supply Matrix_N columns per step; use Tensor_N / Matrix_MN column groups.
     val K_IteratorMax = (MatrixRegWorkingTensor_K)// K already counts reduce vectors; no further division is needed.
 
-    val Max_Caculate_Iter = Wire(UInt(cuteParams.mmaIterationCountWidth.W))
-    Max_Caculate_Iter := M_IteratorMax * N_IteratorMax * K_IteratorMax
+    // Task dimensions are latched before init. The read and completion checks
+    // use the same bound throughout working, including cycles stalled by MTE.
+    val Max_Caculate_Iter = RegEnable(M_IteratorMax * N_IteratorMax * K_IteratorMax,
+        state === s_mm_task && calculate_state === s_cal_init)
 
     // Count matrix-register read requests.
     val AVectorCount = RegInit(0.U(cuteParams.mmaIterationCountWidth.W))

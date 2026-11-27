@@ -1338,7 +1338,9 @@ class TrLoadTensorInfo()(implicit p: Parameters) extends CuteBundle{
     val baseVaddr   = (UInt(MMUAddrWidth.W))
     // val BlockTensor_A_BaseVaddr         = (UInt(MMUAddrWidth.W))//may be gone already
     val stride    = (UInt(MMUAddrWidth.W))//address offset increment for the next M
-    val dataType                        = (UInt(ElementDataType.DataTypeBitWidth.W))
+    val widths = Bundles.MSew()
+    val rowElements = UInt((MatrixRegMaxTensorDimBitSize max log2Ceil(2 * Tensor_K + 1)).W)
+    val oddE4Tail = Bool()
     val HasTail                         = Bool()
     val TailByteMask                    = UInt(log2Ceil(outsideDataWidthByte + 1).W)
     val K_Beat_Count                    = UInt(MatrixRegMaxTensorDimBitSize.W)
@@ -1350,7 +1352,7 @@ class TrLoadTaskConfigIO()(implicit p: Parameters) extends CuteBundle{
 
     val LoadTaskInfo = (new LoadTask_Info)
 
-    val MatrixRegTensor_M                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegTensor_M                 = UInt((MatrixRegMaxTensorDimBitSize max log2Ceil(2 * Tensor_K + 1)).W)
     val MatrixRegTensor_K                 = (UInt(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegId                       = UInt(TrMatrixRegIdWidth.W)
     val PrefetchTaskId                    = Option.when(EnableMatrixPrefetch)(UInt(CuteMatrixTraceTag.taskIdWidth.W))
@@ -1445,18 +1447,20 @@ class MatrixRegLoaderWriteLane(addrWidth: Int, dataWidth: Int, maskWidth: Int)(i
     val ByteMask = Valid(UInt(maskWidth.W))
 }
 
+class TrLoaderWriteLane(implicit p: Parameters) extends CuteBundle {
+    val BankAddr = Valid(UInt(log2Ceil(TrMatrixRegBankNEntries).W))
+    val Data = Valid(UInt(TrMatrixRegEntryBitSize.W))
+    val NibbleMask = Valid(UInt((2 * TrMatrixRegEntryByteSize).W))
+}
+
 class TrLoadMatrixRegIO(implicit p: Parameters) extends CuteBundle{
     // When MemLoader is working, active will be true.
     // Otherwise, active will be false.
     val active = Input(Bool())
-    val WriteRequest = Flipped(Vec(TrMatrixRegNBanks, Vec(2, new MatrixRegLoaderWriteLane(
-        log2Ceil(TrMatrixRegBankNEntries),
-        TrMatrixRegEntryBitSize,
-        TrMatrixRegEntryByteSize
-    ))))
+    val WriteRequest = Flipped(Vec(TrMatrixRegNBanks, Vec(2, new TrLoaderWriteLane)))
     def BankAddr: Seq[Valid[UInt]] = WriteRequest.map(_(0).BankAddr)
     def Data: Seq[Valid[UInt]] = WriteRequest.map(_(0).Data)
-    def ByteMask: Seq[Valid[UInt]] = WriteRequest.map(_(0).ByteMask)
+    def NibbleMask: Seq[Valid[UInt]] = WriteRequest.map(_(0).NibbleMask)
 }
 
 class TrStoreMatrixRegReadIO(implicit p: Parameters) extends CuteBundle {

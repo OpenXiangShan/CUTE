@@ -29,7 +29,7 @@ class MultiChannelLoaderBankedWriteSpec extends AnyFlatSpec with ChiselScalatest
     test(new MultiChannelTrLoader()).withAnnotations(Seq(VerilatorBackendAnnotation)) { dut =>
       dut.io.ConfigInfo.Tensor.baseVaddr.poke(0.U)
       dut.io.ConfigInfo.Tensor.stride.poke(0.U)
-      dut.io.ConfigInfo.Tensor.dataType.poke(0.U)
+      dut.io.ConfigInfo.Tensor.widths.poke(Bundles.MSew.e8)
       dut.io.ConfigInfo.Tensor.HasTail.poke(false.B)
       dut.io.ConfigInfo.Tensor.TailByteMask.poke(0.U)
       dut.io.ConfigInfo.Tensor.K_Beat_Count.poke(0.U)
@@ -101,7 +101,7 @@ class MultiChannelLoaderBankedWriteSpec extends AnyFlatSpec with ChiselScalatest
         clearLocalMmu(dut.io.LocalMMUIO, dut.TrMatrixRegNBanks)
         dut.io.ConfigInfo.Tensor.baseVaddr.poke(0x1000.U)
         dut.io.ConfigInfo.Tensor.stride.poke(64.U)
-        dut.io.ConfigInfo.Tensor.dataType.poke(ElementDataType.DataTypeWidth8)
+        dut.io.ConfigInfo.Tensor.widths.poke(Bundles.MSew.e8)
         dut.io.ConfigInfo.Tensor.HasTail.poke(true.B)
         dut.io.ConfigInfo.Tensor.TailByteMask.poke(8.U)
         dut.io.ConfigInfo.Tensor.K_Beat_Count.poke(1.U)
@@ -152,14 +152,14 @@ class MultiChannelLoaderBankedWriteSpec extends AnyFlatSpec with ChiselScalatest
           } {
             val write = dut.io.ToMatrixRegIO.WriteRequest(bank)(lane)
             write.Data.valid.expect(write.BankAddr.valid.peek())
-            write.ByteMask.valid.expect(write.BankAddr.valid.peek())
+            write.NibbleMask.valid.expect(write.BankAddr.valid.peek())
             if (write.BankAddr.valid.peek().litToBoolean) {
               val address = write.BankAddr.bits.peek().litValue
               assert(address < dut.Trans_Load_Size * dut.ReduceGroupSize,
                 s"transpose write bank=$bank lane=$lane had out-of-range address $address")
               assert(address % dut.ReduceGroupSize == 0,
                 s"transpose write bank=$bank lane=$lane had misaligned address $address")
-              assert(write.ByteMask.bits.peek().litValue != 0,
+              assert(write.NibbleMask.bits.peek().litValue != 0,
                 s"transpose write bank=$bank lane=$lane had an empty mask")
               writeAddresses += address
               writeCount += 1

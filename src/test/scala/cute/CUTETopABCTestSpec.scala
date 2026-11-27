@@ -477,7 +477,8 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
     (128, 8, 32, Some(4), 128), (128, 8, 32, Some(8), 128), (128, 4, 32, Some(2), 128),
     (128, 4, 64, None, 128), (128, 4, 64, Some(4), 128),
     (8, 4, 32, None, 128), (8, 4, 32, Some(2), 128),
-    (128, 8, 32, None, 64), (128, 8, 32, Some(1), 64), (128, 8, 32, Some(2), 64))) {
+    (128, 8, 32, None, 64), (128, 8, 32, Some(1), 64), (128, 8, 32, Some(2), 64),
+    (128, 8, 32, Some(8), 64))) {
     val mode = channels.map(_.toString).getOrElse("L")
     it should s"preserve data, paired reads and ACK drain with $banks banks, $entryBytes bytes, TS0$mode, $tensorRows rows, K$tensorBytes" in {
       implicit val p: Parameters = new Config((_, _, _) => {
@@ -515,8 +516,8 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
             write.BankAddr.bits.poke(0.U)
             write.Data.valid.poke(false.B)
             write.Data.bits.poke(0.U)
-            write.ByteMask.valid.poke(false.B)
-            write.ByteMask.bits.poke(0.U)
+            write.NibbleMask.valid.poke(false.B)
+            write.NibbleMask.bits.poke(0.U)
           }
         }
         dut.reset.poke(true.B)
@@ -538,8 +539,8 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
             write.Data.bits.poke(packed((0 until entryBytes).map { byte =>
               sourceByte(rowGroup * banks + bank, (entry + lane) * entryBytes + byte)
             }).U)
-            write.ByteMask.valid.poke(true.B)
-            write.ByteMask.bits.poke(((BigInt(1) << entryBytes) - 1).U)
+            write.NibbleMask.valid.poke(true.B)
+            write.NibbleMask.bits.poke(((BigInt(1) << (2 * entryBytes)) - 1).U)
           }
           dut.clock.step()
         }
@@ -547,7 +548,7 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
         dut.io.load.WriteRequest.foreach(_.foreach { write =>
           write.BankAddr.valid.poke(false.B)
           write.Data.valid.poke(false.B)
-          write.ByteMask.valid.poke(false.B)
+          write.NibbleMask.valid.poke(false.B)
         })
         val readLanes = 64 / entryBytes
         val quota = channels.getOrElse(1)
@@ -566,12 +567,15 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
             rows <= tensorRows && columns * (1 << width) <= tensorBytes &&
               rows * (1 << width) % 64 == 0
           }
-        val cases = normalCases ++ transposeCases
+        val packedTransposeCases = if (tensorRows >= 128)
+          Seq(1, 3, 2 * entryBytes + 1, 2 * tensorBytes).distinct.map(k => (true, 7, 128, k))
+        else Seq.empty
+        val cases = normalCases ++ transposeCases ++ packedTransposeCases
         val schedules = mutable.Map.empty[(Boolean, Int, Int, Int), Seq[(Int, Int, BigInt)]]
         for ((transpose, width, rows, columns) <- cases; addressMode <- 0 until 3) {
           val elementBytes = if (width == 7) 1 else 1 << width
           val rowBytes = if (width == 7) columns / 2 else columns * elementBytes
-          val outputRowBytes = if (transpose) rows * elementBytes else rowBytes
+          val outputRowBytes = if (transpose && width == 7) rows / 2 else if (transpose) rows * elementBytes else rowBytes
           val outputRows = if (transpose) columns else rows
           // Exercise long address carries and modulo wrapping at bit 64.
           // One effective row still permits an arbitrary, unaligned stride.
@@ -588,7 +592,10 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
           val addressMask = (BigInt(1) << 64) - 1
           val expected = (for (row <- 0 until outputRows; offset <- 0 until outputRowBytes by 64) yield {
             val data = packed((offset until offset + 64).map { byte =>
-              if (transpose) sourceByte(byte / elementBytes, row * elementBytes + byte % elementBytes)
+              if (transpose && width == 7) {
+                def nibble(r: Int): Int = (sourceByte(r, row / 2) >> (4 * (row % 2))) & 15
+                nibble(2 * byte) | (nibble(2 * byte + 1) << 4)
+              } else if (transpose) sourceByte(byte / elementBytes, row * elementBytes + byte % elementBytes)
               else sourceByte(row, byte)
             })
             ((base + row * stride + offset) & addressMask) -> data
@@ -621,8 +628,8 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
             stallWrite.BankAddr.bits.poke(0.U)
             stallWrite.Data.valid.poke(injectWrite.B)
             stallWrite.Data.bits.poke(packed((0 until entryBytes).map(sourceByte(0, _))).U)
-            stallWrite.ByteMask.valid.poke(injectWrite.B)
-            stallWrite.ByteMask.bits.poke(((BigInt(1) << entryBytes) - 1).U)
+            stallWrite.NibbleMask.valid.poke(injectWrite.B)
+            stallWrite.NibbleMask.bits.poke(((BigInt(1) << (2 * entryBytes)) - 1).U)
             if (injectWrite) dut.io.readFire.expect(false.B)
             if (dut.io.readFire.peek().litToBoolean) {
               schedule += ((cycles, -1, BigInt(0)))
@@ -676,16 +683,16 @@ class TrStorerBackendSpec extends AnyFlatSpec with ChiselScalatestTester {
           val stallWrite = dut.io.load.WriteRequest(0)(0)
           stallWrite.BankAddr.valid.poke(false.B)
           stallWrite.Data.valid.poke(false.B)
-          stallWrite.ByteMask.valid.poke(false.B)
+          stallWrite.NibbleMask.valid.poke(false.B)
           assert(seen.toSet == expected.keySet, "store did not emit the complete tile")
           val expectedReads = if (!transpose) {
             ((rows + banks - 1) / banks) * (rowBytes / 64)
           } else {
-            val entryRows = entryBytes / elementBytes
+            val entryRows = if (width == 7) 2 * entryBytes else entryBytes / elementBytes
             val groups = (0 until columns by entryRows * readLanes).map { start =>
               (math.min(entryRows, columns - start) + banks - 1) / banks
             }.sum
-            groups * (outputRowBytes / 64) * (64 / (banks * elementBytes))
+            groups * (outputRowBytes / 64) * (if (width == 7) 128 / banks else 64 / (banks * elementBytes))
           }
           assert(reads == expectedReads, s"SRAM read count $reads != $expectedReads")
           totalReads += reads
