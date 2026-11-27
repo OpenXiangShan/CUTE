@@ -163,7 +163,6 @@ object TestTopWithL2 extends App {
       Debug = CuteDebugParams.NoDebug,
       LoaderBridgeChannelConfig = "A1BLCL1CS2",
       EnableDifftest = false,
-      v3config = Cutev3extParams(TaskCtrl_AutoClear = true),
       MatrixExtension = MatrixIsaParams(
         enableInt8Int32 = true, enableFp8Fp32 = true, enableFp8Fp16 = true,
         enableFp8Bf16 = true, enableFp16Fp16 = true, enableFp16Fp32 = true,
