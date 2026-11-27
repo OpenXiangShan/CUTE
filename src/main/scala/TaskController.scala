@@ -357,7 +357,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
   decodedFifo.io.enq.bits := decEntryEnq
 
   // ===================== Issue window state =====================
-  class IssueWindowSlot(implicit p: Parameters) extends CuteBundle {
+  class IssueWindowSlot extends Bundle {
     val valid = Bool()
     val issued = Bool()
     val completed = Bool()
@@ -367,13 +367,13 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     val waitReadAMask = UInt(WinDepth.W)
     val waitReadBMask = UInt(WinDepth.W)
     val opKind = TaskCtrlOpKind()
-    val trLoadBeats = UInt(MatrixRegMaxTensorDimBitSize.W)
-    val trTailBytes = UInt(log2Ceil(outsideDataWidthByte + 1).W)
-    val trOddTail = Bool()
   }
 
   class IssueWindowPayload(implicit p: Parameters) extends CuteBundle {
     val entry = new DecodedAmuCtrlEntry
+    val trLoadBeats = UInt(MatrixRegMaxTensorDimBitSize.W)
+    val trTailBytes = UInt(log2Ceil(outsideDataWidthByte + 1).W)
+    val trOddTail = Bool()
     val seqId = UInt(SeqIdWidth.W)
     val fifoIdx = UInt(4.W)
   }
@@ -817,11 +817,11 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
     cfg.Tensor.widths := issueLsu.widths
     cfg.Tensor.rowElements := Mux(trSwapDims, issueLsu.row, issueLsu.column)
     cfg.MatrixRegTensor_M := Mux(trSwapDims, issueLsu.column, issueLsu.row)
-    cfg.MatrixRegTensor_K := issueSlot.trLoadBeats
-    cfg.Tensor.K_Beat_Count := issueSlot.trLoadBeats
-    cfg.Tensor.TailByteMask := issueSlot.trTailBytes
-    cfg.Tensor.HasTail := issueSlot.trTailBytes.orR
-    cfg.Tensor.oddE4Tail := issueSlot.trOddTail
+    cfg.MatrixRegTensor_K := issuePayload.trLoadBeats
+    cfg.Tensor.K_Beat_Count := issuePayload.trLoadBeats
+    cfg.Tensor.TailByteMask := issuePayload.trTailBytes
+    cfg.Tensor.HasTail := issuePayload.trTailBytes.orR
+    cfg.Tensor.oddE4Tail := issuePayload.trOddTail
   }
 
   // The descriptor is consumed only on command.fire. Keep FU readiness off
@@ -1281,7 +1281,7 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
 
   when(enqueueFire) {
     val newSlot = WireInit(0.U.asTypeOf(new IssueWindowSlot))
-    val newPayload = Wire(new IssueWindowPayload)
+    val newPayload = WireInit(0.U.asTypeOf(new IssueWindowPayload))
     newSlot.valid := true.B
     newSlot.issued := false.B
     newSlot.completed := false.B
@@ -1303,9 +1303,9 @@ class TaskController(implicit p: Parameters) extends BaseTaskController {
       (trRowElements.pad(nibbleOffsetBits) << log2Ceil(bits / 4))(nibbleOffsetBits - 1, 0)
     }
     when(deqIsLoad && !deqLsu.isacc) {
-      newSlot.trLoadBeats := trFullBeats +& trTailNibbles.orR
-      newSlot.trOddTail := trTailNibbles(0)
-      newSlot.trTailBytes := (trTailNibbles >> 1) +& trTailNibbles(0)
+      newPayload.trLoadBeats := trFullBeats +& trTailNibbles.orR
+      newPayload.trOddTail := trTailNibbles(0)
+      newPayload.trTailBytes := (trTailNibbles >> 1) +& trTailNibbles(0)
     }
     newPayload.seqId := seqIdAlloc
     newPayload.fifoIdx := 0.U
