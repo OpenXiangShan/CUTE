@@ -59,7 +59,7 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val calculate_state = RegInit(s_cal_idle)
     val MatrixRegWorkingTensor_M = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val MatrixRegWorkingTensor_N = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
-    val MatrixRegWorkingTensor_K = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
+    val MatrixRegWorkingTensor_K = RegInit(0.U(cuteParams.mmaKGroupCountWidth.W))
     
 
     val Is_Transpose                        = RegInit(false.B)      // Whether the task requires a transpose.
@@ -132,17 +132,18 @@ class CDataController(implicit p: Parameters) extends CuteModule{
     val Store_M_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
     val Store_N_Iterator = RegInit(0.U(MatrixRegMaxTensorDimBitSize.W))
 
-    val M_IteratorMax = (MatrixRegWorkingTensor_M / Matrix_MN.U)
-    val N_IteratorMax = (MatrixRegWorkingTensor_N / Matrix_MN.U)
+    val M_IteratorMax = MatrixRegWorkingTensor_M >> log2Ceil(Matrix_MN)
+    val N_IteratorMax = MatrixRegWorkingTensor_N >> log2Ceil(Matrix_MN)
     val K_IteratorMax = (MatrixRegWorkingTensor_K)
 
-    val Max_Caculate_Iter = M_IteratorMax * N_IteratorMax * K_IteratorMax
+    val Max_Caculate_Iter = Wire(UInt(cuteParams.mmaIterationCountWidth.W))
+    Max_Caculate_Iter := M_IteratorMax * N_IteratorMax * K_IteratorMax
     val addr_IteratorMax = M_IteratorMax * N_IteratorMax
 
     val Max_Store_Iter   = (MatrixRegWorkingTensor_M * MatrixRegWorkingTensor_N * D_Datatype) / (ResultWidthByte*Matrix_MN*Matrix_MN).U
 
-    val CVectorCount = RegInit(0.U(32.W))
-    val DVectorCount = RegInit(0.U(32.W))
+    val CVectorCount = RegInit(0.U(cuteParams.mmaIterationCountWidth.W))
+    val DVectorCount = RegInit(0.U(cuteParams.mmaIterationCountWidth.W))
     // Matrix-register read requests.
     val ReadRequest = WireInit(false.B)
     val WriteRequset = WireInit(false.B)

@@ -805,6 +805,13 @@ case class CuteParams(
     def P2AddNum = ReduceWidth / (P3AddNum * 16)
 
     def ReduceGroupSize  = Tensor_K/ReduceWidthByte    //number of ReduceVectors for K to be stored, not the K size
+    def mmaMaxMNGroupsPerAxis: Int = Tensor_MN / Matrix_MN
+    def mmaMNGroupCountWidth: Int = log2Ceil(mmaMaxMNGroupsPerAxis + 1)
+    def mmaKGroupCountWidth: Int = log2Ceil(ReduceGroupSize + 1)
+    def mmaIterationCountWidth: Int = {
+        val maxIterations = mmaMaxMNGroupsPerAxis * mmaMaxMNGroupsPerAxis * ReduceGroupSize
+        log2Ceil(maxIterations + 1)
+    }
     def MatrixRegMaxTensorDim = Math.max(Tensor_MN, Math.max(Tensor_MN, ReduceGroupSize))
     def MatrixRegMaxTensorDimBitSize = log2Ceil(MatrixRegMaxTensorDim) + 1
     //A tensor shape stored in MatrixReg is M*K
