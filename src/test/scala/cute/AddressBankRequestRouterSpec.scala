@@ -113,7 +113,7 @@ class AddressBankRequestRouterSpec extends AnyFlatSpec with ChiselScalatestTeste
       val stride = BigInt(128)
       dut.io.ConfigInfo.Tensor.baseVaddr.poke(base.U)
       dut.io.ConfigInfo.Tensor.stride.poke(stride.U)
-      dut.io.ConfigInfo.Tensor.dataType.poke(0.U)
+      dut.io.ConfigInfo.Tensor.widths.poke(Bundles.MSew.e8)
       dut.io.ConfigInfo.Tensor.HasTail.poke(false.B)
       dut.io.ConfigInfo.Tensor.TailByteMask.poke(0.U)
       dut.io.ConfigInfo.Tensor.K_Beat_Count.poke(2.U)

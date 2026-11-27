@@ -9,15 +9,19 @@ import scala.collection.mutable.ArrayBuffer
 class MatrixHashConcurrentSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "concurrent CRC32C MatrixHash writes"
 
-  private case class Write(port: Int, bank: Int, address: Int, data: BigInt, mask: Int = 65535)
+  private case class Write(port: Int, bank: Int, address: Int, data: BigInt, mask: Int = 65535, partial: Int = 0)
   private val polynomial = BigInt("82f63b78", 16)
 
   private def reference(writes: Seq[Write]): (BigInt, Int) = {
     val symbols = Array.fill(128)(0)
     var count = 0
-    for (w <- writes; byte <- 0 until 16 if (w.mask & (1 << byte)) != 0) {
+    for (w <- writes; byte <- 0 until 16 if ((w.mask | w.partial) & (1 << byte)) != 0) {
       val offset = (w.address * 2 + w.bank) * 16 + byte
-      symbols(offset) ^= 256 | ((w.data >> (byte * 8)) & 255).toInt
+      val data = ((w.data >> (byte * 8)) & 255).toInt
+      val symbol = if ((w.partial & (1 << byte)) == 0) 256 | data
+        else if ((w.mask & (1 << byte)) != 0) 16 | (data & 15)
+        else 32 | (data >> 4)
+      symbols(offset) ^= symbol
       count += 1
     }
     var crc = BigInt("ffffffff", 16)
@@ -58,6 +62,7 @@ class MatrixHashConcurrentSpec extends AnyFlatSpec with ChiselScalatestTester {
                 val write = writes.find(w => w.port == port && w.bank == bank)
                 event.bankAddr(bank).poke(write.map(_.address).getOrElse(0).U)
                 event.bankMask.get(bank).poke(write.map(_.mask).getOrElse(0).U)
+                event.halfMask.get(bank).poke(write.map(_.partial).getOrElse(0).U)
                 for (word <- 0 until 2) {
                   val data = (write.map(_.data).getOrElse(BigInt(0)) >> (word * 64)) & ((BigInt(1) << 64) - 1)
                   event.data(bank * 2 + word).poke(data.U)
@@ -77,7 +82,7 @@ class MatrixHashConcurrentSpec extends AnyFlatSpec with ChiselScalatestTester {
           step(finalBeat, finish = true, pc = 0x1000)
           // The next instruction finishes immediately, with disjoint masks on
           // the same entry when both ports are present.
-          val second = Seq(Write(0, 0, 3, BigInt("0011223344556677", 16), 0x0f)) ++
+          val second = Seq(Write(0, 0, 3, BigInt("0011223344556677", 16), 0x0d, 0x06)) ++
             (if (ports == 2) Seq(Write(1, 0, 3, BigInt("8899aabbccddeeff", 16), 0xf0)) else Seq.empty)
           val (secondHash, secondCount) = reference(second)
           expected += ((secondHash, secondCount, BigInt(0x2000)))

@@ -82,7 +82,7 @@ class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
           cfg.Tensor.baseVaddr.poke(base.U)
           cfg.Tensor.stride.poke(stride.U)
           cfg.Tensor.K_Beat_Count.poke(beats.U)
-          cfg.Tensor.dataType.poke(1.U)
+          cfg.Tensor.widths.poke(Bundles.MSew.e8)
           cfg.Tensor.HasTail.poke(true.B)
           cfg.Tensor.TailByteMask.poke(37.U)
           cfg.LoadTaskInfo.Is_FullLoad.poke(true.B)
@@ -182,7 +182,7 @@ class ABBatchScheduleSpec extends AnyFlatSpec with ChiselScalatestTester {
                   val validBytes = if (beat == beats - 1)
                     math.max(0, math.min(dut.TrMatrixRegEntryByteSize, 37 - slot * dut.TrMatrixRegEntryByteSize))
                   else dut.TrMatrixRegEntryByteSize
-                  assert(write.ByteMask.bits.peek().litValue == (BigInt(1) << validBytes) - 1)
+                  assert(write.NibbleMask.bits.peek().litValue == (BigInt(1) << (2 * validBytes)) - 1)
                 }
               }
             }

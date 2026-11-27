@@ -32,7 +32,7 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
       write.BankAddr.bits.expect(lane.U)
       write.Data.valid.expect(true.B)
       write.Data.bits.expect(((data >> (lane * rowBits)) & rowMask).U)
-      write.ByteMask.valid.expect(true.B)
+      write.NibbleMask.valid.expect(true.B)
     }
   }
 
@@ -64,7 +64,7 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.DebugInfo.DebugTimeStampe.poke(0.U)
       dut.io.ConfigInfo.Tensor.baseVaddr.poke(0.U)
       dut.io.ConfigInfo.Tensor.stride.poke(0.U)
-      dut.io.ConfigInfo.Tensor.dataType.poke(0.U)
+      dut.io.ConfigInfo.Tensor.widths.poke(Bundles.MSew.e8)
       dut.io.ConfigInfo.Tensor.HasTail.poke(false.B)
       dut.io.ConfigInfo.Tensor.TailByteMask.poke(0.U)
       dut.io.ConfigInfo.Tensor.K_Beat_Count.poke(0.U)
@@ -116,7 +116,7 @@ class LegacyLoaderPairWriteSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.ConfigInfo.Tensor.baseVaddr.poke(0.U)
       dut.io.ConfigInfo.Tensor.baseVaddr.poke(0.U)
       dut.io.ConfigInfo.Tensor.stride.poke(64.U)
-      dut.io.ConfigInfo.Tensor.dataType.poke(0.U)
+      dut.io.ConfigInfo.Tensor.widths.poke(Bundles.MSew.e8)
       dut.io.ConfigInfo.Tensor.HasTail.poke(false.B)
       dut.io.ConfigInfo.Tensor.TailByteMask.poke(0.U)
       dut.io.ConfigInfo.Tensor.K_Beat_Count.poke(1.U)

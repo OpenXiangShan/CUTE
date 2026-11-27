@@ -55,7 +55,7 @@ class TransposeBytePlaneSpec extends AnyFlatSpec with ChiselScalatestTester {
             dut.io.command.bits.stride.poke(stride.U)
             dut.io.command.bits.rows.poke(rows.U)
             dut.io.command.bits.columns.poke(columns.U)
-            dut.io.command.bits.elementLgBytes.poke(lg.U)
+            dut.io.command.bits.widths.poke(lg.U)
             dut.io.command.valid.poke(true.B)
             dut.clock.step()
             dut.io.command.valid.poke(false.B)
@@ -110,7 +110,7 @@ class TransposeBytePlaneSpec extends AnyFlatSpec with ChiselScalatestTester {
                 // Pack the hardware fields in software; avoid constructing
                 // hardware (asUInt) in the test driver's simulation context.
                 val signature = out.bits.data.map(_.peek().litValue).foldLeft(BigInt(0))((a, x) => (a << 256) | x) ^
-                  out.bits.mask.map(_.peek().litValue).foldLeft(BigInt(0))((a, x) => (a << 32) | x)
+                  out.bits.mask.map(_.peek().litValue).foldLeft(BigInt(0))((a, x) => (a << 64) | x)
                 heldOutput.foreach(old => assert(old == signature, "writeback changed under backpressure"))
                 heldOutput = if (outReady) None else Some(signature)
                 if (outReady) {
@@ -119,7 +119,8 @@ class TransposeBytePlaneSpec extends AnyFlatSpec with ChiselScalatestTester {
                     val addr = out.bits.address(bank).peek().litValue.toInt
                     val mask = out.bits.mask(bank).peek().litValue
                     val data = out.bits.data(bank).peek().litValue
-                    for (b <- 0 until 32 if mask.testBit(b)) {
+                    for (b <- 0 until 32) assert(mask.testBit(2*b) == mask.testBit(2*b+1))
+                    for (b <- 0 until 32 if mask.testBit(2*b)) {
                       val key = (bank, addr, b)
                       assert(!actual.contains(key), s"duplicate write $key")
                       actual(key) = ((data >> (8 * b)) & 255).toInt
